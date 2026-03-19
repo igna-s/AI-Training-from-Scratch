@@ -31,6 +31,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 
 from model import CPU1Model, D_MODEL, VOCAB_SIZE, PATCH_SIZE
+from model_v2 import CPU1ModelV2
 
 
 # =============================================================================
@@ -342,8 +343,10 @@ def build_param_groups(model: nn.Module) -> list[dict]:
     Separa parámetros en 3 grupos con diferente weight decay.
 
     - BitLinear weights + embedding projection: wd=0.1
-    - FPResidual, RMSNorm, biases, byte_embedding: wd=0.0
-    - Head weights: wd=0.01
+    - FPResidual, RMSNorm, biases, byte_embedding, BitEmbedding scale: wd=0.0
+    - Head weights (nn.Linear o BitHead): wd=0.01
+
+    Compatible con v1 (CPU1Model) y v2 (CPU1ModelV2).
     """
     decay_params = []       # BitLinear weights, embedding proj
     no_decay_params = []    # FPResidual, norms, biases, byte embedding
@@ -353,14 +356,17 @@ def build_param_groups(model: nn.Module) -> list[dict]:
         if not param.requires_grad:
             continue
 
-        if 'head_' in name and 'weight' in name:
-            # Heads de predicción (nn.Linear estándar)
+        # v1 usa head_0..head_3, v2 usa byte_heads.0..byte_heads.3
+        if ('head_' in name or 'byte_heads' in name) and 'weight' in name:
             head_params.append(param)
-        elif any(k in name for k in ('fp_A', 'fp_B', 'norm', 'bias', 'byte_embedding')):
-            # FPResidual, RMSNorm, biases, lookup embedding — sin decay
+        elif any(k in name for k in ('fp_A', 'fp_B', 'norm', 'bias',
+                                      'byte_embedding', 'byte_embed',
+                                      'output_scale', '.scale')):
+            # FPResidual, RMSNorm, biases, lookup/BitEmbedding, scales — sin decay
             no_decay_params.append(param)
         else:
-            # BitLinear weights (q/k/v/o_proj, gate/up/down_proj) + embedding.proj
+            # BitLinear weights (q/k/v/o_proj, gate/up/down_proj, forget/cand/output_proj)
+            # + embedding.proj / patch_proj
             decay_params.append(param)
 
     return [
@@ -504,9 +510,16 @@ def train(args: argparse.Namespace):
         print(f"Device: {device} | World size: {world_size}")
 
     # --- Modelo ---
-    model = CPU1Model(
-        use_gradient_checkpointing=args.gradient_checkpointing,
-    ).to(device)
+    if args.model_version == 'v2':
+        model = CPU1ModelV2({
+            'use_gradient_checkpointing': args.gradient_checkpointing,
+        }).to(device)
+        model_is_v2 = True
+    else:
+        model = CPU1Model(
+            use_gradient_checkpointing=args.gradient_checkpointing,
+        ).to(device)
+        model_is_v2 = False
 
     if is_ddp:
         model = DDP(model, device_ids=[local_rank])
@@ -609,7 +622,10 @@ def train(args: argparse.Namespace):
             with sync_ctx:
                 amp_ctx = torch.amp.autocast('cuda', dtype=torch.float16) if use_amp else contextlib.nullcontext()
                 with amp_ctx:
-                    logits = model(patches)
+                    if model_is_v2:
+                        logits, _ = model(patches)  # v2: descartar hidden_states
+                    else:
+                        logits = model(patches)  # v1: tuple de 4 logits
                     loss, metrics = distillation_loss(
                         logits, targets, teacher_probs, teacher_mask,
                         temperature=args.temperature,
@@ -692,6 +708,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--seq-len', type=int, default=2048,
                    help="Patches por secuencia")
 
+    # Model
+    p.add_argument('--model-version', type=str, default='v1',
+                   choices=['v1', 'v2'],
+                   help="v1=CPU1Model (attention), v2=CPU1ModelV2 (MLGRU)")
+
     # Training
     p.add_argument('--batch-per-gpu', type=int, default=4)
     p.add_argument('--gradient-accumulation-steps', type=int, default=2)
@@ -760,31 +781,33 @@ def test_distillation_loss():
 
 
 def test_param_groups():
-    """Verifica que todos los parámetros se asignan a exactamente un grupo."""
-    model = CPU1Model(n_layers=2)
-    groups = build_param_groups(model)
+    """Verifica que todos los parámetros se asignan a exactamente un grupo (v1 y v2)."""
+    for label, model in [
+        ("v1", CPU1Model(n_layers=2)),
+        ("v2", CPU1ModelV2({'d_model': 2048, 'n_layers': 2, 'd_ff': 5504, 'fp_rank': 8})),
+    ]:
+        groups = build_param_groups(model)
 
-    grouped = sum(p.numel() for g in groups for p in g['params'])
-    total = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        grouped = sum(p.numel() for g in groups for p in g['params'])
+        total = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    assert grouped == total, (
-        f"Parámetros en grupos ({grouped:,}) != total ({total:,}). "
-        f"Hay parámetros sin asignar."
-    )
+        assert grouped == total, (
+            f"[{label}] Parámetros en grupos ({grouped:,}) != total ({total:,}). "
+            f"Hay parámetros sin asignar."
+        )
 
-    # Verificar que no hay duplicados
-    ids = []
-    for g in groups:
-        for p in g['params']:
-            assert id(p) not in ids, "Parámetro duplicado en param groups"
-            ids.append(id(p))
+        # Verificar que no hay duplicados
+        ids = []
+        for g in groups:
+            for p in g['params']:
+                assert id(p) not in ids, f"[{label}] Parámetro duplicado en param groups"
+                ids.append(id(p))
 
-    print("[OK] Param groups (modelo 2 capas):")
-    names = {id(p): n for n, p in model.named_parameters()}
-    for i, g in enumerate(groups):
-        n_params = sum(p.numel() for p in g['params'])
-        print(f"     Grupo {i} (wd={g['weight_decay']}): {n_params:,} params, "
-              f"{len(g['params'])} tensores")
+        print(f"[OK] Param groups {label} (2 capas):")
+        for i, g in enumerate(groups):
+            n_params = sum(p.numel() for p in g['params'])
+            print(f"     Grupo {i} (wd={g['weight_decay']}): {n_params:,} params, "
+                  f"{len(g['params'])} tensores")
 
 
 def test_dataset_dry_run():
