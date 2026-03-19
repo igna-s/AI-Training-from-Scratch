@@ -29,10 +29,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from model import BitLinear
 from model_v2 import (
     CPU1ModelV2,
     CPU1BlockV2,
+    BitLinear,
     PATCH_SIZE,
     VOCAB_SIZE,
     D_MODEL,
@@ -546,12 +546,13 @@ class CPU1InferenceEngine:
                 model, x, self.hidden_states
             )
 
-            # Norm final
-            x_normed = model.norm(x)  # [1, d_model]
+            # Norm final: unsqueeze a 3D para RMSNorm y BitHead
+            x_3d = x.unsqueeze(1)              # [1, d_model] -> [1, 1, d_model]
+            x_normed = model.norm(x_3d)        # [1, 1, d_model]
 
             # 4 heads -> 4 bytes (escribir en logits_buf pre-alocado)
             for h_idx, head in enumerate(model.byte_heads):
-                logits = head(x_normed).squeeze(0)  # [1, 256] -> [256]
+                logits = head(x_normed).squeeze(1).squeeze(0)  # [1, 1, 256] -> [256]
                 self.logits_buf[h_idx].copy_(logits)
 
             # Sampling sin allocar tensores nuevos

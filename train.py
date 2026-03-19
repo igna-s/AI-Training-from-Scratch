@@ -30,8 +30,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 
-from model import CPU1Model, D_MODEL, VOCAB_SIZE, PATCH_SIZE
-from model_v2 import CPU1ModelV2
+from model_v2 import CPU1ModelV2, D_MODEL, VOCAB_SIZE, PATCH_SIZE
 
 
 # =============================================================================
@@ -346,7 +345,7 @@ def build_param_groups(model: nn.Module) -> list[dict]:
     - FPResidual, RMSNorm, biases, byte_embedding, BitEmbedding scale: wd=0.0
     - Head weights (nn.Linear o BitHead): wd=0.01
 
-    Compatible con v1 (CPU1Model) y v2 (CPU1ModelV2).
+    Compatible con CPU1ModelV2.
     """
     decay_params = []       # BitLinear weights, embedding proj
     no_decay_params = []    # FPResidual, norms, biases, byte embedding
@@ -510,16 +509,9 @@ def train(args: argparse.Namespace):
         print(f"Device: {device} | World size: {world_size}")
 
     # --- Modelo ---
-    if args.model_version == 'v2':
-        model = CPU1ModelV2({
-            'use_gradient_checkpointing': args.gradient_checkpointing,
-        }).to(device)
-        model_is_v2 = True
-    else:
-        model = CPU1Model(
-            use_gradient_checkpointing=args.gradient_checkpointing,
-        ).to(device)
-        model_is_v2 = False
+    model = CPU1ModelV2({
+        'use_gradient_checkpointing': args.gradient_checkpointing,
+    }).to(device)
 
     if is_ddp:
         model = DDP(model, device_ids=[local_rank])
@@ -539,7 +531,7 @@ def train(args: argparse.Namespace):
 
     # --- Mixed precision (FP16 en T4, deshabilitado en CPU) ---
     use_amp = device.type == 'cuda'
-    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+    scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
 
     # --- Dataset ---
     if args.dry_run:
@@ -587,6 +579,8 @@ def train(args: argparse.Namespace):
     data_iter = iter(dataloader)
     epoch = 0
     log_timer = time.time()
+    metrics: dict[str, float] = {}
+    last_loss = 0.0
 
     for step in range(start_step, total_steps):
         # LR schedule
@@ -622,15 +616,14 @@ def train(args: argparse.Namespace):
             with sync_ctx:
                 amp_ctx = torch.amp.autocast('cuda', dtype=torch.float16) if use_amp else contextlib.nullcontext()
                 with amp_ctx:
-                    if model_is_v2:
-                        logits, _ = model(patches)  # v2: descartar hidden_states
-                    else:
-                        logits = model(patches)  # v1: tuple de 4 logits
+                    logits, _ = model(patches)
                     loss, metrics = distillation_loss(
                         logits, targets, teacher_probs, teacher_mask,
                         temperature=args.temperature,
                         compute_metrics=(should_log and is_last_micro),
                     )
+                    if is_last_micro:
+                        last_loss = loss.item()
                     loss = loss / grad_accum
 
                 scaler.scale(loss).backward()
@@ -671,7 +664,7 @@ def train(args: argparse.Namespace):
             ckpt_path = str(Path(args.output_dir) / f"checkpoint_{step}.pt")
             save_checkpoint(
                 model, optimizer, scaler, step,
-                metrics.get('loss_total', 0.0),
+                last_loss,
                 ckpt_path,
                 upload_to_hf=args.upload_hf,
             )
@@ -682,7 +675,7 @@ def train(args: argparse.Namespace):
         ckpt_path = str(Path(args.output_dir) / f"checkpoint_final.pt")
         save_checkpoint(
             model, optimizer, scaler, total_steps,
-            metrics.get('loss_total', 0.0),
+            last_loss,
             ckpt_path,
             upload_to_hf=args.upload_hf,
         )
@@ -707,11 +700,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--dry-run-samples', type=int, default=1000)
     p.add_argument('--seq-len', type=int, default=2048,
                    help="Patches por secuencia")
-
-    # Model
-    p.add_argument('--model-version', type=str, default='v1',
-                   choices=['v1', 'v2'],
-                   help="v1=CPU1Model (attention), v2=CPU1ModelV2 (MLGRU)")
 
     # Training
     p.add_argument('--batch-per-gpu', type=int, default=4)
@@ -783,7 +771,6 @@ def test_distillation_loss():
 def test_param_groups():
     """Verifica que todos los parámetros se asignan a exactamente un grupo (v1 y v2)."""
     for label, model in [
-        ("v1", CPU1Model(n_layers=2)),
         ("v2", CPU1ModelV2({'d_model': 2048, 'n_layers': 2, 'd_ff': 5504, 'fp_rank': 8})),
     ]:
         groups = build_param_groups(model)

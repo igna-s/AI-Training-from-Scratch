@@ -166,11 +166,22 @@ class OllamaTeacher:
                 'ground_truth_byte': text_bytes[byte_pos],
             })
 
-            # Avanzar: usar el largo del token predicho como estimacion
-            # del paso de tokenizacion del teacher
+            # Avanzar: usar el ground truth del texto real, no la prediccion.
+            # El token predicho puede diferir del texto real, causando desalineamiento.
+            # Buscamos el token del teacher que mejor matchea el texto real en byte_pos.
             predicted = data.get('predicted_token', '')
-            step = len(predicted.encode('utf-8')) if predicted else 1
-            byte_pos += max(step, 1)
+            if predicted:
+                predicted_bytes = predicted.encode('utf-8')
+                actual_remaining = text_bytes[byte_pos:]
+                if actual_remaining.startswith(predicted_bytes):
+                    # El token predicho coincide con el texto real -> avanzar por su largo
+                    step = len(predicted_bytes)
+                else:
+                    # No coincide: avanzar de a 1 byte para no perder posiciones
+                    step = 1
+            else:
+                step = 1
+            byte_pos += step
 
             if progress_callback:
                 progress_callback(byte_pos, len(text_bytes))

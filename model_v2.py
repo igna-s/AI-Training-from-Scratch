@@ -1,12 +1,11 @@
 """
-CPU-1 v2: Modelo byte-level con pesos ternarios, sin MatMul en token mixing.
+CPU-1: Modelo byte-level con pesos ternarios, sin MatMul en token mixing.
 
-Cambios respecto a model.py (v1):
-- BytePatchEmbedding  -> BytePatchEmbeddingV2 (BitEmbedding ternario)
-- SlidingWindowAttention -> MatMulFreeTokenMixer (MLGRU, solo Hadamard)
-- nn.Linear heads     -> BitHead (ternario)
-- RoPE               -> eliminado (MLGRU no lo necesita)
-- KV cache 80MB      -> MLGRU state 80KB
+Arquitectura:
+- BytePatchEmbeddingV2: BitEmbedding ternario (4 bytes -> 2048 dims)
+- MatMulFreeTokenMixer: MLGRU sin multiplicacion de matrices (Hadamard only)
+- BitHead: prediction heads ternarios
+- KV cache: eliminado — estado MLGRU de 80KB fijo
 
 Fuentes:
 - Slender-Mamba (COLING 2025): cuantizacion de embeddings y heads
@@ -24,8 +23,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from model import BitLinear, FPResidual, RMSNorm, SwiGLU, _ste_round
-
 
 # =============================================================================
 # Configuracion global v2
@@ -37,6 +34,89 @@ D_FF = 5504
 FP_RANK = 8
 VOCAB_SIZE = 256
 PATCH_SIZE = 4
+
+
+# =============================================================================
+# Componentes compartidos
+# =============================================================================
+
+def _ste_round(x: Tensor) -> Tensor:
+    """Round con Straight-Through Estimator: forward redondea, backward pasa directo."""
+    return x + (x.round() - x).detach()
+
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization."""
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x: Tensor) -> Tensor:
+        norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * norm * self.weight
+
+
+class BitLinear(nn.Module):
+    """Linear con cuantización ternaria {-1, 0, 1} y STE."""
+
+    def __init__(self, in_features: int, out_features: int):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.normal_(self.weight, std=0.02)
+
+    def forward(self, x: Tensor) -> Tensor:
+        w = self.weight
+        w_scale = w.abs().mean()
+        w_normalized = w / (w_scale + 1e-8)
+        w_ternary = torch.clamp(_ste_round(w_normalized), -1.0, 1.0)
+        x_scale = x.abs().amax(dim=-1, keepdim=True)
+        x_normalized = x / (x_scale + 1e-8)
+        x_quant = torch.clamp(_ste_round(x_normalized * 127.0), -128.0, 127.0)
+        output = F.linear(x_quant, w_ternary)
+        output = output * (x_scale * w_scale / 127.0)
+        return output
+
+
+class FPResidual(nn.Module):
+    """Corrección FP16 de rango bajo en paralelo con BitLinear."""
+
+    def __init__(self, in_dim: int, out_dim: int | None = None, rank: int = FP_RANK):
+        super().__init__()
+        out_dim = out_dim or in_dim
+        self.fp_A = nn.Linear(in_dim, rank, bias=False)
+        self.fp_B = nn.Linear(rank, out_dim, bias=False)
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.normal_(self.fp_A.weight, std=0.02)
+        nn.init.zeros_(self.fp_B.weight)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.fp_B(F.silu(self.fp_A(x)))
+
+
+class SwiGLU(nn.Module):
+    """FFN con gating multiplicativo SwiGLU."""
+
+    def __init__(self, d_model: int = D_MODEL, d_ff: int = D_FF):
+        super().__init__()
+        self.gate_proj = BitLinear(d_model, d_ff)
+        self.up_proj = BitLinear(d_model, d_ff)
+        self.down_proj = BitLinear(d_ff, d_model)
+        self.down_fp_residual = FPResidual(d_ff, d_model)
+
+    def forward(self, x: Tensor) -> Tensor:
+        gate = F.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        hidden = gate * up
+        return self.down_proj(hidden) + self.down_fp_residual(hidden)
 
 
 # =============================================================================
@@ -484,10 +564,7 @@ def _prepare_bitlinear_weights(model: nn.Module):
     for module in model.modules():
         if isinstance(module, BitLinear):
             with torch.no_grad():
-                module.weight_T = nn.Parameter(
-                    module.weight.data.T.contiguous(),
-                    requires_grad=False,
-                )
+                module.weight_T = module.weight.data.T.contiguous()
 
 
 def assert_aligned(tensor: Tensor, alignment: int = 64):
@@ -926,15 +1003,6 @@ def test_parameter_count_v2():
     print(f"    MLGRU mixer: {mixer_p:,}")
     print(f"    SwiGLU FFN:  {ffn_p:,}")
     print(f"    Norms:       {norms_p:,}")
-
-    # Comparar con v1
-    from model import CPU1Model
-    model_v1 = CPU1Model()
-    total_v1 = count_parameters(model_v1)
-    print(f"\n  Comparacion:")
-    print(f"    v1: {total_v1:,}")
-    print(f"    v2: {total:,}")
-    print(f"    Diferencia: {total - total_v1:,} ({(total - total_v1) / total_v1 * 100:+.1f}%)")
 
     print(f"\n[OK] Test de parametros v2 paso: {total:,}")
 

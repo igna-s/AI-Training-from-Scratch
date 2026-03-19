@@ -304,12 +304,13 @@ class FirstByteMarginalization:
         Convierte dict sparse a array denso [256] para el dataset.
 
         Args:
-            byte_probs: dict byte -> prob
+            byte_probs: dict byte -> prob (claves pueden ser int o str tras JSON roundtrip)
         Returns:
             np.ndarray float32 [256]
         """
         arr = np.zeros(VOCAB_SIZE, dtype=np.float32)
         for byte_val, prob in byte_probs.items():
+            byte_val = int(byte_val)  # JSON deserializa claves int como str
             if 0 <= byte_val < VOCAB_SIZE:
                 arr[byte_val] = prob
         return arr
