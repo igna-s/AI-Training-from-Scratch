@@ -1,11 +1,13 @@
 """
-CPU-1: Modelo byte-level con pesos ternarios, sin MatMul en token mixing.
+CPU-1: ~170M parameter byte-level language model with ternary weights, MatMul-free
+token mixing, and PFNet (Prefetch-Aware Nonlinear Residual).
 
 Arquitectura:
-- BytePatchEmbeddingV2: BitEmbedding ternario (4 bytes -> 2048 dims)
+- BytePatchEmbeddingV2: BitEmbedding ternario (4 bytes -> 1024 dims)
 - MatMulFreeTokenMixer: MLGRU sin multiplicacion de matrices (Hadamard only)
+- PFNet: 2-layer ternary MLP residual branch (224 KB total, L2-resident)
 - BitHead: prediction heads ternarios
-- KV cache: eliminado — estado MLGRU de 80KB fijo
+- KV cache: eliminado — estado MLGRU de 28KB fijo
 
 Fuentes:
 - Slender-Mamba (COLING 2025): cuantizacion de embeddings y heads
@@ -28,10 +30,11 @@ from torch import Tensor
 # Configuracion global v2
 # =============================================================================
 
-D_MODEL = 2048
-N_LAYERS = 20
-D_FF = 5504
+D_MODEL = 1024
+N_LAYERS = 14
+D_FF = 2730
 FP_RANK = 8
+PFNET_HIDDEN = 64
 VOCAB_SIZE = 256
 PATCH_SIZE = 4
 
@@ -117,6 +120,40 @@ class SwiGLU(nn.Module):
         up = self.up_proj(x)
         hidden = gate * up
         return self.down_proj(hidden) + self.down_fp_residual(hidden)
+
+
+# Memory budget for PFNet:
+# Per layer:  (1024×64 + 64×1024) × 1 bit = 16 KB
+# 14 layers:  14 × 16 KB = 224 KB  → fits in L2 (~256–512 KB per core)
+# Main model: ~44 MB                → streams from RAM layer by layer
+# Recurrent state: 14 × 1024 × 2B = 28 KB → fits in L2 alongside PFNet
+
+
+class PFNet(nn.Module):
+    """
+    Prefetch-Aware Nonlinear Residual.
+
+    A tiny 2-layer ternary MLP that runs in parallel with the main
+    MLGRU block. Sized so all PFNet weights across all layers fit in
+    CPU L2 cache (~224 KB for 14 layers at d_model=1024, hidden=64),
+    allowing them to remain cache-resident while main weights stream
+    from RAM during inference.
+
+    Output is added as a residual to the block output:
+        block_out = mlgru_out + ffn_out + pfnet_out
+
+    Weights are ternary (BitLinear), activations are SiLU.
+    No FPResidual correction branch — kept intentionally minimal.
+    """
+
+    def __init__(self, d_model: int, hidden: int = 64):
+        super().__init__()
+        self.w1 = BitLinear(d_model, hidden)
+        self.w2 = BitLinear(hidden, d_model)
+        self.norm = RMSNorm(d_model)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.w2(F.silu(self.w1(self.norm(x))))
 
 
 # =============================================================================
@@ -313,20 +350,22 @@ class BitHead(nn.Module):
 
 class CPU1BlockV2(nn.Module):
     """
-    Bloque actualizado: MLGRU reemplaza SlidingWindowAttention.
+    Bloque actualizado: MLGRU + SwiGLU + PFNet.
 
     Perfil de memoria en inferencia por bloque:
         Original (atencion): KV cache 516 * 2048 * 2 * 2 bytes = 4MB/bloque
-        MLGRU:               Estado h = 2048 * 2 bytes = 4KB/bloque
+        MLGRU:               Estado h = 1024 * 2 bytes = 2KB/bloque
+        PFNet:               16 KB/bloque (cache-resident in L2)
     """
 
     def __init__(self, d_model: int = D_MODEL, d_ff: int = D_FF,
-                 fp_rank: int = FP_RANK):
+                 fp_rank: int = FP_RANK, pfnet_hidden: int = PFNET_HIDDEN):
         super().__init__()
         self.norm1 = RMSNorm(d_model)
         self.norm2 = RMSNorm(d_model)
         self.token_mixer = MatMulFreeTokenMixer(d_model, fp_rank)
         self.ffn = SwiGLU(d_model, d_ff)
+        self.pfnet = PFNet(d_model, hidden=pfnet_hidden)
 
     def forward(
         self,
@@ -334,10 +373,13 @@ class CPU1BlockV2(nn.Module):
         h: Tensor | None = None       # [B, d_model]
     ) -> tuple[Tensor, Tensor]:
         # Pre-norm -> MLGRU -> residual
+        residual = x
         mixer_out, h_new = self.token_mixer(self.norm1(x), h)
-        x = x + mixer_out
-        # Pre-norm -> FFN -> residual
-        x = x + self.ffn(self.norm2(x))
+        x = residual + mixer_out
+        # Pre-norm -> FFN -> residual + PFNet nonlinear residual
+        residual = x
+        x = self.ffn(self.norm2(x))
+        x = residual + x + self.pfnet(residual)
         return x, h_new
 
     def forward_one_token(
@@ -346,12 +388,15 @@ class CPU1BlockV2(nn.Module):
         h: Tensor     # [B, D]
     ) -> tuple[Tensor, Tensor]:
         """Inferencia de 1 token a traves del bloque."""
+        residual = x
         x_3d = x.unsqueeze(1)  # [B, 1, D]
         normed = self.norm1(x_3d).squeeze(1)  # [B, D]
         mixer_out, h_new = self.token_mixer.forward_one_token(normed, h)
-        x = x + mixer_out  # residual
+        x = residual + mixer_out  # residual
+        residual = x
         x_3d = x.unsqueeze(1)
-        x = x + self.ffn(self.norm2(x_3d)).squeeze(1)  # FFN + residual
+        pfnet_out = self.pfnet(x_3d).squeeze(1)  # PFNet from pre-norm input
+        x = residual + self.ffn(self.norm2(x_3d)).squeeze(1) + pfnet_out
         return x, h_new
 
 
@@ -361,16 +406,18 @@ class CPU1BlockV2(nn.Module):
 
 class CPU1ModelV2(nn.Module):
     """
-    CPU-1 v2: todo ternario, sin MatMul en token mixing.
+    CPU-1 v2: todo ternario, sin MatMul en token mixing, con PFNet.
 
     Componentes cambiados vs v1:
         BytePatchEmbedding     -> BytePatchEmbeddingV2 (BitEmbedding)
         SlidingWindowAttention -> MatMulFreeTokenMixer (MLGRU)
         nn.Linear heads        -> BitHead (ternario)
         RoPE                   -> eliminado
+        PFNet                  -> nonlinear residual branch per block
 
     Estado de inferencia:
-        MLGRU state: 20 * 2048 * 2 bytes = 80KB total -> en L1/L2
+        MLGRU state: 14 * 1024 * 2 bytes = 28KB total -> en L2
+        PFNet weights: 14 * 16KB = 224KB -> en L2
         (antes: 20 * 516 * 2048 * 2 * 2 bytes = 80MB -> no cabia en L3)
     """
 
@@ -381,13 +428,14 @@ class CPU1ModelV2(nn.Module):
         n_layers = config.get('n_layers', N_LAYERS)
         d_ff = config.get('d_ff', D_FF)
         fp_rank = config.get('fp_rank', FP_RANK)
+        pfnet_hidden = config.get('pfnet_hidden', PFNET_HIDDEN)
 
         self.d_model = d_model
         self.n_layers = n_layers
 
         self.patch_embedding = BytePatchEmbeddingV2(d_model)
         self.blocks = nn.ModuleList([
-            CPU1BlockV2(d_model, d_ff, fp_rank) for _ in range(n_layers)
+            CPU1BlockV2(d_model, d_ff, fp_rank, pfnet_hidden) for _ in range(n_layers)
         ])
         self.norm = RMSNorm(d_model)
 
@@ -448,7 +496,7 @@ class CPU1ModelV2(nn.Module):
     ) -> bytes:
         """
         Inferencia recurrente token por token.
-        Cero KV cache. Estado MLGRU de 80KB fijo.
+        Cero KV cache. Estado MLGRU de 28KB fijo.
         """
         self.eval()
         device = next(self.parameters()).device
@@ -496,7 +544,7 @@ class CPU1ModelV2(nn.Module):
     ) -> tuple[Tensor, list]:
         """
         Procesar 1 patch a traves de TODAS las capas.
-        Maximiza reutilizacion del estado h en cache (80KB en L2).
+        Maximiza reutilizacion del estado h en cache (28KB en L2).
         """
         new_states = []
         for i, block in enumerate(self.blocks):
@@ -693,7 +741,13 @@ def run_architecture_ablation():
             'arch': 'mlgru_matmulfree',
             'tokenizer': 'byte',
             'quantization': 'ternary_full',
-            'note': 'propuesta completa — todo ternario, sin MatMul',
+            'note': 'todo ternario, sin MatMul',
+        },
+        'v5_cpu1_170m_pfnet': {
+            'arch': 'mlgru_matmulfree_pfnet',
+            'tokenizer': 'byte',
+            'quantization': 'ternary_full',
+            'note': '170M, PFNet nonlinear residual',
         },
     }
 
@@ -876,6 +930,34 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
+def print_parameter_breakdown(model: CPU1ModelV2):
+    """Prints a detailed parameter breakdown: embedding, per-layer (MLGRU + FFN + PFNet), heads, total."""
+    total = count_parameters(model)
+    embed_params = count_parameters(model.patch_embedding)
+    norm_params = count_parameters(model.norm)
+    head_params = sum(count_parameters(h) for h in model.byte_heads)
+    block_params = count_parameters(model.blocks)
+
+    print(f"Parameter breakdown (~{total / 1e6:.0f}M total):")
+    print(f"  Embedding:       {embed_params:>12,}")
+    print(f"  Blocks (x{model.n_layers}):    {block_params:>12,}")
+
+    block = model.blocks[0]
+    mixer_p = count_parameters(block.token_mixer)
+    ffn_p = count_parameters(block.ffn)
+    pfnet_p = count_parameters(block.pfnet)
+    norms_p = count_parameters(block.norm1) + count_parameters(block.norm2)
+    print(f"    Per block:")
+    print(f"      MLGRU mixer: {mixer_p:>10,}")
+    print(f"      SwiGLU FFN:  {ffn_p:>10,}")
+    print(f"      PFNet:       {pfnet_p:>10,}")
+    print(f"      Norms:       {norms_p:>10,}")
+
+    print(f"  Final norm:      {norm_params:>12,}")
+    print(f"  Heads (x4):      {head_params:>12,}")
+    print(f"  Total:           {total:>12,}")
+
+
 def test_bit_embedding():
     """Verifica BitEmbedding."""
     emb = BitEmbedding(256, 8)
@@ -978,32 +1060,10 @@ def test_generate_bytes():
 
 
 def test_parameter_count_v2():
-    """Verifica parametros del modelo completo v2."""
+    """Verifica parametros del modelo completo v2 (~170M)."""
     model = CPU1ModelV2()
     total = count_parameters(model)
-    print(f"Parametros totales v2: {total:,}")
-
-    embed_params = count_parameters(model.patch_embedding)
-    block_params = count_parameters(model.blocks)
-    head_params = sum(count_parameters(h) for h in model.byte_heads)
-    norm_params = count_parameters(model.norm)
-
-    print(f"  Embedding:     {embed_params:,}")
-    print(f"  Blocks (x{N_LAYERS}):  {block_params:,}")
-    print(f"    Por bloque:  {block_params // N_LAYERS:,}")
-    print(f"  Norm:          {norm_params:,}")
-    print(f"  Heads (x4):    {head_params:,}")
-
-    # Desglose de un bloque v2
-    block = model.blocks[0]
-    mixer_p = count_parameters(block.token_mixer)
-    ffn_p = count_parameters(block.ffn)
-    norms_p = count_parameters(block.norm1) + count_parameters(block.norm2)
-    print(f"\n  Desglose bloque 0:")
-    print(f"    MLGRU mixer: {mixer_p:,}")
-    print(f"    SwiGLU FFN:  {ffn_p:,}")
-    print(f"    Norms:       {norms_p:,}")
-
+    print_parameter_breakdown(model)
     print(f"\n[OK] Test de parametros v2 paso: {total:,}")
 
 

@@ -339,24 +339,29 @@ def get_lr(
 
 def build_param_groups(model: nn.Module) -> list[dict]:
     """
-    Separa parámetros en 3 grupos con diferente weight decay.
+    Separa parámetros en 4 grupos con diferente weight decay y LR.
 
     - BitLinear weights + embedding projection: wd=0.1
     - FPResidual, RMSNorm, biases, byte_embedding, BitEmbedding scale: wd=0.0
     - Head weights (nn.Linear o BitHead): wd=0.01
+    - PFNet weights: wd=0.05, lr=base_lr*1.5 (higher LR for faster convergence)
 
     Compatible con CPU1ModelV2.
     """
     decay_params = []       # BitLinear weights, embedding proj
     no_decay_params = []    # FPResidual, norms, biases, byte embedding
     head_params = []        # prediction heads
+    pfnet_params = []       # PFNet weights (separate LR)
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
 
+        # PFNet parameters get their own group
+        if '.pfnet.' in name:
+            pfnet_params.append(param)
         # v1 usa head_0..head_3, v2 usa byte_heads.0..byte_heads.3
-        if ('head_' in name or 'byte_heads' in name) and 'weight' in name:
+        elif ('head_' in name or 'byte_heads' in name) and 'weight' in name:
             head_params.append(param)
         elif any(k in name for k in ('fp_A', 'fp_B', 'norm', 'bias',
                                       'byte_embedding', 'byte_embed',
@@ -372,6 +377,7 @@ def build_param_groups(model: nn.Module) -> list[dict]:
         {'params': decay_params, 'weight_decay': 0.1},
         {'params': no_decay_params, 'weight_decay': 0.0},
         {'params': head_params, 'weight_decay': 0.01},
+        {'params': pfnet_params, 'weight_decay': 0.05, 'lr_scale': 1.5},
     ]
 
 
@@ -586,7 +592,7 @@ def train(args: argparse.Namespace):
         # LR schedule
         lr = get_lr(step, args.warmup_steps, total_steps, args.max_lr, args.min_lr)
         for pg in optimizer.param_groups:
-            pg['lr'] = lr
+            pg['lr'] = lr * pg.get('lr_scale', 1.0)
 
         optimizer.zero_grad()
         should_log = (step % args.log_every == 0) and is_main
