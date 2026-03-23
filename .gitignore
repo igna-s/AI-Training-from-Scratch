@@ -26,6 +26,13 @@ env/
 *.safetensors
 checkpoints/
 dataset/
+shared_dataset/
+
+# Ablation outputs
+metrics_run_*.json
+ablation_results.json
+ablation_table.tex
+checkpoint_run_*
 
 # Logs
 *.log
@@ -40,6 +47,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Claude Code internals
+.claude/
 
 # Project-specific
 Prompts/
