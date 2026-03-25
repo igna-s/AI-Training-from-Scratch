@@ -511,6 +511,13 @@ def train(args: argparse.Namespace):
         world_size = 1
         is_main = True
 
+    # --- Optimizaciones globales GPU ---
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True  # Autotuner de kernels convolucionales
+        torch.set_float32_matmul_precision('high')  # TF32 en T4: ~2x throughput en matmuls
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     if is_main:
         print(f"Device: {device} | World size: {world_size}")
 
@@ -552,14 +559,17 @@ def train(args: argparse.Namespace):
         )
 
     sampler = DistributedSampler(dataset, shuffle=True) if is_ddp else None
+    use_workers = args.num_workers > 0 and not args.dry_run
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_per_gpu,
         sampler=sampler,
         shuffle=(sampler is None),
-        num_workers=args.num_workers,
-        pin_memory=use_amp,
+        num_workers=args.num_workers if not args.dry_run else 0,
+        pin_memory=(device.type == 'cuda'),  # Siempre pinned para GPU (DMA transfer)
         drop_last=True,
+        persistent_workers=use_workers,  # Evita re-fork de workers cada epoch
+        prefetch_factor=2 if use_workers else None,  # Prefetch 2 batches por worker
     )
 
     # --- Resume ---
@@ -594,7 +604,7 @@ def train(args: argparse.Namespace):
         for pg in optimizer.param_groups:
             pg['lr'] = lr * pg.get('lr_scale', 1.0)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)  # Más rápido que fill(0): libera memoria
         should_log = (step % args.log_every == 0) and is_main
 
         for micro_step in range(grad_accum):
@@ -728,8 +738,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--resume-from', type=str, default=None,
                    help="Ruta a checkpoint .pt para resumir")
 
-    # Workers
-    p.add_argument('--num-workers', type=int, default=2)
+    # Workers: 4 por GPU para saturar el pipeline de datos en T4
+    p.add_argument('--num-workers', type=int, default=4)
 
     return p.parse_args()
 

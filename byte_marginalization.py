@@ -25,6 +25,7 @@ import enum
 import json
 import math
 import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
 
@@ -501,13 +502,14 @@ class DistillationDatasetBuilder:
         # Descartar sobrante incompleto (no padear)
         return packed
 
-    def build(self):
+    def build(self, n_workers: int = 0):
         """
         Pipeline completo: lee logprobs -> procesa docs -> empaqueta -> guarda Parquet.
+        Paralelizado con ProcessPoolExecutor para saturar CPU multi-core.
 
         Flujo:
             1. Lee todos los logprobs_*.parquet de logprobs_dir
-            2. Procesa cada documento: bytes -> patches + teacher signals
+            2. Procesa cada documento en paralelo: bytes -> patches + teacher signals
             3. Empaqueta documentos en secuencias de seq_len patches
             4. Guarda como distillation_dataset.parquet con zstd
         """
@@ -516,26 +518,37 @@ class DistillationDatasetBuilder:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Cargar todos los Parquet de logprobs
         parquet_files = sorted(self.logprobs_dir.glob("logprobs_*.parquet"))
         if not parquet_files:
             print(f"No hay archivos logprobs_*.parquet en {self.logprobs_dir}")
             return
 
-        print(f"Procesando {len(parquet_files)} archivos de logprobs...")
+        if n_workers <= 0:
+            n_workers = max(1, (os.cpu_count() or 4) - 1)
 
-        all_docs = []
+        print(f"Procesando {len(parquet_files)} archivos de logprobs ({n_workers} workers)...")
+
+        # Cargar todos los records
+        all_records = []
         for pf in parquet_files:
             table = pq.read_table(pf)
             for i in range(len(table)):
-                record = {
+                all_records.append({
                     'doc_id': table['doc_id'][i].as_py(),
                     'text_bytes': table['text_bytes'][i].as_py(),
                     'positions': json.loads(table['positions'][i].as_py()),
-                }
-                processed = self.process_document(record)
-                if processed:
-                    all_docs.append(processed)
+                })
+
+        # Descomposición de datos: cada worker procesa un documento independiente
+        if n_workers > 1 and len(all_records) > 10:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                results = list(executor.map(
+                    self.process_document, all_records,
+                    chunksize=max(1, len(all_records) // (n_workers * 4)),
+                ))
+            all_docs = [r for r in results if r is not None]
+        else:
+            all_docs = [r for r in (self.process_document(rec) for rec in all_records) if r]
 
         print(f"Documentos procesados: {len(all_docs)}")
 

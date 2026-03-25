@@ -31,6 +31,9 @@ import json
 import argparse
 from pathlib import Path
 
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+
 import numpy as np
 import torch
 import pyarrow as pa
@@ -130,6 +133,7 @@ def extract_logprobs_single(
                 cand_bytes = [0]
 
             pos_top.append({
+                'token_id': cand_id,
                 'token': cand_tok,
                 'bytes': cand_bytes,
                 'logprob': cand_lp,
@@ -211,18 +215,61 @@ def run_logprob_extraction(
 # STEP 2a: Marginalize BPE→Byte
 # ============================================================
 
+def _marginalize_one_row(row: dict) -> dict:
+    """Marginalizar un doc BPE→byte. Diseñado para multiprocessing (sin estado compartido)."""
+    text_bytes = bytes(row['text_bytes'])
+    positions = json.loads(row['positions'])
+
+    byte_to_teacher = {}
+    for pos in positions:
+        byte_off = pos['byte_offset']
+        top_toks = pos['top_tokens']
+        byte_probs = {}
+        for item in top_toks:
+            if not item['bytes']:
+                continue
+            first_byte = item['bytes'][0]
+            prob = math.exp(item['logprob'])
+            byte_probs[first_byte] = byte_probs.get(first_byte, 0.0) + prob
+        total = sum(byte_probs.values())
+        if total > 0:
+            byte_probs = {k: v / total for k, v in byte_probs.items()}
+        byte_to_teacher[byte_off] = byte_probs
+
+    n_patches = len(text_bytes) // PATCH_SIZE
+    patches, targets, teacher_probs, teacher_mask = [], [], [], []
+    n_with_teacher = 0
+
+    for p_idx in range(n_patches - 1):
+        patch_start = p_idx * PATCH_SIZE
+        target_start = (p_idx + 1) * PATCH_SIZE
+        patches.append(list(text_bytes[patch_start:patch_start + PATCH_SIZE]))
+        targets.append(list(text_bytes[target_start:target_start + PATCH_SIZE]))
+        has_teacher = target_start in byte_to_teacher
+        if has_teacher:
+            bp = byte_to_teacher[target_start]
+            teacher_probs.append([bp.get(b, 0.0) for b in range(256)])
+            n_with_teacher += 1
+        else:
+            teacher_probs.append([0.0] * 256)
+        teacher_mask.append(has_teacher)
+
+    return {
+        'patches': patches, 'targets': targets,
+        'teacher_probs': teacher_probs, 'teacher_mask': teacher_mask,
+        'n_with_teacher': n_with_teacher,
+    }
+
+
 def build_byte_level_dataset(
     logprobs_parquet: str,
     output_dir: str,
     seq_len: int = SEQ_LEN_PATCHES,
+    n_workers: int = 0,
 ) -> dict:
     """
     Convert BPE logprobs to byte-level distributions.
-    Produces dataset for runs 08-11 (byte-level).
-
-    For each BPE token boundary that coincides with a patch boundary:
-        first-byte marginalization — sum P(token) for all tokens sharing
-        the same first byte to get P(byte_0 | context).
+    Parallelizado con ProcessPoolExecutor para saturar CPU multi-core.
 
     Output per sequence:
         patches:       [seq_len, 4] uint8
@@ -234,6 +281,11 @@ def build_byte_level_dataset(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logprobs_table = pq.read_table(logprobs_parquet)
+    rows = logprobs_table.to_pylist()
+
+    # Autodetectar workers si no se especifica
+    if n_workers <= 0:
+        n_workers = max(1, (os.cpu_count() or 4) - 1)
 
     all_patches = []
     all_targets = []
@@ -241,66 +293,37 @@ def build_byte_level_dataset(
     all_teacher_mask = []
     stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
 
-    for row in tqdm(logprobs_table.to_pylist(), desc="Marginalizing BPE→byte"):
-        text_bytes = bytes(row['text_bytes'])
-        positions = json.loads(row['positions'])
+    # Descomposición de datos: cada worker procesa un documento independiente
+    print(f"[Byte dataset] Marginalizing with {n_workers} workers...")
+    if n_workers > 1 and len(rows) > 10:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            results = list(tqdm(
+                executor.map(_marginalize_one_row, rows, chunksize=max(1, len(rows) // (n_workers * 4))),
+                total=len(rows), desc="Marginalizing BPE→byte (parallel)",
+            ))
+    else:
+        results = [_marginalize_one_row(r) for r in tqdm(rows, desc="Marginalizing BPE→byte")]
 
-        # Map byte_offset → marginalized byte distribution
-        byte_to_teacher = {}
-        for pos in positions:
-            byte_off = pos['byte_offset']
-            top_toks = pos['top_tokens']
+    # Aglomerar resultados y empaquetar en secuencias
+    for result in results:
+        all_patches.extend(result['patches'])
+        all_targets.extend(result['targets'])
+        all_teacher_probs.extend(result['teacher_probs'])
+        all_teacher_mask.extend(result['teacher_mask'])
+        stats['n_with_teacher'] += result['n_with_teacher']
+        stats['n_patches_total'] += len(result['patches'])
 
-            byte_probs = {}
-            for item in top_toks:
-                if not item['bytes']:
-                    continue
-                first_byte = item['bytes'][0]
-                prob = math.exp(item['logprob'])
-                byte_probs[first_byte] = byte_probs.get(first_byte, 0.0) + prob
-
-            total = sum(byte_probs.values())
-            if total > 0:
-                byte_probs = {k: v / total for k, v in byte_probs.items()}
-            byte_to_teacher[byte_off] = byte_probs
-
-        # Pack into patches of 4 bytes
-        n_patches = len(text_bytes) // PATCH_SIZE
-        for p_idx in range(n_patches - 1):
-            patch_start = p_idx * PATCH_SIZE
-            target_start = (p_idx + 1) * PATCH_SIZE
-
-            patch = list(text_bytes[patch_start:patch_start + PATCH_SIZE])
-            target = list(text_bytes[target_start:target_start + PATCH_SIZE])
-
-            has_teacher = target_start in byte_to_teacher
-            if has_teacher:
-                bp = byte_to_teacher[target_start]
-                teacher_dist = [bp.get(b, 0.0) for b in range(256)]
-                stats['n_with_teacher'] += 1
-            else:
-                teacher_dist = [0.0] * 256
-
-            all_patches.append(patch)
-            all_targets.append(target)
-            all_teacher_probs.append(teacher_dist)
-            all_teacher_mask.append(has_teacher)
-            stats['n_patches_total'] += 1
-
-            if len(all_patches) >= seq_len:
-                _save_byte_sequence(
-                    all_patches[:seq_len],
-                    all_targets[:seq_len],
-                    all_teacher_probs[:seq_len],
-                    all_teacher_mask[:seq_len],
-                    output_dir,
-                    stats['n_sequences'],
-                )
-                all_patches = all_patches[seq_len:]
-                all_targets = all_targets[seq_len:]
-                all_teacher_probs = all_teacher_probs[seq_len:]
-                all_teacher_mask = all_teacher_mask[seq_len:]
-                stats['n_sequences'] += 1
+        while len(all_patches) >= seq_len:
+            _save_byte_sequence(
+                all_patches[:seq_len], all_targets[:seq_len],
+                all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
+                output_dir, stats['n_sequences'],
+            )
+            all_patches = all_patches[seq_len:]
+            all_targets = all_targets[seq_len:]
+            all_teacher_probs = all_teacher_probs[seq_len:]
+            all_teacher_mask = all_teacher_mask[seq_len:]
+            stats['n_sequences'] += 1
 
     coverage = stats['n_with_teacher'] / max(stats['n_patches_total'], 1) * 100
     stats['coverage_pct'] = coverage
@@ -314,16 +337,19 @@ def build_byte_level_dataset(
 
 def _save_byte_sequence(patches, targets, teacher_probs, teacher_mask,
                         output_dir: Path, seq_idx: int) -> None:
-    """Save one byte-level sequence to a Parquet shard."""
+    """Save one byte-level sequence as a single Parquet row (flat arrays)."""
+    # Store the entire sequence (seq_len patches) as ONE row with flat arrays.
+    # Shapes: patches/targets → [seq_len*4], teacher_probs → [seq_len*256],
+    # teacher_mask → [seq_len]. The Dataset wrapper reshapes on load.
+    flat_patches = [b for p in patches for b in p]
+    flat_targets = [b for t in targets for b in t]
+    flat_probs = [v for row in teacher_probs for v in row]
+
     table = pa.table({
-        'patches': pa.array(
-            [bytes(p) for p in patches], type=pa.list_(pa.uint8())
-        ),
-        'targets': pa.array(
-            [bytes(t) for t in targets], type=pa.list_(pa.uint8())
-        ),
-        'teacher_probs': pa.array(teacher_probs),
-        'teacher_mask': pa.array(teacher_mask, type=pa.bool_()),
+        'patches':       pa.array([flat_patches], type=pa.list_(pa.uint8())),
+        'targets':       pa.array([flat_targets], type=pa.list_(pa.uint8())),
+        'teacher_probs': pa.array([flat_probs],   type=pa.list_(pa.float32())),
+        'teacher_mask':  pa.array([teacher_mask], type=pa.list_(pa.bool_())),
     })
     shard = seq_idx // 1000
     shard_path = output_dir / f"shard_{shard:04d}.parquet"
@@ -338,81 +364,145 @@ def _save_byte_sequence(patches, targets, teacher_probs, teacher_mask,
 # STEP 2b: Build BPE dataset
 # ============================================================
 
+def _tokenize_bpe_row(args: tuple) -> dict:
+    """Procesar un documento BPE -> tokens + teacher signals.
+    Diseñado para ProcessPoolExecutor (sin estado compartido).
+
+    Args:
+        args: (row_dict, tokenizer_name, seq_len, top_k)
+    Returns:
+        dict con ids, probs, top_ids, mask
+    """
+    row, tokenizer_name, seq_len_max, top_k = args
+
+    # Lazy import para workers (cada worker importa una vez)
+    from transformers import AutoTokenizer
+    if not hasattr(_tokenize_bpe_row, '_tokenizer'):
+        _tokenize_bpe_row._tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = _tokenize_bpe_row._tokenizer
+
+    text_bytes = bytes(row['text_bytes'])
+    positions = json.loads(row['positions'])
+    text = text_bytes.decode('utf-8', errors='replace')
+    enc = tokenizer(text, truncation=True, max_length=seq_len_max * 2)
+    ids = enc['input_ids']
+
+    result_ids = []
+    result_probs = []
+    result_top_ids = []
+    result_mask = []
+
+    for pos_idx, (token_id, pos_data) in enumerate(
+        zip(ids, positions[:len(ids)])
+    ):
+        top_toks = pos_data.get('top_tokens', [])
+        probs = [0.0] * top_k
+        top_ids = [0] * top_k
+        has_teacher = len(top_toks) > 0
+
+        if has_teacher:
+            for k_idx, item in enumerate(top_toks[:top_k]):
+                probs[k_idx] = math.exp(item['logprob'])
+                top_ids[k_idx] = item.get('token_id', 0)
+
+        result_ids.append(token_id)
+        result_probs.append(probs)
+        result_top_ids.append(top_ids)
+        result_mask.append(has_teacher)
+
+    return {
+        'ids': result_ids, 'probs': result_probs,
+        'top_ids': result_top_ids, 'mask': result_mask,
+    }
+
+
 def build_bpe_dataset(
     logprobs_parquet: str,
     output_dir: str,
     seq_len: int = SEQ_LEN_TOKENS,
+    n_workers: int = 0,
 ) -> dict:
     """
     Build BPE dataset from the same teacher logprobs.
     Produces dataset for runs 01-07 (BPE).
+    Paralelizado con ProcessPoolExecutor: cada worker tokeniza un doc independiente.
 
     Teacher logprobs are kept in BPE space (no marginalization).
     """
-    from transformers import AutoTokenizer
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(TEACHER_MODEL)
     logprobs_table = pq.read_table(logprobs_parquet)
+    rows = logprobs_table.to_pylist()
+
+    if n_workers <= 0:
+        n_workers = max(1, (os.cpu_count() or 4) - 1)
 
     stats = {'n_sequences': 0, 'n_tokens_total': 0}
     buffer_ids = []
     buffer_probs = []
+    buffer_top_ids = []
     buffer_mask = []
 
-    for row in tqdm(logprobs_table.to_pylist(), desc="Building BPE dataset"):
-        text_bytes = bytes(row['text_bytes'])
-        positions = json.loads(row['positions'])
+    # Descomposición de datos: cada worker procesa un documento independiente
+    print(f"[BPE dataset] Tokenizing with {n_workers} workers...")
+    work_args = [(row, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for row in rows]
 
-        text = text_bytes.decode('utf-8', errors='replace')
-        enc = tokenizer(text, truncation=True, max_length=seq_len * 2)
-        ids = enc['input_ids']
+    if n_workers > 1 and len(rows) > 10:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            results = list(tqdm(
+                executor.map(_tokenize_bpe_row, work_args,
+                             chunksize=max(1, len(rows) // (n_workers * 4))),
+                total=len(rows), desc="Building BPE dataset (parallel)",
+            ))
+    else:
+        results = [_tokenize_bpe_row(a) for a in tqdm(work_args, desc="Building BPE dataset")]
 
-        for pos_idx, (token_id, pos_data) in enumerate(
-            zip(ids, positions[:len(ids)])
-        ):
-            top_toks = pos_data.get('top_tokens', [])
-            probs = [0.0] * TOP_K_LOGPROBS
-            has_teacher = len(top_toks) > 0
+    # Aglomerar resultados y empaquetar en secuencias
+    for result in results:
+        buffer_ids.extend(result['ids'])
+        buffer_probs.extend(result['probs'])
+        buffer_top_ids.extend(result['top_ids'])
+        buffer_mask.extend(result['mask'])
+        stats['n_tokens_total'] += len(result['ids'])
 
-            if has_teacher:
-                for k_idx, item in enumerate(top_toks[:TOP_K_LOGPROBS]):
-                    probs[k_idx] = math.exp(item['logprob'])
-
-            buffer_ids.append(token_id)
-            buffer_probs.append(probs)
-            buffer_mask.append(has_teacher)
-            stats['n_tokens_total'] += 1
-
-            if len(buffer_ids) >= seq_len + 1:
-                _save_bpe_sequence(
-                    buffer_ids[:seq_len],
-                    buffer_ids[1:seq_len + 1],
-                    buffer_probs[:seq_len],
-                    buffer_mask[:seq_len],
-                    output_dir,
-                    stats['n_sequences'],
-                )
-                buffer_ids = buffer_ids[seq_len:]
-                buffer_probs = buffer_probs[seq_len:]
-                buffer_mask = buffer_mask[seq_len:]
-                stats['n_sequences'] += 1
+        while len(buffer_ids) >= seq_len + 1:
+            _save_bpe_sequence(
+                buffer_ids[:seq_len],
+                buffer_ids[1:seq_len + 1],
+                buffer_probs[:seq_len],
+                buffer_top_ids[:seq_len],
+                buffer_mask[:seq_len],
+                output_dir,
+                stats['n_sequences'],
+            )
+            buffer_ids = buffer_ids[seq_len:]
+            buffer_probs = buffer_probs[seq_len:]
+            buffer_top_ids = buffer_top_ids[seq_len:]
+            buffer_mask = buffer_mask[seq_len:]
+            stats['n_sequences'] += 1
 
     print(f"[BPE dataset] {stats['n_sequences']} sequences")
     _save_split_info(stats['n_sequences'], output_dir)
     return stats
 
 
-def _save_bpe_sequence(input_ids, labels, teacher_probs, teacher_mask,
-                       output_dir: Path, seq_idx: int) -> None:
-    """Save one BPE sequence to a Parquet shard."""
+def _save_bpe_sequence(input_ids, labels, teacher_probs, teacher_ids_top,
+                       teacher_mask, output_dir: Path, seq_idx: int) -> None:
+    """Save one BPE sequence as a single Parquet row (flat arrays).
+
+    teacher_probs and teacher_ids_top are stored flat ([seq_len * TOP_K])
+    so the Dataset wrapper can reshape them to [seq_len, TOP_K] on load.
+    """
+    flat_probs = [v for row in teacher_probs for v in row]
+    flat_ids = [v for row in teacher_ids_top for v in row]
+
     table = pa.table({
-        'input_ids': pa.array(input_ids, type=pa.int32()),
-        'labels': pa.array(labels, type=pa.int32()),
-        'teacher_probs_bpe': pa.array(teacher_probs),
-        'teacher_mask_bpe': pa.array(teacher_mask, type=pa.bool_()),
+        'input_ids':        pa.array([input_ids],  type=pa.list_(pa.int32())),
+        'labels':           pa.array([labels],     type=pa.list_(pa.int32())),
+        'teacher_probs_bpe': pa.array([flat_probs], type=pa.list_(pa.float32())),
+        'teacher_ids_bpe':  pa.array([flat_ids],   type=pa.list_(pa.int32())),
+        'teacher_mask_bpe': pa.array([teacher_mask], type=pa.list_(pa.bool_())),
     })
     shard = seq_idx // 1000
     shard_path = output_dir / f"shard_{shard:04d}.parquet"

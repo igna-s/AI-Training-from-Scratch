@@ -256,37 +256,34 @@ class TransformersTeacher:
         """
         import torch
 
-        # Tokenizar el texto completo de una vez (no incremental como Ollama).
-        # truncation=True corta a max_length si el texto es muy largo.
         inputs = self.tokenizer(text, return_tensors="pt", truncation=True,
                                 max_length=max_length)
         input_ids = inputs["input_ids"].to(self.model.device)
 
-        # Un solo forward pass produce logits para TODAS las posiciones.
-        # Ventaja sobre Ollama: O(1) forwards vs O(N) forwards.
         with torch.no_grad():
             outputs = self.model(input_ids)
             logits = outputs.logits  # [1, seq_len, vocab_size]
 
-        # log_softmax convierte logits crudos a log-probabilidades.
-        # Usar log-space evita underflow numerico con probabilidades muy chicas.
         log_probs = torch.log_softmax(logits[0], dim=-1)  # [seq_len, vocab]
+
+        # Vectorizado: extraer top-k para TODAS las posiciones de una vez
+        topk_values, topk_indices = log_probs.topk(self.top_k, dim=-1)  # [seq_len, top_k]
+
+        # Pre-decodificar todos los token IDs de una vez (batch decode)
+        all_top_ids = topk_indices.reshape(-1).tolist()
+        all_top_strs = [self.tokenizer.decode([tid]) for tid in all_top_ids]
 
         results = []
         tokens = input_ids[0].tolist()
         byte_pos = 0
 
         for i in range(len(tokens) - 1):
-            # Modelo autoregresivo: logits[i] predice token[i+1].
-            # Iteramos hasta len-1 porque el ultimo token no predice nada.
-            pos_logprobs = log_probs[i]  # [vocab_size]
-
-            # Top-k: guardar solo los k tokens mas probables (ahorra disco)
-            topk_values, topk_indices = pos_logprobs.topk(self.top_k)
-
             top_tokens = []
-            for val, idx in zip(topk_values.tolist(), topk_indices.tolist()):
-                token_str = self.tokenizer.decode([idx])
+            base = i * self.top_k
+            for k_idx in range(self.top_k):
+                idx = all_top_ids[base + k_idx]
+                val = topk_values[i, k_idx].item()
+                token_str = all_top_strs[base + k_idx]
                 token_bytes = list(token_str.encode('utf-8'))
                 top_tokens.append({
                     'token': token_str,
@@ -295,15 +292,8 @@ class TransformersTeacher:
                     'logprob': val,
                 })
 
-            # Reconstruir posicion en bytes: necesario para alinear con patches.
-            # El tokenizer BPE trabaja en tokens, pero el student trabaja en bytes.
             current_token_str = self.tokenizer.decode([tokens[i]])
             current_bytes = list(current_token_str.encode('utf-8'))
-
-            # byte_position = donde empieza el token PREDICHO (i+1),
-            # no el actual (i). La prediccion en posicion i aplica al
-            # siguiente token, cuyo primer byte esta en byte_pos + len(current).
-            # Este byte_position se usa despues para alinear con patch boundaries.
             predicted_byte_pos = byte_pos + len(current_bytes)
 
             results.append({
@@ -318,6 +308,77 @@ class TransformersTeacher:
             byte_pos = predicted_byte_pos
 
         return results
+
+    def extract_batch(
+        self,
+        texts: list[str],
+        max_length: int = 2048,
+    ) -> list[list[dict]]:
+        """
+        Forward pass batched: procesar multiples documentos en un solo forward.
+        Paralelismo de datos GPU: satura ancho de banda de memoria de T4.
+
+        Args:
+            texts: lista de textos a procesar
+            max_length: max tokens por texto
+
+        Returns:
+            Lista de resultados (uno por texto), cada uno como extract_full_sequence.
+        """
+        import torch
+
+        inputs = self.tokenizer(
+            texts, return_tensors="pt", truncation=True,
+            max_length=max_length, padding=True,
+        )
+        input_ids = inputs["input_ids"].to(self.model.device)
+        attention_mask = inputs["attention_mask"].to(self.model.device)
+
+        with torch.no_grad():
+            outputs = self.model(input_ids, attention_mask=attention_mask)
+            logits = outputs.logits  # [B, seq_len, vocab_size]
+
+        log_probs = torch.log_softmax(logits, dim=-1)  # [B, seq_len, vocab]
+
+        all_results = []
+        for b in range(len(texts)):
+            seq_len = attention_mask[b].sum().item()
+            tokens = input_ids[b, :seq_len].tolist()
+
+            topk_values, topk_indices = log_probs[b, :seq_len].topk(self.top_k, dim=-1)
+            all_top_ids = topk_indices.reshape(-1).tolist()
+            all_top_strs = [self.tokenizer.decode([tid]) for tid in all_top_ids]
+
+            results = []
+            byte_pos = 0
+            for i in range(len(tokens) - 1):
+                top_tokens = []
+                base = i * self.top_k
+                for k_idx in range(self.top_k):
+                    idx = all_top_ids[base + k_idx]
+                    val = topk_values[i, k_idx].item()
+                    token_str = all_top_strs[base + k_idx]
+                    token_bytes = list(token_str.encode('utf-8'))
+                    top_tokens.append({
+                        'token': token_str, 'token_id': idx,
+                        'bytes': token_bytes, 'logprob': val,
+                    })
+
+                current_token_str = self.tokenizer.decode([tokens[i]])
+                current_bytes = list(current_token_str.encode('utf-8'))
+                predicted_byte_pos = byte_pos + len(current_bytes)
+
+                results.append({
+                    'token_position': i, 'byte_position': predicted_byte_pos,
+                    'token_str': current_token_str, 'token_bytes': current_bytes,
+                    'top_tokens': top_tokens,
+                    'ground_truth_token_id': tokens[i + 1],
+                })
+                byte_pos = predicted_byte_pos
+
+            all_results.append(results)
+
+        return all_results
 
 
 # =============================================================================
@@ -553,49 +614,98 @@ def process_corpus(args: argparse.Namespace):
     total_docs = 0
     total_tokens = 0
 
+    # Para transformers: acumular docs y procesarlos en batch GPU
+    gpu_batch_size = getattr(args, 'gpu_batch_size', 4) if args.backend == 'transformers' else 1
+    pending_docs = []  # (doc_id, text) pares para batching
+
     for doc_id, text in iter_corpus(args.input):
         if doc_id in processed:
             continue
 
-        t0 = time.time()
+        if args.backend == 'transformers' and gpu_batch_size > 1:
+            # Acumular para batch GPU (paralelismo de datos)
+            pending_docs.append((doc_id, text))
+            if len(pending_docs) < gpu_batch_size:
+                continue
 
-        # Extraer logprobs
-        positions = teacher.extract_full_sequence(text)
-        if not positions:
-            print(f"  [SKIP] {doc_id}: sin logprobs")
+            # Procesar batch completo
+            t0 = time.time()
+            texts = [t for _, t in pending_docs]
+            batch_positions = teacher.extract_batch(texts)
+
+            for (did, txt), positions in zip(pending_docs, batch_positions):
+                if not positions:
+                    processed.add(did)
+                    continue
+                for pos in positions:
+                    pos['first_byte_probs'] = aligner.compute_first_byte_marginals(
+                        pos['top_tokens']
+                    )
+                batch_records.append({
+                    'doc_id': did,
+                    'text_bytes': txt.encode('utf-8'),
+                    'positions': positions,
+                })
+                processed.add(did)
+                total_docs += 1
+                total_tokens += len(positions)
+
+            elapsed = time.time() - t0
+            print(f"  [batch {total_docs}] {len(pending_docs)} docs, "
+                  f"{elapsed:.1f}s ({total_tokens/max(elapsed,0.01):.0f} tok/s)")
+            pending_docs = []
+        else:
+            # Secuencial (Ollama o single)
+            t0 = time.time()
+            positions = teacher.extract_full_sequence(text)
+            if not positions:
+                print(f"  [SKIP] {doc_id}: sin logprobs")
+                processed.add(doc_id)
+                continue
+
+            for pos in positions:
+                pos['first_byte_probs'] = aligner.compute_first_byte_marginals(
+                    pos['top_tokens']
+                )
+            batch_records.append({
+                'doc_id': doc_id,
+                'text_bytes': text.encode('utf-8'),
+                'positions': positions,
+            })
             processed.add(doc_id)
-            continue
+            total_docs += 1
+            total_tokens += len(positions)
+            elapsed = time.time() - t0
+            print(f"  [{total_docs}] {doc_id}: {len(positions)} tokens, "
+                  f"{elapsed:.1f}s ({len(positions)/max(elapsed,0.01):.0f} tok/s)")
 
-        # Calcular first-byte marginals para cada posicion.
-        # Convierte P(next_token) -> P(next_byte) tomando solo el primer byte
-        # de cada token candidato. Esto permite entrenar el student a nivel byte.
-        for pos in positions:
-            pos['first_byte_probs'] = aligner.compute_first_byte_marginals(
-                pos['top_tokens']
-            )
-
-        record = {
-            'doc_id': doc_id,
-            'text_bytes': text.encode('utf-8'),
-            'positions': positions,
-        }
-        batch_records.append(record)
-        processed.add(doc_id)
-
-        total_docs += 1
-        total_tokens += len(positions)
-        elapsed = time.time() - t0
-
-        print(f"  [{total_docs}] {doc_id}: {len(positions)} tokens, "
-              f"{elapsed:.1f}s ({len(positions)/max(elapsed,0.01):.0f} tok/s)")
-
-        # Guardar batch
+        # Guardar batch a disco
         if len(batch_records) >= batch_size:
             batch_file = output_dir / f"logprobs_{total_docs:06d}.parquet"
             save_to_parquet(batch_records, str(batch_file))
             save_progress(str(output_dir), processed)
             print(f"  -> Guardado {batch_file.name} ({len(batch_records)} docs)")
             batch_records = []
+
+    # Procesar docs pendientes del ultimo batch GPU
+    if pending_docs and args.backend == 'transformers':
+        texts = [t for _, t in pending_docs]
+        batch_positions = teacher.extract_batch(texts)
+        for (did, txt), positions in zip(pending_docs, batch_positions):
+            if not positions:
+                processed.add(did)
+                continue
+            for pos in positions:
+                pos['first_byte_probs'] = aligner.compute_first_byte_marginals(
+                    pos['top_tokens']
+                )
+            batch_records.append({
+                'doc_id': did, 'text_bytes': txt.encode('utf-8'),
+                'positions': positions,
+            })
+            processed.add(did)
+            total_docs += 1
+            total_tokens += len(positions)
 
     # Guardar sobrantes
     if batch_records:

@@ -212,14 +212,16 @@ def configure_cpu_threads(n_threads: int | None = None) -> int:
     Configurar numero optimo de threads para inferencia.
 
     Regla: usar N_performance_cores (no hyperthreading).
-    Para CPU de 4 cores (8 threads HT): usar 4, no 8.
+    Detecta cores fisicos reales via plataforma.
     """
     if n_threads is None:
         total = os.cpu_count() or 4
         if platform.machine() in ('arm64', 'aarch64'):
             n_threads = total  # ARM: todos son cores reales
         else:
-            n_threads = max(1, total // 2)  # x86: evitar hyperthreads
+            # x86: detectar cores fisicos reales
+            n_physical = _detect_physical_cores()
+            n_threads = n_physical if n_physical > 0 else max(1, total // 2)
 
     torch.set_num_threads(n_threads)
     try:
@@ -231,6 +233,36 @@ def configure_cpu_threads(n_threads: int | None = None) -> int:
     return n_threads
 
 
+def _detect_physical_cores() -> int:
+    """Detectar cores fisicos reales (sin hyperthreads). Multiplataforma."""
+    import subprocess
+    try:
+        if platform.system() == 'Windows':
+            # WMIC devuelve cores fisicos reales
+            out = subprocess.check_output(
+                'wmic cpu get NumberOfCores /value',
+                shell=True, text=True, timeout=5,
+            )
+            for line in out.strip().split('\n'):
+                if 'NumberOfCores' in line:
+                    return int(line.split('=')[1].strip())
+        elif platform.system() == 'Linux':
+            out = subprocess.check_output(
+                'lscpu -p=Core,Socket | grep -v "^#" | sort -u | wc -l',
+                shell=True, text=True, timeout=5,
+            )
+            return int(out.strip())
+        elif platform.system() == 'Darwin':
+            out = subprocess.check_output(
+                ['sysctl', '-n', 'hw.physicalcpu'],
+                text=True, timeout=5,
+            )
+            return int(out.strip())
+    except Exception:
+        pass
+    return 0  # fallback a os.cpu_count() // 2
+
+
 def set_thread_affinity(core_ids: list[int]) -> None:
     """
     Fijar proceso a cores especificos para estabilidad de L1/L2.
@@ -238,14 +270,30 @@ def set_thread_affinity(core_ids: list[int]) -> None:
     Cuando el OS mueve el proceso entre cores, L1/L2 per-core se invalida.
     Fijarlo mantiene el estado MLGRU caliente en cache.
 
-    Solo disponible en Linux (sched_setaffinity).
+    Soporta Linux (sched_setaffinity) y Windows (SetProcessAffinityMask).
     """
     try:
         os.sched_setaffinity(0, set(core_ids))
         print(f"[CPU opt] Thread affinity -> cores {core_ids}")
+        return
     except (AttributeError, OSError):
-        # No disponible en Windows/macOS
         pass
+
+    # Windows: usar SetProcessAffinityMask via ctypes
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetCurrentProcess()
+            # Bitmask: bit i = core i
+            mask = sum(1 << c for c in core_ids)
+            result = kernel32.SetProcessAffinityMask(handle, mask)
+            if result:
+                print(f"[CPU opt] Thread affinity (Windows) -> cores {core_ids}")
+            else:
+                print("[CPU opt] SetProcessAffinityMask fallo")
+        except Exception:
+            pass
 
 
 def compile_for_cpu_inference(model: CPU1ModelV2) -> CPU1ModelV2:
@@ -392,14 +440,29 @@ def hadamard_update_manual(
 # BLOQUE 3 — Loop de Generacion Optimizado
 # ===========================================================================
 
-def _nucleus_sample(probs: Tensor, p: float) -> int:
-    """Nucleus (top-p) sampling sin allocaciones extra."""
-    sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-    cumsum = torch.cumsum(sorted_probs, dim=0)
-    mask = cumsum - sorted_probs > p
-    sorted_probs[mask] = 0.0
-    sorted_probs /= sorted_probs.sum()
-    return sorted_idx[torch.multinomial(sorted_probs, 1)].item()
+def _nucleus_sample(
+    probs: Tensor,
+    p: float,
+    sorted_buf: Tensor | None = None,
+    idx_buf: Tensor | None = None,
+) -> int:
+    """Nucleus (top-p) sampling con buffers pre-alocados opcionales.
+
+    Args:
+        probs: [V] probabilidades
+        p: threshold de nucleus
+        sorted_buf: [V] buffer pre-alocado para sorted probs (evita alloc)
+        idx_buf: [V] buffer pre-alocado para sorted indices (evita alloc)
+    """
+    if sorted_buf is not None and idx_buf is not None:
+        torch.sort(probs, descending=True, out=(sorted_buf, idx_buf))
+    else:
+        sorted_buf, idx_buf = torch.sort(probs, descending=True)
+    cumsum = torch.cumsum(sorted_buf, dim=0)
+    mask = cumsum - sorted_buf > p
+    sorted_buf[mask] = 0.0
+    sorted_buf /= sorted_buf.sum()
+    return idx_buf[torch.multinomial(sorted_buf.unsqueeze(0), 1).squeeze()].item()
 
 
 class CPU1InferenceEngine:
@@ -431,13 +494,18 @@ class CPU1InferenceEngine:
         self.scales = pack_all_bitlinear_to_int8(model)
 
         # Bloque 2: compilador
+        # Usar TODOS los cores fisicos detectados para maximizar throughput.
+        # El cap anterior de 4 desperdiciaba cores en CPUs con 6+ cores (ej: i7-10th gen).
         n_threads = configure_cpu_threads()
-        set_thread_affinity(list(range(min(n_threads, 4))))
+        set_thread_affinity(list(range(n_threads)))
 
         # Pre-alocar buffers reutilizables (sin alloc en generate loop)
         self.hidden_states = alloc_hidden_states(n_layers, d_model)
         self.logits_buf = torch.zeros(4, VOCAB_SIZE, dtype=torch.float32)
         self.probs_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
+        # Buffers para nucleus sampling (evitar alloc por token)
+        self.sorted_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
+        self.idx_buf = torch.zeros(VOCAB_SIZE, dtype=torch.long)
 
         # Compilar (beneficia prefill; generate usa forward_with_prefetch)
         # Si torch.compile falla en runtime, caemos a eager mode
@@ -477,15 +545,12 @@ class CPU1InferenceEngine:
             h.zero_()
 
     def _bytes_to_patches(self, data: bytes) -> Tensor:
-        """Convertir bytes a patches de 4. Padding con 0 si no es multiplo."""
+        """Convertir bytes a patches de 4. Padding con 0 si no es multiplo. Vectorizado."""
         padded = data + b'\x00' * ((-len(data)) % 4)
-        n_patches = len(padded) // 4
-        patches = []
-        for i in range(n_patches):
-            patches.append(list(padded[i * 4:(i + 1) * 4]))
-        return torch.tensor(patches, dtype=torch.long).unsqueeze(0)  # [1, S, 4]
+        t = torch.frombuffer(bytearray(padded), dtype=torch.uint8)
+        return t.reshape(1, -1, 4).long()  # [1, S, 4]
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def prefill(self, prompt_bytes: bytes) -> None:
         """
         Procesar el prompt completo y actualizar hidden states.
@@ -494,7 +559,7 @@ class CPU1InferenceEngine:
         patches = self._bytes_to_patches(prompt_bytes)
         _, self.hidden_states = self.model(patches, self.hidden_states)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(
         self,
         prompt_bytes: bytes,
@@ -555,7 +620,7 @@ class CPU1InferenceEngine:
                 logits = head(x_normed).squeeze(1).squeeze(0)  # [1, 1, 256] -> [256]
                 self.logits_buf[h_idx].copy_(logits)
 
-            # Sampling sin allocar tensores nuevos
+            # Sampling sin allocar tensores nuevos (buffers pre-alocados)
             next_bytes = []
             for h_idx in range(4):
                 if temperature == 0:
@@ -567,7 +632,11 @@ class CPU1InferenceEngine:
                         out=self.probs_buf,
                     )
                     if top_p < 1.0:
-                        next_byte = _nucleus_sample(self.probs_buf, top_p)
+                        next_byte = _nucleus_sample(
+                            self.probs_buf, top_p,
+                            sorted_buf=self.sorted_buf,
+                            idx_buf=self.idx_buf,
+                        )
                     else:
                         next_byte = torch.multinomial(
                             self.probs_buf.unsqueeze(0), 1

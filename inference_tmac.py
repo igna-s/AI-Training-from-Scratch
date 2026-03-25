@@ -386,9 +386,9 @@ class CPU1InferenceEngineLUT(CPU1InferenceEngine):
         # Alinear todos los pesos
         align_all_weights(model)
 
-        # Configurar threads
+        # Configurar threads — usar TODOS los cores fisicos
         n_threads = configure_cpu_threads()
-        set_thread_affinity(list(range(min(n_threads, 4))))
+        set_thread_affinity(list(range(n_threads)))
 
         # Pre-alocar buffers reutilizables
         self.hidden_states = alloc_hidden_states(n_layers, d_model)

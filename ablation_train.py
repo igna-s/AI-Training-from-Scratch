@@ -20,6 +20,8 @@ import math
 import json
 import time
 import argparse
+import contextlib
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -66,9 +68,88 @@ class DryRunDataset(Dataset):
             sample = {'input_ids': input_ids, 'labels': labels}
             if self.sig == 'distillation':
                 sample['teacher_probs_bpe'] = torch.zeros(self.seq_len, 64)
+                sample['teacher_ids_bpe'] = torch.zeros(
+                    self.seq_len, 64, dtype=torch.long
+                )
                 sample['teacher_mask_bpe'] = torch.zeros(
                     self.seq_len, dtype=torch.bool
                 )
+        return sample
+
+
+class ByteLevelDataset(Dataset):
+    """Wraps a HuggingFace byte-level dataset.
+
+    Each Parquet row stores a full sequence as flat arrays:
+      patches/targets  → [seq_len * patch_size] uint8, reshaped to [seq_len, patch_size]
+      teacher_probs    → [seq_len * 256] float32, reshaped to [seq_len, 256]
+      teacher_mask     → [seq_len] bool
+    """
+
+    def __init__(self, hf_dataset, config: dict):
+        self.ds = hf_dataset
+        self.seq_len = config['seq_len']
+        self.patch_size = config.get('patch_size', 4)
+        self.has_teacher = config['training_signal'] == 'distillation'
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        row = self.ds[idx]
+        S, P = self.seq_len, self.patch_size
+        patches = torch.tensor(row['patches'], dtype=torch.long).reshape(S, P)
+        targets = torch.tensor(row['targets'], dtype=torch.long).reshape(S, P)
+        sample = {'patches': patches, 'targets': targets}
+        if self.has_teacher and 'teacher_probs' in row:
+            sample['teacher_probs'] = (
+                torch.tensor(row['teacher_probs'], dtype=torch.float32)
+                .reshape(S, 256)
+            )
+            sample['teacher_mask'] = torch.tensor(
+                row['teacher_mask'], dtype=torch.bool
+            )
+        return sample
+
+
+class BPEDataset(Dataset):
+    """Wraps a HuggingFace BPE dataset.
+
+    Each Parquet row stores a full sequence as flat arrays:
+      input_ids/labels      → [seq_len] int32
+      teacher_probs_bpe     → [seq_len * TOP_K] float32, reshaped to [seq_len, TOP_K]
+      teacher_ids_bpe       → [seq_len * TOP_K] int32,   reshaped to [seq_len, TOP_K]
+      teacher_mask_bpe      → [seq_len] bool
+    """
+    TOP_K = 64
+
+    def __init__(self, hf_dataset, config: dict):
+        self.ds = hf_dataset
+        self.seq_len = config['seq_len']
+        self.has_teacher = config['training_signal'] == 'distillation'
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        row = self.ds[idx]
+        S, K = self.seq_len, self.TOP_K
+        sample = {
+            'input_ids': torch.tensor(row['input_ids'], dtype=torch.long),
+            'labels':    torch.tensor(row['labels'],    dtype=torch.long),
+        }
+        if self.has_teacher and 'teacher_probs_bpe' in row:
+            sample['teacher_probs_bpe'] = (
+                torch.tensor(row['teacher_probs_bpe'], dtype=torch.float32)
+                .reshape(S, K)
+            )
+            sample['teacher_ids_bpe'] = (
+                torch.tensor(row['teacher_ids_bpe'], dtype=torch.long)
+                .reshape(S, K)
+            )
+            sample['teacher_mask_bpe'] = torch.tensor(
+                row['teacher_mask_bpe'], dtype=torch.bool
+            )
         return sample
 
 
@@ -82,21 +163,13 @@ def load_ablation_dataset(config: dict, split: str = 'train',
 
     repo = config['dataset_repo']
     tok = config['tokenization']
-    sig = config['training_signal']
-
     subset = 'bpe_tokenized' if tok == 'bpe' else 'byte_marginalized'
     ds = load_dataset(repo, subset, split=split)
 
-    if sig == 'ce_only':
-        teacher_cols = (
-            ['teacher_probs_bpe', 'teacher_mask_bpe'] if tok == 'bpe'
-            else ['teacher_probs', 'teacher_mask']
-        )
-        for col in teacher_cols:
-            if col in ds.column_names:
-                ds = ds.remove_columns([col])
-
-    return ds
+    if tok == 'byte':
+        return ByteLevelDataset(ds, config)
+    else:
+        return BPEDataset(ds, config)
 
 
 # ============================================================
@@ -109,6 +182,7 @@ def compute_loss(
     teacher_probs,
     teacher_mask,
     config: dict,
+    teacher_ids: Tensor | None = None,
 ) -> Tensor:
     """
     Compute loss based on run configuration.
@@ -118,6 +192,10 @@ def compute_loss(
         Heads 1-3: CE only
     For BPE (1 head):
         KL + CE where teacher exists, CE elsewhere
+
+    Args:
+        teacher_ids: [B, S, K] long — token IDs for the top-K BPE teacher probs.
+                     Required when tok='bpe' and sig='distillation'.
     """
     tok = config['tokenization']
     sig = config['training_signal']
@@ -136,9 +214,19 @@ def compute_loss(
             reduction='none',
         ).reshape(targets.shape)
 
-        if sig == 'distillation' and teacher_probs is not None and teacher_mask is not None:
+        if (sig == 'distillation'
+                and teacher_probs is not None
+                and teacher_mask is not None
+                and teacher_ids is not None):
+            # Expand sparse top-K teacher distribution to full vocab.
+            # teacher_probs: [B, S, K], teacher_ids: [B, S, K]
+            teacher_full = torch.zeros_like(logits)  # [B, S, vocab_size]
+            teacher_full.scatter_(2, teacher_ids, teacher_probs.to(logits.dtype))
+            # Normalize — top-K probs don't necessarily sum to 1
+            teacher_full = teacher_full / teacher_full.sum(-1, keepdim=True).clamp(min=1e-8)
+
             student_log_T = F.log_softmax(logits / T, dim=-1)
-            teacher_T = (teacher_probs / T).softmax(dim=-1) if teacher_probs.shape[-1] == vocab_size else teacher_probs
+            teacher_T = (teacher_full / T).softmax(dim=-1)
             kl = F.kl_div(
                 student_log_T, teacher_T,
                 reduction='none', log_target=False,
@@ -201,6 +289,7 @@ def get_lr(step: int, config: dict) -> float:
 def measure_cpu_throughput(model: nn.Module, config: dict,
                            n_tokens: int = 100) -> float:
     """Measure tokens/sec on CPU for this model variant."""
+    original_device = next(model.parameters()).device
     model_cpu = model.cpu()
     model_cpu.eval()
     tok = config['tokenization']
@@ -222,6 +311,7 @@ def measure_cpu_throughput(model: nn.Module, config: dict,
             model_cpu(dummy)
     t1 = time.perf_counter()
 
+    model.to(original_device)
     return n_tokens / (t1 - t0)
 
 
@@ -253,14 +343,20 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
 
             t_probs = batch.get('teacher_probs', batch.get('teacher_probs_bpe'))
             t_mask = batch.get('teacher_mask', batch.get('teacher_mask_bpe'))
+            t_ids = batch.get('teacher_ids_bpe')
             if t_probs is not None:
                 t_probs = t_probs.to(device)
             if t_mask is not None:
                 t_mask = t_mask.to(device)
+            if t_ids is not None:
+                t_ids = t_ids.to(device)
 
-            with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+            amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
+                       if device.type == 'cuda' else nullcontext())
+            with amp_ctx:
                 logits, _ = model(x)
-                loss = compute_loss(logits, targets, t_probs, t_mask, config)
+                loss = compute_loss(logits, targets, t_probs, t_mask, config,
+                                    teacher_ids=t_ids)
 
             total_loss += loss.item()
             n_batches += 1
@@ -356,6 +452,13 @@ def train_run(run_name: str, dry_run: bool = False,
     torch.manual_seed(config['seed'])
     device = torch.device('cpu') if dry_run else torch.device(f'cuda:{local_rank}')
 
+    # Optimizaciones globales GPU (T4)
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')  # TF32: ~2x throughput matmuls
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     if local_rank == 0:
         print(f"\n{'=' * 60}")
         print(f"Run: {run_name}")
@@ -363,7 +466,9 @@ def train_run(run_name: str, dry_run: bool = False,
         print(f"Device: {device}")
         print(f"{'=' * 60}\n")
 
-    # Build model
+    # Build model — activar gradient checkpointing para ahorrar VRAM en T4
+    if not dry_run:
+        config['use_gradient_checkpointing'] = True
     model = build_ablation_model(config).to(device)
     if use_ddp:
         model = DDP(model, device_ids=[local_rank])
@@ -377,17 +482,22 @@ def train_run(run_name: str, dry_run: bool = False,
         DistributedSampler(train_ds, shuffle=True, seed=config['seed'])
         if use_ddp else None
     )
+    n_workers = 0 if dry_run else 4  # 4 workers: paralelismo de datos para saturar GPU
     train_loader = DataLoader(
         train_ds,
         batch_size=config['batch_per_gpu'],
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        num_workers=0 if dry_run else 2,
-        pin_memory=not dry_run,
+        num_workers=n_workers,
+        pin_memory=(device.type == 'cuda'),  # DMA transfer GPU sin copia extra
+        persistent_workers=(n_workers > 0),  # Evitar re-fork cada epoch
+        prefetch_factor=2 if n_workers > 0 else None,  # Prefetch 2 batches/worker
+        drop_last=True,  # Evitar batches irregulares que causan DDP hangs
     )
 
     # Optimizer with per-group weight decay
     bitlinear_params = []
+    head_params = []
     other_params = []
     for name, p in model.named_parameters():
         if not p.requires_grad:
@@ -398,12 +508,16 @@ def train_run(run_name: str, dry_run: bool = False,
                                  'q_proj', 'k_proj', 'v_proj', 'o_proj']
         ):
             bitlinear_params.append(p)
+        elif 'heads.' in name and 'proj.weight' in name:
+            head_params.append(p)
         else:
             other_params.append(p)
 
     optimizer = torch.optim.AdamW([
         {'params': bitlinear_params,
          'weight_decay': config['weight_decay_bitlinear']},
+        {'params': head_params,
+         'weight_decay': config['weight_decay_heads']},
         {'params': other_params,
          'weight_decay': 0.0},
     ], lr=config['lr'], betas=(0.9, 0.95))
@@ -411,53 +525,79 @@ def train_run(run_name: str, dry_run: bool = False,
     use_amp = not dry_run and device.type == 'cuda'
     scaler = torch.amp.GradScaler() if use_amp else None
 
+    # torch.compile para training: fusiona kernels, reduce overhead de lanzamiento CUDA
+    # En T4 con modelos ~50M params, ganancia tipica 10-20% throughput.
+    # PyTorch 2.x recomienda: DDP primero, compile despues (compile wrappea DDP).
+    if device.type == 'cuda' and not dry_run:
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            if local_rank == 0:
+                print("[Opt] torch.compile enabled for training")
+        except Exception as e:
+            if local_rank == 0:
+                print(f"[Opt] torch.compile failed ({e}), using eager mode")
+
     # Training loop
     model.train()
-    step = 0
+    optim_step = 0
+    micro_step = 0
     losses = []
     tok = config['tokenization']
     accum_steps = config['gradient_accumulation_steps']
     total_steps = config['total_steps']
     t_start = time.time()
 
-    while step < total_steps:
+    while optim_step < total_steps:
         for batch in train_loader:
-            if step >= total_steps:
+            if optim_step >= total_steps:
                 break
 
-            # Unpack batch
+            # Unpack batch con non_blocking para solapar transfer CPU->GPU
             if tok == 'byte':
-                x = batch['patches'].to(device)
-                targets = batch['targets'].to(device)
+                x = batch['patches'].to(device, non_blocking=True)
+                targets = batch['targets'].to(device, non_blocking=True)
             else:
-                x = batch['input_ids'].to(device)
-                targets = batch['labels'].to(device)
+                x = batch['input_ids'].to(device, non_blocking=True)
+                targets = batch['labels'].to(device, non_blocking=True)
 
             t_probs = batch.get('teacher_probs', batch.get('teacher_probs_bpe'))
             t_mask = batch.get('teacher_mask', batch.get('teacher_mask_bpe'))
+            t_ids = batch.get('teacher_ids_bpe')
             if t_probs is not None:
-                t_probs = t_probs.to(device)
+                t_probs = t_probs.to(device, non_blocking=True)
             if t_mask is not None:
-                t_mask = t_mask.to(device)
+                t_mask = t_mask.to(device, non_blocking=True)
+            if t_ids is not None:
+                t_ids = t_ids.to(device, non_blocking=True)
 
-            # Forward
-            ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
-                   if use_amp else torch.no_grad().__class__())
-            if use_amp:
-                ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16)
-                with ctx:
+            # no_sync() evita all-reduce en micro-steps intermedios.
+            # CRITICO para 2xT4 PCIe: sin esto, cada micro-step sincroniza
+            # gradientes por PCIe (~12 GB/s), desperdiciando ~50% del bandwidth.
+            # Solo el ultimo micro-step hace all-reduce (suma gradientes de ambas GPUs).
+            is_last_micro = (micro_step % accum_steps == accum_steps - 1)
+            sync_ctx = (contextlib.nullcontext()
+                        if (is_last_micro or not use_ddp)
+                        else model.no_sync())
+
+            with sync_ctx:
+                amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
+                           if use_amp else contextlib.nullcontext())
+                with amp_ctx:
                     logits, _ = model(x)
-                    loss = compute_loss(logits, targets, t_probs, t_mask, config)
+                    loss = compute_loss(logits, targets, t_probs, t_mask, config,
+                                        teacher_ids=t_ids)
                     loss = loss / accum_steps
-                scaler.scale(loss).backward()
-            else:
-                logits, _ = model(x)
-                loss = compute_loss(logits, targets, t_probs, t_mask, config)
-                loss = loss / accum_steps
-                loss.backward()
+
+                if use_amp:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+
+            losses.append(loss.item() * accum_steps)
+            micro_step += 1
 
             # Optimizer step at accumulation boundary
-            if (step + 1) % accum_steps == 0:
+            if micro_step % accum_steps == 0:
                 if use_amp:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(
@@ -470,27 +610,26 @@ def train_run(run_name: str, dry_run: bool = False,
                         model.parameters(), config['grad_clip']
                     )
                     optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
+                optim_step += 1
                 for pg in optimizer.param_groups:
-                    pg['lr'] = get_lr(step, config)
+                    pg['lr'] = get_lr(optim_step, config)
 
-            losses.append(loss.item() * accum_steps)
+                if optim_step % 500 == 0 and local_rank == 0:
+                    avg_loss = sum(losses[-100:]) / min(100, len(losses))
+                    elapsed = time.time() - t_start
+                    print(f"Step {optim_step:5d}/{total_steps} | "
+                          f"Loss: {avg_loss:.4f} | "
+                          f"LR: {get_lr(optim_step, config):.2e} | "
+                          f"Time: {elapsed:.0f}s")
 
-            if step % 500 == 0 and local_rank == 0:
-                avg_loss = sum(losses[-100:]) / min(100, len(losses))
-                elapsed = time.time() - t_start
-                print(f"Step {step:5d}/{total_steps} | "
-                      f"Loss: {avg_loss:.4f} | "
-                      f"LR: {get_lr(step, config):.2e} | "
-                      f"Time: {elapsed:.0f}s")
-
-            # Save periodic checkpoint
-            if (step > 0 and step % config['save_every_steps'] == 0
-                    and local_rank == 0 and not dry_run):
-                save_checkpoint(model, optimizer, run_name, {}, config, step)
-
-            step += 1
+                # Save periodic checkpoint
+                if (optim_step > 0
+                        and optim_step % config['save_every_steps'] == 0
+                        and local_rank == 0 and not dry_run):
+                    save_checkpoint(model, optimizer, run_name, {},
+                                    config, optim_step)
 
     # Final evaluation
     if local_rank == 0:
@@ -498,7 +637,7 @@ def train_run(run_name: str, dry_run: bool = False,
 
         if not dry_run:
             save_checkpoint(model, optimizer, run_name, val_metrics,
-                            config, step)
+                            config, optim_step)
 
         # Save metrics JSON
         metrics_path = f"metrics_{run_name}.json"

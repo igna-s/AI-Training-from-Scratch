@@ -285,12 +285,13 @@ class MatMulFreeTokenMixer(nn.Module):
         g = torch.sigmoid(self.output_proj(x))    # [B, S, D]
 
         # Scan temporal: h_t = f_t * h_{t-1} + (1 - f_t) * c_t
-        outputs = []
+        # torch.lerp(c, h, f) = c + f*(h-c) = f*h + (1-f)*c — una sola op vectorizada
+        outputs = torch.empty_like(f)  # [B, S, D] pre-alocado
         for t in range(S):
-            h = f[:, t] * h + (1 - f[:, t]) * c[:, t]
-            outputs.append(g[:, t] * h)
+            h = torch.lerp(c[:, t], h, f[:, t])
+            outputs[:, t] = g[:, t] * h
 
-        out = torch.stack(outputs, dim=1)  # [B, S, D]
+        out = outputs  # ya es [B, S, D], sin torch.stack
 
         # FPResidual en paralelo (lee x, no out)
         out = out + self.fp_residual(x)
@@ -312,7 +313,7 @@ class MatMulFreeTokenMixer(nn.Module):
         c = F.silu(self.cand_proj(x_3d)).squeeze(1)            # [B, D]
         g = torch.sigmoid(self.output_proj(x_3d)).squeeze(1)   # [B, D]
 
-        h_new = f * h + (1 - f) * c
+        h_new = torch.lerp(c, h, f)  # f*h + (1-f)*c en una sola op
         o = g * h_new
 
         fp_out = self.fp_residual(x_3d).squeeze(1)  # [B, D]
@@ -577,6 +578,7 @@ class CPU1ModelV2(nn.Module):
 def bytes_to_patches(raw: bytes) -> Tensor:
     """
     Convierte bytes crudos a patches de 4 bytes.
+    Vectorizado: sin loops Python.
 
     Args:
         raw: bytes de entrada
@@ -587,13 +589,9 @@ def bytes_to_patches(raw: bytes) -> Tensor:
     pad = (PATCH_SIZE - n % PATCH_SIZE) % PATCH_SIZE
     raw = raw + b'\x00' * pad
 
-    n_patches = len(raw) // PATCH_SIZE
-    patches = []
-    for i in range(n_patches):
-        chunk = raw[i * PATCH_SIZE:(i + 1) * PATCH_SIZE]
-        patches.append(list(chunk))
-
-    return torch.tensor(patches, dtype=torch.long).unsqueeze(0)
+    # Vectorizado: bytes -> tensor -> reshape directo
+    t = torch.frombuffer(bytearray(raw), dtype=torch.uint8)
+    return t.reshape(1, -1, PATCH_SIZE).long()
 
 
 # =============================================================================

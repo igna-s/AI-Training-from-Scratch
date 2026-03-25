@@ -132,12 +132,13 @@ class AblationMLGRU(nn.Module):
         c = F.silu(self.cand_proj(x))
         g = torch.sigmoid(self.output_proj(x))
 
-        outputs = []
+        # torch.lerp(c, h, f) = f*h + (1-f)*c — una sola op vectorizada, sin temporales
+        outputs = torch.empty_like(f)  # [B, S, D] pre-alocado
         for t in range(S):
-            h = f[:, t] * h + (1 - f[:, t]) * c[:, t]
-            outputs.append(g[:, t] * h)
+            h = torch.lerp(c[:, t], h, f[:, t])
+            outputs[:, t] = g[:, t] * h
 
-        out = torch.stack(outputs, dim=1)
+        out = outputs  # ya es [B, S, D], sin torch.stack
         if self.fp_residual is not None:
             out = out + self.fp_residual(x)
         return out, h
