@@ -54,11 +54,11 @@ class DryRunDataset(Dataset):
         return self.n_samples
 
     def __getitem__(self, idx):
-        if self.tok == 'byte':
+        if self.tok in ('byte', 'byte_dynamic'):
             patches = torch.randint(0, 256, (self.seq_len, 4))
             targets = torch.randint(0, 256, (self.seq_len, 4))
             sample = {'patches': patches, 'targets': targets}
-            if self.sig == 'distillation':
+            if self.sig in ('distillation', 'distillation_then_ce'):
                 sample['teacher_probs'] = torch.zeros(self.seq_len, 256)
                 sample['teacher_mask'] = torch.zeros(self.seq_len, dtype=torch.bool)
         else:
@@ -90,7 +90,7 @@ class ByteLevelDataset(Dataset):
         self.ds = hf_dataset
         self.seq_len = config['seq_len']
         self.patch_size = config.get('patch_size', 4)
-        self.has_teacher = config['training_signal'] == 'distillation'
+        self.has_teacher = config['training_signal'] in ('distillation', 'distillation_then_ce')
 
     def __len__(self):
         return len(self.ds)
@@ -126,7 +126,7 @@ class BPEDataset(Dataset):
     def __init__(self, hf_dataset, config: dict):
         self.ds = hf_dataset
         self.seq_len = config['seq_len']
-        self.has_teacher = config['training_signal'] == 'distillation'
+        self.has_teacher = config['training_signal'] in ('distillation', 'distillation_then_ce')
 
     def __len__(self):
         return len(self.ds)
@@ -166,7 +166,7 @@ def load_ablation_dataset(config: dict, split: str = 'train',
     subset = 'bpe_tokenized' if tok == 'bpe' else 'byte_marginalized'
     ds = load_dataset(repo, subset, split=split)
 
-    if tok == 'byte':
+    if tok in ('byte', 'byte_dynamic'):
         return ByteLevelDataset(ds, config)
     else:
         return BPEDataset(ds, config)
@@ -214,7 +214,7 @@ def compute_loss(
             reduction='none',
         ).reshape(targets.shape)
 
-        if (sig == 'distillation'
+        if (sig in ('distillation', 'distillation_then_ce')
                 and teacher_probs is not None
                 and teacher_mask is not None
                 and teacher_ids is not None):
@@ -243,7 +243,7 @@ def compute_loss(
         # Import distillation_loss from the existing train.py
         from train import distillation_loss
 
-        if sig == 'distillation' and teacher_probs is not None:
+        if sig in ('distillation', 'distillation_then_ce') and teacher_probs is not None:
             loss, _ = distillation_loss(
                 student_logits, targets,
                 teacher_probs, teacher_mask,
@@ -294,7 +294,7 @@ def measure_cpu_throughput(model: nn.Module, config: dict,
     model_cpu.eval()
     tok = config['tokenization']
 
-    if tok == 'byte':
+    if tok in ('byte', 'byte_dynamic'):
         dummy = torch.zeros(1, 1, 4, dtype=torch.long)
     else:
         dummy = torch.zeros(1, 1, dtype=torch.long)
@@ -334,7 +334,7 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
             if n_batches >= 100:
                 break
 
-            if tok == 'byte':
+            if tok in ('byte', 'byte_dynamic'):
                 x = batch['patches'].to(device)
                 targets = batch['targets'].to(device)
             else:
@@ -354,7 +354,11 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
             amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
                        if device.type == 'cuda' else nullcontext())
             with amp_ctx:
-                logits, _ = model(x)
+                result = model(x)
+                if len(result) == 3:
+                    logits, _, _ = result
+                else:
+                    logits, _ = result
                 loss = compute_loss(logits, targets, t_probs, t_mask, config,
                                     teacher_ids=t_ids)
 
@@ -428,9 +432,12 @@ def save_checkpoint(model: nn.Module, optimizer, run_name: str,
 # ============================================================
 
 def train_run(run_name: str, dry_run: bool = False,
-              total_steps_override: int | None = None) -> dict:
+              total_steps_override: int | None = None,
+              phase: int = 1,
+              phase1_ckpt: str | None = None) -> dict:
     """Train one ablation run. Returns final metrics."""
     config = get_run_config(run_name)
+    config['_current_phase'] = phase
 
     if total_steps_override is not None:
         config['total_steps'] = total_steps_override
@@ -470,6 +477,24 @@ def train_run(run_name: str, dry_run: bool = False,
     if not dry_run:
         config['use_gradient_checkpointing'] = True
     model = build_ablation_model(config).to(device)
+
+    # Phase 2: load Phase 1 checkpoint, activate DeleteGate, freeze EmbAligner
+    if phase == 2 and phase1_ckpt:
+        if local_rank == 0:
+            print(f"[Phase 2] Loading Phase 1 checkpoint: {phase1_ckpt}")
+        ckpt = torch.load(phase1_ckpt, map_location='cpu', weights_only=False)
+        raw_model = model
+        raw_model.load_state_dict(ckpt['model_state_dict'], strict=False)
+        if hasattr(raw_model, 'delete_gate'):
+            raw_model.delete_gate.set_elimination_rate(
+                config.get('target_elimination', 0.4)
+            )
+        if hasattr(raw_model, 'embedding_aligner'):
+            for p in raw_model.embedding_aligner.parameters():
+                p.requires_grad = False
+        if local_rank == 0:
+            print(f"[Phase 2] DeleteGate active, EmbAligner frozen")
+
     if use_ddp:
         model = DDP(model, device_ids=[local_rank])
 
@@ -553,7 +578,7 @@ def train_run(run_name: str, dry_run: bool = False,
                 break
 
             # Unpack batch con non_blocking para solapar transfer CPU->GPU
-            if tok == 'byte':
+            if tok in ('byte', 'byte_dynamic'):
                 x = batch['patches'].to(device, non_blocking=True)
                 targets = batch['targets'].to(device, non_blocking=True)
             else:
@@ -583,9 +608,23 @@ def train_run(run_name: str, dry_run: bool = False,
                 amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
                            if use_amp else contextlib.nullcontext())
                 with amp_ctx:
-                    logits, _ = model(x)
+                    # Support both 2-tuple (runs 01-11) and 3-tuple (runs 12-15)
+                    training_phase = config.get('_current_phase', 1)
+                    target_elim = config.get('target_elimination', 0.0)
+                    result = model(
+                        x, training_phase=training_phase,
+                        target_elimination=target_elim,
+                    )
+                    if len(result) == 3:
+                        logits, _, extra_losses = result
+                    else:
+                        logits, _ = result
+                        extra_losses = {}
                     loss = compute_loss(logits, targets, t_probs, t_mask, config,
                                         teacher_ids=t_ids)
+                    # Add extra losses from gates (runs 12-15)
+                    if 'delete_gate' in extra_losses:
+                        loss = loss + 0.1 * extra_losses['delete_gate']
                     loss = loss / accum_steps
 
                 if use_amp:
@@ -668,9 +707,18 @@ if __name__ == "__main__":
                         help="Use random data on CPU (for testing)")
     parser.add_argument('--total_steps', type=int, default=None,
                         help="Override total training steps")
+    parser.add_argument('--phase', type=int, default=1, choices=[1, 2],
+                        help="Training phase (1=distillation, 2=delete gate)")
+    parser.add_argument('--phase1_ckpt', type=str, default=None,
+                        help="Path to Phase 1 checkpoint (required for --phase 2)")
     args = parser.parse_args()
 
+    if args.phase == 2 and not args.phase1_ckpt:
+        parser.error("--phase1_ckpt is required when --phase 2")
+
     metrics = train_run(args.run, dry_run=args.dry_run,
-                        total_steps_override=args.total_steps)
+                        total_steps_override=args.total_steps,
+                        phase=args.phase,
+                        phase1_ckpt=args.phase1_ckpt)
     print(f"\nFinished: {args.run}")
     print(json.dumps(metrics, indent=2))

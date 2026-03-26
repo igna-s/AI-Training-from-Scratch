@@ -39,6 +39,29 @@
 | Active layer weights | — | ~3.1 MB (1 layer) — L3 |
 | Full model weights | — | ~44 MB — RAM streaming |
 
+### Extended Architecture (v3)
+
+CPU-1 v3 extends the base architecture with three optional modules:
+
+- **BoundaryPredictor** (Bolmo-inspired): Replaces fixed 4-byte patches with
+  dynamic patches that align with natural language boundaries. Adds ~2KB of
+  parameters, runs in Thread 2 during CPU inference with zero added latency.
+
+- **DeleteGate** (MrT5-inspired): Placed after layer N//2, learns to discard
+  uninformative states before the remaining layers. Reduces active states by
+  up to 40%, activated only in training Phase 2.
+
+- **EmbeddingAligner** (arXiv 2602): Aligns the student's hidden space with
+  the teacher's embedding space via cosine similarity loss. Trained in Phase 1
+  only, frozen in Phase 2.
+
+All three modules are optional and controlled by config flags:
+```
+use_boundary_predictor: false  # set true for dynamic patches
+use_delete_gate: false         # set true for MrT5-style compression
+use_embedding_alignment: false # set true for embedding distillation
+```
+
 ### References
 
 - [Slender-Mamba (COLING 2025)](https://aclanthology.org/2025.coling-main.316/) — Ternary embeddings and prediction heads.
@@ -46,10 +69,13 @@
 - [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) — LUT-based inference for low-bit LLMs.
 - [BitNet b1.58 (arXiv 2402.17764)](https://arxiv.org/abs/2402.17764) — 1.58-bit weight quantization.
 - [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) — KL + CE distillation loss, T=4.0.
+- [Bolmo (Allen AI, 2025)](https://arxiv.org/abs/2410.20771) — Dynamic byte-level patches with boundary prediction.
+- [MrT5 (Google, 2024)](https://arxiv.org/abs/2512.15586) — Token deletion gate for efficient inference.
+- [Distilling Byte-Level Models (arXiv 2602, 2025)](https://arxiv.org/abs/2602.01007) — Embedding alignment distillation.
 
 ---
 
-## Ablation Study — 11 Runs, Shared Dataset
+## Ablation Study — 15 Runs, Shared Dataset
 
 The ablation validates each design decision independently at 50M parameters, using a single shared dataset (teacher runs once).
 
@@ -61,8 +87,11 @@ The ablation validates each design decision independently at 50M parameters, usi
 | Tokenization | BPE (Qwen, ~152K vocab) | Byte-level (patches of 4) |
 | Weight quantization | FP16 | Ternary 1.58-bit (BitLinear) |
 | Training signal | CE only | KD: BPE→byte distillation |
+| Patch type | Fixed 4-byte | Dynamic (Bolmo) |
+| Embedding distillation | None | Cosine alignment (arXiv 2602) |
+| State compression | None | DeleteGate (MrT5) |
 
-### Experimental Design (11 runs)
+### Experimental Design (15 runs)
 
 ```
 Run 01: Transformer + BPE  + FP16    + CE     ← absolute baseline
@@ -76,9 +105,17 @@ Run 08: MLGRU       + Byte + FP16    + CE     ← isolate byte on MLGRU
 Run 09: MLGRU       + Byte + Ternary + CE     ← without distillation
 Run 10: MLGRU       + Byte + Ternary + Distil + FPResidual  ← PROPOSED (CPU-1)
 Run 11: MLGRU       + Byte + Ternary + Distil − FPResidual  ← 100% ternary pure
+Run 12: Run 10 + BoundaryPredictor (Bolmo)    ← dynamic patches
+Run 13: Run 10 + EmbeddingAligner (arXiv 2602) ← embedding distillation
+Run 14: Run 10 + DeleteGate (MrT5, 2 phases)  ← state compression
+Run 15: Run 10 + all three                    ← PROPOSED v3 (CPU-1 complete)
 ```
 
 Run 10 vs 11 answers: is the FP16 correction branch worth it?
+Run 10 vs 12: effect of dynamic patches (Bolmo).
+Run 10 vs 13: effect of embedding alignment.
+Run 10 vs 14: effect of DeleteGate (CPU speed).
+Run 10 vs 15: combined effect (v3 proposal).
 
 ### Justified with Citations (no runs needed)
 
@@ -161,6 +198,18 @@ torchrun --nproc_per_node=2 ablation_train.py --run run_10
 python ablation_train.py --run run_01 --dry_run --total_steps 10
 ```
 
+#### Two-Phase Training (runs 14-15 only)
+
+For runs using DeleteGate (MrT5), training proceeds in two phases:
+
+- **Phase 1 (Distillation):** Standard knowledge distillation from Qwen-14B.
+  DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
+  Command: `torchrun ... --run run_14 --phase 1`
+
+- **Phase 2 (Compression):** DeleteGate activated. EmbeddingAligner frozen.
+  Loss changes from KL+CE to CE-only (sequence length varies with gate).
+  Command: `torchrun ... --run run_14 --phase 2 --phase1_ckpt <path>`
+
 Suggested order to maximize early signal:
 ```bash
 # Day 1: extremes
@@ -183,6 +232,16 @@ ablation_train.py --run run_07
 
 # Day 6: FPResidual ablation
 ablation_train.py --run run_11
+
+# Day 7-8: Extended techniques (requires runs 01-11 working)
+ablation_train.py --run run_13                    # EmbAlign (1 phase)
+ablation_train.py --run run_12                    # Bolmo (1 phase)
+ablation_train.py --run run_14 --phase 1          # DeleteGate Phase 1
+ablation_train.py --run run_14 --phase 2 --phase1_ckpt <path>  # Phase 2
+
+# Day 9-10: Full v3 (2 phases)
+ablation_train.py --run run_15 --phase 1
+ablation_train.py --run run_15 --phase 2 --phase1_ckpt <path>
 ```
 
 #### 3. Analyze Results
@@ -204,15 +263,16 @@ Generates:
 1.58bits/
 │
 │  Dataset
-├── build_shared_dataset.py   # Genera el dataset compartido: corre el teacher (distilgpt2),
-│                             #   extrae logprobs, y lo sube a HuggingFace
+├── build_shared_dataset.py   # Genera el dataset compartido: corre el teacher (Qwen-14B),
+│                             #   extrae logprobs + hidden states, y lo sube a HuggingFace
 ├── extract_logprobs.py       # Extrae logprobs del teacher para distillación (BPE→byte mapping)
 ├── byte_marginalization.py   # Convierte probabilidades BPE del teacher a probabilidades
-│                             #   a nivel de byte (marginalización)
+│                             #   a nivel de byte (marginalización). Soporta parches dinámicos (Bolmo)
 │
 │  Modelo principal (170M params)
 ├── model_v2.py               # Arquitectura completa CPU-1: MLGRU + byte-level + ternary
-│                             #   + PFNet + FPResidual. El corazón del proyecto
+│                             #   + PFNet + FPResidual + BoundaryPredictor + DeleteGate
+│                             #   + EmbeddingAligner. El corazón del proyecto
 ├── train.py                  # Loop de entrenamiento del modelo principal de 170M
 │
 │  Inferencia
@@ -221,8 +281,8 @@ Generates:
 │                             #   en vez de multiplicaciones para pesos ternarios
 ├── eval_cpu.py               # Benchmarks rápidos de rendimiento en CPU
 │
-│  Ablación (11 runs × 50M params)
-├── ablation_config.py        # BASE_CONFIG + RUN_CONFIGS para los 11 runs
+│  Ablación (15 runs × 50M params)
+├── ablation_config.py        # BASE_CONFIG + RUN_CONFIGS para los 15 runs
 ├── ablation_models.py        # Variantes configurables (Transformer/MLGRU × BPE/Byte)
 ├── ablation_train.py         # Loop de entrenamiento unificado para cualquier run
 ├── ablation_analysis.py      # Resultados → tablas texto + LaTeX para el paper
@@ -275,11 +335,12 @@ pip install pyarrow numpy
 - **Training** — DDP, AMP, gradient accumulation, distillation loss with temperature scaling (`train.py`)
 - **CPU inference** — INT8 packing with `torch._int_mm`, weight transposition, `torch.compile` (`inference_v2.py`)
 - **T-MAC LUT inference** — Zero-multiplication engine: ternary weights → precomputed LUT, lookup + accumulate only (`inference_tmac.py`)
-- **Ablation system** — 11-run experimental design, configurable models (Transformer/MLGRU × BPE/Byte × FP16/Ternary × CE/Distil), unified training loop, shared dataset pipeline, LaTeX table generation
+- **Ablation system** — 15-run experimental design, configurable models (Transformer/MLGRU × BPE/Byte × FP16/Ternary × CE/Distil), unified training loop, shared dataset pipeline, LaTeX table generation
+- **Extended techniques (v3)** — BoundaryPredictor (Bolmo), DeleteGate (MrT5), EmbeddingAligner (arXiv 2602), two-phase training support
 
 ### Pending
 
-- Run 11 ablation experiments on Kaggle 2×T4 and collect metrics
+- Run 15 ablation experiments on Kaggle 2×T4 and collect metrics
 - Scale winning ablation config to 170M and train on full dataset
 - T-MAC C++ kernel integration (bitnet.cpp / llama.cpp)
 

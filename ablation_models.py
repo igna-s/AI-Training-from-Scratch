@@ -26,6 +26,9 @@ from model_v2 import (
     BitEmbedding,
     FPResidual,
     PFNet,
+    BoundaryPredictor,
+    DeleteGate,
+    EmbeddingAligner,
     _ste_round,
     VOCAB_SIZE,
     PATCH_SIZE,
@@ -286,13 +289,18 @@ class AblationBPEHead(nn.Module):
 
 class AblationModel(nn.Module):
     """
-    Configurable model for all 11 ablation runs.
+    Configurable model for all 15 ablation runs.
 
     Determined by config:
         token_mixer:  'transformer' | 'mlgru'
-        tokenization: 'bpe' | 'byte'
+        tokenization: 'bpe' | 'byte' | 'byte_dynamic'
         use_ternary:  True | False
         fp_rank:      0 (no FPResidual) | 4 (with FPResidual)
+
+    Extended for runs 12-15:
+        use_boundary_predictor:  True → BoundaryPredictor (Bolmo)
+        use_delete_gate:         True → DeleteGate (MrT5)
+        use_embedding_alignment: True → EmbeddingAligner (arXiv 2602)
     """
 
     def __init__(self, config: dict):
@@ -303,8 +311,8 @@ class AblationModel(nn.Module):
         tok = config['tokenization']
         use_ternary = config.get('use_ternary', True)
 
-        # Embedding
-        if tok == 'byte':
+        # Embedding — byte_dynamic uses same embedding as byte
+        if tok in ('byte', 'byte_dynamic'):
             self.embedding = AblationBytePatchEmbedding(
                 d_model,
                 patch_size=config.get('patch_size', 4),
@@ -321,7 +329,7 @@ class AblationModel(nn.Module):
         self.norm = RMSNorm(d_model)
 
         # Prediction heads
-        if tok == 'byte':
+        if tok in ('byte', 'byte_dynamic'):
             self.heads = nn.ModuleList([
                 AblationByteHead(d_model, use_ternary) for _ in range(4)
             ])
@@ -336,21 +344,48 @@ class AblationModel(nn.Module):
             'use_gradient_checkpointing', False
         )
 
+        # === Extended modules for runs 12-15 ===
+        self.use_boundary    = config.get('use_boundary_predictor', False)
+        self.use_delete_gate = config.get('use_delete_gate', False)
+        self.use_emb_align   = config.get('use_embedding_alignment', False)
+        self.delete_gate_pos = n_layers // 2
+
+        if self.use_boundary:
+            self.boundary_predictor = BoundaryPredictor(
+                embed_dim=8, hidden_dim=32
+            )
+
+        if self.use_delete_gate:
+            self.delete_gate = DeleteGate(
+                d_model=d_model,
+                elimination_rate=0.0,
+            )
+
+        if self.use_emb_align:
+            self.embedding_aligner = EmbeddingAligner(
+                student_dim=d_model,
+                teacher_dim=config.get('teacher_dim', 5120),
+            )
+
     def forward(
         self,
         x: Tensor,
         hidden_states: list | None = None,
+        training_phase: int = 1,
+        target_elimination: float = 0.0,
     ) -> tuple:
         """
         Args:
             x: [B, S, 4] uint8/long for byte, [B, S] long for BPE
             hidden_states: list of per-layer MLGRU states (None for transformer)
+            training_phase: 1 = distillation, 2 = with delete gate
+            target_elimination: fraction of states to eliminate (Phase 2)
 
         Returns:
-            For byte:  (tuple of 4 × [B, S, 256], new_hidden_states)
-            For BPE:   ([B, S, vocab_size], new_hidden_states)
+            For byte:  (tuple of 4 × [B, S, 256], new_hidden_states, extra_losses)
+            For BPE:   ([B, S, vocab_size], new_hidden_states, extra_losses)
         """
-        if self.tokenization == 'byte':
+        if self.tokenization in ('byte', 'byte_dynamic'):
             x_emb = self.embedding(x)
         else:
             x_emb = self.embedding(x)
@@ -359,6 +394,7 @@ class AblationModel(nn.Module):
             hidden_states = [None] * len(self.blocks)
 
         new_states = []
+        extra_losses = {}
         h = x_emb
 
         if self.use_gradient_checkpointing and self.training:
@@ -369,19 +405,41 @@ class AblationModel(nn.Module):
                 h, h_new = checkpoint(_fn, h, hidden_states[i],
                                       use_reentrant=False)
                 new_states.append(h_new)
+
+                # DeleteGate at midpoint (Phase 2 only)
+                if (self.use_delete_gate
+                        and i == self.delete_gate_pos
+                        and training_phase == 2):
+                    h, _ = self.delete_gate.forward_train(
+                        h, target_rate=target_elimination
+                    )
+                    extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
         else:
             for i, block in enumerate(self.blocks):
                 h, h_new = block(h, hidden_states[i])
                 new_states.append(h_new)
 
+                # DeleteGate at midpoint (Phase 2 only)
+                if (self.use_delete_gate
+                        and i == self.delete_gate_pos
+                        and training_phase == 2):
+                    h, _ = self.delete_gate.forward_train(
+                        h, target_rate=target_elimination
+                    )
+                    extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+
         h = self.norm(h)
 
-        if self.tokenization == 'byte':
+        if self.tokenization in ('byte', 'byte_dynamic'):
             logits = tuple(head(h) for head in self.heads)
         else:
             logits = self.heads[0](h)
 
-        return logits, new_states
+        # EmbeddingAlignment placeholder (Phase 1 only)
+        if self.use_emb_align and training_phase == 1:
+            extra_losses['emb_align'] = None  # populated externally
+
+        return logits, new_states, extra_losses
 
     def count_parameters(self) -> dict:
         """Return parameter counts by component."""
@@ -406,9 +464,17 @@ def build_ablation_model(config: dict) -> AblationModel:
     """Build the correct model variant from a merged run config."""
     model = AblationModel(config)
     counts = model.count_parameters()
+    extras = []
+    if config.get('use_boundary_predictor'):
+        extras.append('Bolmo')
+    if config.get('use_delete_gate'):
+        extras.append('DeleteGate')
+    if config.get('use_embedding_alignment'):
+        extras.append('EmbAlign')
+    ext_str = f" + {', '.join(extras)}" if extras else ""
     print(f"[Model] {config.get('name', '?')} — "
           f"{counts['total_M']:.1f}M params "
           f"(emb={counts['embedding']/1e6:.1f}M, "
           f"blocks={counts['blocks']/1e6:.1f}M, "
-          f"heads={counts['heads']/1e6:.1f}M)")
+          f"heads={counts['heads']/1e6:.1f}M){ext_str}")
     return model

@@ -612,7 +612,117 @@ class DistillationDatasetBuilder:
 
 
 # =============================================================================
-# 5. Tests
+# 5. DynamicPatchMarginalization — Parches dinámicos (Bolmo)
+# =============================================================================
+
+class DynamicPatchMarginalization:
+    """
+    Versión de byte_marginalization que soporta parches dinámicos (Bolmo).
+
+    La diferencia vs la versión estática:
+    - Los boundaries no son fijos cada 4 bytes
+    - Los boundaries vienen del BoundaryPredictor o de las reglas naturales
+    - La marginalización BPE→byte sigue siendo igual para los primeros bytes
+
+    COMPATIBILIDAD:
+    - Si boundaries=None → comportamiento idéntico a la versión estática
+    - Los runs 01-11 usan la versión estática (boundaries=None)
+    - Los runs 12-15 usan la versión dinámica
+    """
+
+    def __init__(self, patch_size_max: int = 8, patch_size_static: int = 4):
+        self.patch_size_max    = patch_size_max
+        self.patch_size_static = patch_size_static
+
+    def build_teacher_targets_dynamic(
+        self,
+        text_bytes: bytes,
+        byte_to_teacher: dict,   # byte_offset → {byte_val: prob}
+        boundaries: list[bool],  # del BoundaryPredictor o reglas naturales
+    ) -> list[dict]:
+        """
+        Construir targets de distilación para parches dinámicos.
+
+        Para cada parche:
+          - Si el primer byte del parche coincide con un boundary BPE
+            → tiene señal del teacher (marginalización)
+          - Si no → solo CE
+
+        La señal del teacher siempre es para el primer byte del parche
+        (igual que en la versión estática).
+
+        Returns: lista de dicts por parche:
+            {
+                'patch':         list[int],  # bytes del parche (paddeados)
+                'patch_len':     int,        # longitud real sin padding
+                'has_teacher':   bool,
+                'teacher_probs': list[float] | None,  # [256] o None
+            }
+        """
+        patches = _bytes_to_dynamic_patches(
+            text_bytes, boundaries, self.patch_size_max
+        )
+
+        results = []
+        byte_offset = 0
+
+        for patch in patches:
+            # Longitud real (sin padding)
+            patch_len = sum(1 for b in patch if b != 0) or 1
+
+            # ¿Hay señal del teacher para el primer byte de este parche?
+            has_teacher = byte_offset in byte_to_teacher
+            teacher_probs = None
+
+            if has_teacher:
+                bp = byte_to_teacher[byte_offset]
+                teacher_probs = [bp.get(b, 0.0) for b in range(256)]
+
+            results.append({
+                'patch':         patch,
+                'patch_len':     patch_len,
+                'has_teacher':   has_teacher,
+                'teacher_probs': teacher_probs,
+            })
+
+            byte_offset += patch_len
+
+        return results
+
+
+def _bytes_to_dynamic_patches(
+    byte_seq: bytes,
+    boundaries: list[bool],
+    max_patch_size: int = 8,
+    pad_byte: int = 0,
+) -> list[list[int]]:
+    """
+    Convertir secuencia de bytes a parches de longitud variable.
+
+    Los parches tienen longitud entre 1 y max_patch_size bytes.
+    Se paddean a max_patch_size con pad_byte para batch processing.
+
+    Returns: lista de parches, cada uno de longitud max_patch_size (paddeado)
+    """
+    patches = []
+    current_patch = []
+
+    for i, (b, is_boundary) in enumerate(zip(byte_seq, boundaries)):
+        current_patch.append(b)
+        if is_boundary or len(current_patch) >= max_patch_size:
+            padded = current_patch + [pad_byte] * (max_patch_size - len(current_patch))
+            patches.append(padded[:max_patch_size])
+            current_patch = []
+
+    if current_patch:
+        padded = current_patch + [pad_byte] * (max_patch_size - len(current_patch))
+        patches.append(padded[:max_patch_size])
+
+    return patches
+
+
+# =============================================================================
+# 6. Tests
 # =============================================================================
 
 def test_alignment_cases():

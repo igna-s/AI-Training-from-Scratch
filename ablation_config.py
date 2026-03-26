@@ -192,6 +192,98 @@ RUN_CONFIGS = {
 }
 
 
+# ============================================================
+# Extended runs 12-15: Bolmo + MrT5 + EmbeddingAlignment
+# ============================================================
+
+# Run 12: Bolmo solo (parches dinámicos, sin MrT5 ni EmbAlign)
+RUN_CONFIGS['run_12'] = {
+    'name':                    'mlgru_byte_ternary_distil_bolmo',
+    'token_mixer':             'mlgru',
+    'tokenization':            'byte_dynamic',   # parches dinámicos
+    'quantization':            'ternary',
+    'training_signal':         'distillation',
+    'fp_residual':             True,
+    'use_boundary_predictor':  True,
+    'use_delete_gate':         False,
+    'use_embedding_alignment': False,
+    'description': (
+        'CPU-1 + Bolmo (parches dinámicos). '
+        'Compara contra Run 10 (parches estáticos). '
+        'Responde: ¿los parches dinámicos mejoran PPL o TPS?'
+    ),
+    'cites': ['Bolmo (Allen AI, 2025)'],
+}
+
+# Run 13: EmbeddingAlignment solo (sin Bolmo ni MrT5)
+RUN_CONFIGS['run_13'] = {
+    'name':                    'mlgru_byte_ternary_distil_embalign',
+    'token_mixer':             'mlgru',
+    'tokenization':            'byte',
+    'quantization':            'ternary',
+    'training_signal':         'distillation',
+    'fp_residual':             True,
+    'use_boundary_predictor':  False,
+    'use_delete_gate':         False,
+    'use_embedding_alignment': True,
+    'lambda_align':            0.3,
+    'description': (
+        'CPU-1 + EmbeddingAlignment. '
+        'Compara contra Run 10 (sin alineación). '
+        'Responde: ¿alinear embeddings mejora la calidad del conocimiento transferido?'
+    ),
+    'cites': ['arXiv 2602 (2025) — Distilling Byte-Level Models'],
+}
+
+# Run 14: MrT5 (DeleteGate, 2 fases) — sobre Run 10
+RUN_CONFIGS['run_14'] = {
+    'name':                    'mlgru_byte_ternary_distil_deletegate',
+    'token_mixer':             'mlgru',
+    'tokenization':            'byte',
+    'quantization':            'ternary',
+    'training_signal':         'distillation_then_ce',  # Fase 1 distil, Fase 2 CE
+    'fp_residual':             True,
+    'use_boundary_predictor':  False,
+    'use_delete_gate':         True,
+    'target_elimination':      0.4,             # eliminar 40% de estados
+    'training_phases':         2,               # entrenar en 2 fases
+    'use_embedding_alignment': False,
+    'description': (
+        'CPU-1 + DeleteGate (MrT5 style). Training en 2 fases. '
+        'Compara TPS vs Run 10: ¿cuánto más rápido en CPU con 40% menos estados? '
+        'Compara PPL vs Run 10: ¿cuánta calidad se pierde?'
+    ),
+    'cites': ['MrT5 (Google, 2024)'],
+}
+
+# Run 15: Todo junto — Bolmo + EmbAlign + MrT5 (la propuesta final)
+RUN_CONFIGS['run_15'] = {
+    'name':                    'mlgru_byte_ternary_distil_full',
+    'token_mixer':             'mlgru',
+    'tokenization':            'byte_dynamic',
+    'quantization':            'ternary',
+    'training_signal':         'distillation_then_ce',
+    'fp_residual':             True,
+    'use_boundary_predictor':  True,
+    'use_delete_gate':         True,
+    'use_embedding_alignment': True,
+    'target_elimination':      0.4,
+    'lambda_align':            0.3,
+    'training_phases':         2,
+    'description': (
+        'CPU-1 COMPLETO v3 — todas las técnicas integradas. '
+        'Propuesta final del paper si los runs 12-14 muestran mejoras individuales. '
+        'Bolmo mejora entrada, EmbAlign mejora conocimiento, MrT5 mejora velocidad.'
+    ),
+    'cites': [
+        'Bolmo (Allen AI, 2025)',
+        'MrT5 (Google, 2024)',
+        'arXiv 2602 (2025)',
+    ],
+    'is_proposed_v3': True,
+}
+
+
 def get_run_config(run_name: str) -> dict:
     """Merge BASE_CONFIG with run-specific delta."""
     if run_name not in RUN_CONFIGS:

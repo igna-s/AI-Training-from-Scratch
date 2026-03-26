@@ -745,7 +745,137 @@ def parse_args() -> argparse.Namespace:
 
 
 # =============================================================================
-# 9. Tests
+# 9. Phase 2 Training — DeleteGate (MrT5)
+# =============================================================================
+
+def train_phase2(
+    model,
+    dataset,
+    config: dict,
+    checkpoint_phase1: str,
+    target_elimination: float = 0.4,
+    total_steps: int = 5000,
+    lr: float = 1e-4,
+    device: torch.device | None = None,
+) -> dict:
+    """
+    Fase 2 de training: activar DeleteGate y entrenar para velocidad.
+
+    Cambios respecto a Fase 1:
+    1. Cargar checkpoint de Fase 1
+    2. Activar DeleteGate (elimination_rate > 0)
+    3. Congelar EmbeddingAligner (si existe)
+    4. Cambiar loss: solo CE, sin KL distillation (porque la secuencia se acorta)
+    5. Agregar elimination_loss para regularizar el DeleteGate
+
+    POR QUÉ cambiar la loss en Fase 2:
+        La distillation loss requiere alineación posición a posición.
+        Con DeleteGate activo, algunas posiciones se eliminan.
+        No hay garantía de que el teacher_prob[i] corresponda a student_output[i].
+        → Usar solo CE sobre los estados que sobreviven.
+
+    POR QUÉ no usar nueva distilación en Fase 2:
+        El modelo de Fase 1 ya aprendió el conocimiento del teacher.
+        Fase 2 solo aprende a ser eficiente sin degradar calidad.
+        El "nuevo teacher" para Fase 2 es el propio modelo de Fase 1.
+
+    CONCURRENCIA GPU en Fase 2:
+        - Mismo DDP setup que Fase 1
+        - La elimination_loss es reducida con dist.all_reduce
+        - Los gradientes fluyen a través del soft mask del DeleteGate
+    """
+    from model_v2 import CPU1ModelV2WithGates
+
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Cargar Fase 1
+    ckpt = torch.load(checkpoint_phase1, map_location='cpu', weights_only=False)
+    model.load_state_dict(ckpt['model_state_dict'], strict=False)
+    model = model.to(device)
+
+    # Activar DeleteGate
+    if hasattr(model, 'delete_gate'):
+        model.delete_gate.set_elimination_rate(target_elimination)
+
+    # Congelar EmbeddingAligner
+    if hasattr(model, 'embedding_aligner'):
+        for p in model.embedding_aligner.parameters():
+            p.requires_grad = False
+
+    # Loss de Fase 2: CE + elimination_regularization
+    def phase2_loss(logits, targets, extra_losses):
+        # CE puro sobre tokens que sobreviven
+        ce = sum(
+            F.cross_entropy(
+                logits[i].reshape(-1, 256),
+                targets[:, :, i].long().reshape(-1)
+            ) for i in range(4)
+        ) / 4
+
+        # Regularización del DeleteGate
+        elim_loss = extra_losses.get('delete_gate', torch.tensor(0.0, device=device))
+
+        return ce + 0.1 * elim_loss
+
+    # Optimizer
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=lr, betas=(0.9, 0.95),
+    )
+
+    use_amp = device.type == 'cuda'
+    scaler = torch.amp.GradScaler() if use_amp else None
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=4, shuffle=True, drop_last=True,
+    )
+
+    # Training loop
+    model.train()
+    step = 0
+    t_start = time.time()
+
+    while step < total_steps:
+        for batch in dataloader:
+            if step >= total_steps:
+                break
+
+            patches = batch['patches'].to(device, non_blocking=True)
+            targets = batch['targets'].to(device, non_blocking=True)
+
+            amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
+                       if use_amp else contextlib.nullcontext())
+            with amp_ctx:
+                logits, _, extra_losses = model(
+                    patches, training_phase=2,
+                    target_elimination=target_elimination,
+                )
+                loss = phase2_loss(logits, targets, extra_losses)
+
+            optimizer.zero_grad(set_to_none=True)
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+
+            step += 1
+            if step % 500 == 0:
+                elapsed = time.time() - t_start
+                print(f"[Phase2] Step {step}/{total_steps} | "
+                      f"Loss: {loss.item():.4f} | Time: {elapsed:.0f}s")
+
+    return {'phase': 2, 'target_elimination': target_elimination, 'steps': step}
+
+
+# =============================================================================
+# 10. Tests
 # =============================================================================
 
 def test_distillation_loss():

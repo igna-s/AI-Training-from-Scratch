@@ -152,6 +152,100 @@ def extract_logprobs_single(
     }
 
 
+def extract_logprobs_and_hidden(
+    model,
+    tokenizer,
+    text: str,
+    top_k: int = TOP_K_LOGPROBS,
+    seq_len: int = SEQ_LEN_TOKENS,
+    hidden_layer: int = -1,  # -1 = capa del medio, o específica
+) -> dict:
+    """
+    Versión extendida de extract_logprobs_single que también guarda
+    los hidden states del teacher en la capa del medio.
+
+    El hidden state se usa para EmbeddingAligner en Fase 1.
+
+    Costo adicional: ~50% más memoria por batch (activaciones intermedias).
+    Workaround si la memoria es justa: extraer en un segundo pass separado.
+
+    Output adicional por posición:
+        'teacher_hidden': list[list[float]]  # [n_tokens, teacher_dim] FP16
+    """
+    enc = tokenizer(
+        text, return_tensors='pt',
+        truncation=True, max_length=seq_len,
+    )
+    input_ids = enc['input_ids'].to(model.device)
+
+    with torch.no_grad():
+        outputs = model(
+            input_ids,
+            output_hidden_states=True,
+        )
+        logits = outputs.logits[0]  # [seq_len, vocab_size]
+
+        # Hidden state de la capa del medio
+        n_layers = len(outputs.hidden_states)
+        mid_layer = hidden_layer if hidden_layer >= 0 else n_layers // 2
+        teacher_hidden = outputs.hidden_states[mid_layer][0]  # [S, D]
+
+        # Comprimir a FP16 para ahorrar espacio
+        teacher_hidden_fp16 = teacher_hidden.half().cpu()
+
+    log_probs = torch.log_softmax(logits, dim=-1)
+    top_logprobs, top_indices = torch.topk(log_probs, k=top_k, dim=-1)
+
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
+    byte_offset = 0
+    positions = []
+
+    for pos_idx, (token_id, token_str) in enumerate(
+        zip(input_ids[0].tolist(), tokens)
+    ):
+        try:
+            token_byte_seq = tokenizer.convert_tokens_to_string(
+                [token_str]
+            ).encode('utf-8')
+        except Exception:
+            token_byte_seq = b'\x00'
+
+        pos_top = []
+        for k_idx in range(top_k):
+            cand_id = top_indices[pos_idx, k_idx].item()
+            cand_lp = top_logprobs[pos_idx, k_idx].item()
+            cand_tok = tokenizer.convert_ids_to_tokens([cand_id])[0]
+            try:
+                cand_bytes = list(
+                    tokenizer.convert_tokens_to_string(
+                        [cand_tok]
+                    ).encode('utf-8')
+                )
+            except Exception:
+                cand_bytes = [0]
+
+            pos_top.append({
+                'token_id': cand_id,
+                'token': cand_tok,
+                'bytes': cand_bytes,
+                'logprob': cand_lp,
+            })
+
+        positions.append({
+            'byte_offset': byte_offset,
+            'top_tokens': pos_top,
+        })
+        byte_offset += len(token_byte_seq)
+
+    return {
+        'text_bytes': list(text.encode('utf-8')),
+        'positions': positions,
+        'n_tokens': len(tokens),
+        'teacher_hidden': teacher_hidden_fp16.tolist(),  # [n_tokens, teacher_dim]
+        'teacher_dim': teacher_hidden_fp16.shape[-1],
+    }
+
+
 def _append_to_parquet(records: list[dict], path: Path) -> None:
     """Append records to a Parquet file."""
     table = pa.table({

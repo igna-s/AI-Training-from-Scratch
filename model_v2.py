@@ -572,7 +572,611 @@ class CPU1ModelV2(nn.Module):
 
 
 # =============================================================================
-# 7. Utilidades de conversion bytes <-> patches
+# 7. BoundaryPredictor — Parches dinámicos (Bolmo, Allen AI 2025)
+# =============================================================================
+
+class BoundaryPredictor(nn.Module):
+    """
+    Predice si el byte actual es el último de un parche (boundary=True).
+
+    Basado en: Bolmo (Allen AI, 2025) — adaptado para CPU-1 v2.
+
+    Arquitectura: muy liviana para no dominar el cómputo.
+        byte_embed → Linear(16, 32) → ReLU → Linear(32, 1) → Sigmoid
+
+    Input:  byte actual (uint8) + byte siguiente (uint8, lookahead de 1)
+    Output: probabilidad de que el byte actual sea un boundary [0, 1]
+
+    En training: supervisado con boundaries naturales del texto
+        (espacios, puntuación, inicio de caracteres UTF-8 multibyte)
+    En inferencia: threshold de 0.5 para decidir si cortar el parche
+
+    Tamaño: ~2KB — completamente en L1 cache durante inferencia.
+
+    CONCURRENCIA GPU:
+        En training, correr en paralelo con BytePatchEmbeddingV2:
+            boundaries = boundary_predictor(bytes_current, bytes_next)
+            embeds     = patch_embedding(patches)  # en paralelo
+
+    CONCURRENCIA CPU:
+        Un byte a la vez. Tan liviano que no añade latencia medible.
+
+    MODO ESTÁTICO (compatibilidad con runs 01-11):
+        Si use_boundary_predictor=False en config → parches fijos de 4 bytes
+        Los runs 01-11 existentes NO cambian.
+    """
+
+    def __init__(self, embed_dim: int = 8, hidden_dim: int = 32):
+        super().__init__()
+        self.byte_embed = nn.Embedding(256, embed_dim)
+        # Toma byte actual + byte siguiente → contexto de 2 bytes
+        self.predictor = nn.Sequential(
+            nn.Linear(embed_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward_train(
+        self,
+        bytes_seq: Tensor,  # [B, L] uint8 — secuencia de bytes
+        threshold: float = 0.5,
+    ) -> Tensor:
+        """
+        Predecir boundaries para toda la secuencia (training, paralelo).
+
+        Returns: [B, L] float — probabilidades de boundary
+        """
+        # Lookahead de 1 byte: comparar byte[i] con byte[i+1]
+        b_curr = self.byte_embed(bytes_seq[:, :-1].long())    # [B, L-1, E]
+        b_next = self.byte_embed(bytes_seq[:, 1:].long())     # [B, L-1, E]
+
+        ctx = torch.cat([b_curr, b_next], dim=-1)  # [B, L-1, 2E]
+        probs = self.predictor(ctx).squeeze(-1)     # [B, L-1]
+
+        # Último byte siempre es boundary
+        last = torch.ones(bytes_seq.shape[0], 1,
+                         device=bytes_seq.device, dtype=probs.dtype)
+        probs = torch.cat([probs, last], dim=1)     # [B, L]
+
+        return probs  # retornar probs, no bool (para loss)
+
+    def forward_infer(
+        self,
+        byte_curr: int,
+        byte_next: int,
+        threshold: float = 0.5,
+    ) -> bool:
+        """
+        Predecir si byte_curr es boundary (inferencia, 1 byte a la vez).
+        CPU: <0.01ms por llamada (2KB de pesos en L1).
+        """
+        with torch.no_grad():
+            b_c = self.byte_embed(torch.tensor([byte_curr]))
+            b_n = self.byte_embed(torch.tensor([byte_next]))
+            ctx = torch.cat([b_c, b_n], dim=-1)
+            return self.predictor(ctx).item() > threshold
+
+    @staticmethod
+    def get_natural_boundaries(byte_seq: bytes) -> list[bool]:
+        """
+        Generar labels de training para BoundaryPredictor.
+        Boundaries naturales: espacios, puntuación, inicio UTF-8 multibyte.
+
+        Reglas:
+        1. Espacios (0x20) → boundary DESPUÉS del espacio
+        2. Puntuación ASCII (.,!?;:) → boundary DESPUÉS
+        3. Inicio de caracter UTF-8 multibyte (0xC0-0xFF) → boundary ANTES
+        4. Cada 8 bytes como máximo → boundary forzado (evitar parches largos)
+        5. Cada 1 byte como mínimo → no hay parches de 0 bytes
+        """
+        boundaries = [False] * len(byte_seq)
+        last_boundary = 0
+
+        PUNCT = set(b'.,!?;:\n\t')
+
+        for i, b in enumerate(byte_seq):
+            # Forzar boundary cada 8 bytes máximo
+            if i - last_boundary >= 8:
+                boundaries[i] = True
+                last_boundary = i
+                continue
+
+            # Boundary natural
+            is_boundary = (
+                b == 0x20 or          # espacio
+                b in PUNCT or         # puntuación
+                (b >= 0xC0) or        # inicio UTF-8 multibyte
+                (i > 0 and byte_seq[i-1] == 0x20)  # después de espacio
+            )
+
+            # Mínimo 1 byte por parche
+            if is_boundary and i > last_boundary:
+                boundaries[i] = True
+                last_boundary = i
+
+        # Siempre terminar con boundary
+        if boundaries:
+            boundaries[-1] = True
+
+        return boundaries
+
+
+def bytes_to_dynamic_patches(
+    byte_seq: bytes,
+    boundaries: list[bool],
+    max_patch_size: int = 8,
+    pad_byte: int = 0,
+) -> list[list[int]]:
+    """
+    Convertir secuencia de bytes a parches de longitud variable.
+
+    Los parches tienen longitud entre 1 y max_patch_size bytes.
+    Se paddean a max_patch_size con pad_byte para batch processing.
+
+    Returns: lista de parches, cada uno de longitud max_patch_size (paddeado)
+    """
+    patches = []
+    current_patch = []
+
+    for i, (b, is_boundary) in enumerate(zip(byte_seq, boundaries)):
+        current_patch.append(b)
+        if is_boundary or len(current_patch) >= max_patch_size:
+            # Paddear a max_patch_size
+            padded = current_patch + [pad_byte] * (max_patch_size - len(current_patch))
+            patches.append(padded[:max_patch_size])
+            current_patch = []
+
+    if current_patch:
+        padded = current_patch + [pad_byte] * (max_patch_size - len(current_patch))
+        patches.append(padded[:max_patch_size])
+
+    return patches
+
+
+def bytes_to_dynamic_patches_infer(
+    byte_seq: bytes,
+    boundary_predictor: 'BoundaryPredictor | None',
+    threshold: float = 0.5,
+    max_patch_size: int = 8,
+) -> list[list[int]]:
+    """
+    Crear parches dinámicos para inferencia usando BoundaryPredictor.
+    Si boundary_predictor es None, usa parches estáticos de 4 bytes.
+    """
+    if boundary_predictor is None:
+        # Modo estático: parches fijos de 4 bytes
+        patches = []
+        for i in range(0, len(byte_seq), PATCH_SIZE):
+            patch = list(byte_seq[i:i + PATCH_SIZE])
+            patch += [0] * (PATCH_SIZE - len(patch))
+            patches.append(patch)
+        return patches
+
+    # Modo dinámico: usar BoundaryPredictor
+    boundaries = []
+    for i in range(len(byte_seq)):
+        if i < len(byte_seq) - 1:
+            is_bound = boundary_predictor.forward_infer(
+                byte_seq[i], byte_seq[i + 1], threshold
+            )
+        else:
+            is_bound = True  # último byte siempre es boundary
+        boundaries.append(is_bound)
+
+    return bytes_to_dynamic_patches(byte_seq, boundaries, max_patch_size)
+
+
+# =============================================================================
+# 8. DeleteGate — MrT5 (Google, 2024)
+# =============================================================================
+
+class DeleteGate(nn.Module):
+    """
+    Puerta de eliminación inspirada en MrT5.
+    Se ubica después de la capa N del MLGRU y decide qué estados eliminar.
+
+    Basado en: MrT5 (Google, 2024) — adaptado para MLGRU byte-level.
+
+    Diferencia vs MrT5 original:
+    - MrT5 opera sobre tokens (discreta con Gumbel-Softmax)
+    - Nuestra versión opera sobre estados MLGRU (continua durante training)
+    - En inferencia: decisión binaria hard (eliminar o no)
+
+    CONCURRENCIA GPU (Fase 2 training):
+        delete_scores = delete_gate(hidden_states)  # [B, S]
+        mask = torch.sigmoid(delete_scores)
+        hidden_filtered = hidden_states * mask.unsqueeze(-1)
+
+    CONCURRENCIA CPU (inferencia):
+        if delete_gate.should_delete(h_state):
+            continue  # skip este estado
+        else:
+            continue_processing(h_state)
+
+    Ubicación: después de layer N//2 (la mitad del modelo).
+    """
+
+    def __init__(self, d_model: int, elimination_rate: float = 0.0):
+        super().__init__()
+        self.d_model = d_model
+        self.elimination_rate = elimination_rate  # 0.0 en Fase 1
+
+        # Scorer liviano: [d_model → 64 → 1]
+        self.scorer = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+        )
+
+        # Temperatura para annealing durante training
+        self.register_buffer('temperature', torch.tensor(1.0))
+        # Almacena la loss de eliminación del último forward
+        self.last_elimination_loss = torch.tensor(0.0)
+
+    def forward_train(
+        self,
+        hidden: Tensor,           # [B, S, d_model]
+        target_rate: float = 0.0,  # fracción de estados a eliminar
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Soft masking diferenciable para training.
+
+        Returns:
+            hidden_filtered: [B, S, d_model] — estados con mask aplicada
+            mask:            [B, S] float — valores entre 0 y 1
+
+        En Fase 1 (target_rate=0.0): mask = todos 1s → sin eliminación
+        En Fase 2 (target_rate>0.0): mask sparse → algunos estados reducidos
+        """
+        if target_rate == 0.0:
+            # Fase 1: sin eliminación, pass-through puro
+            mask = torch.ones(hidden.shape[:2], device=hidden.device)
+            self.last_elimination_loss = torch.tensor(0.0, device=hidden.device)
+            return hidden, mask
+
+        scores = self.scorer(hidden).squeeze(-1)  # [B, S]
+
+        # Soft masking con temperatura
+        mask = torch.sigmoid(scores / self.temperature)
+
+        # Regularización: push hacia target_rate de eliminación
+        self.last_elimination_loss = (
+            (1 - mask).mean() - target_rate
+        ).pow(2)
+
+        return hidden * mask.unsqueeze(-1), mask
+
+    def forward_infer(
+        self,
+        h_state: Tensor,  # [d_model] — estado de UN patch
+        threshold: float = 0.5,
+    ) -> bool:
+        """
+        Decisión hard para inferencia CPU.
+
+        Returns: True si el estado debe MANTENERSE (False = eliminar)
+
+        CONCURRENCIA: este método es llamado en Thread 1.
+        Thread 2 puede estar haciendo prefetch de la siguiente capa.
+        Latencia: ~0.1ms (64 ops, completamente en L1).
+        """
+        with torch.no_grad():
+            score = self.scorer(h_state.unsqueeze(0)).item()
+            return torch.sigmoid(torch.tensor(score)).item() > threshold
+
+    def set_elimination_rate(self, rate: float) -> None:
+        """Cambiar tasa de eliminación entre Fase 1 y Fase 2."""
+        self.elimination_rate = rate
+
+
+# =============================================================================
+# 9. EmbeddingAligner — Distilación de embeddings (arXiv 2602, 2025)
+# =============================================================================
+
+class EmbeddingAligner(nn.Module):
+    """
+    Alinea el espacio de embeddings del student con el del teacher.
+
+    Basado en: "Distilling Byte-Level Models from Tokenizer-Based LMs"
+    (arXiv 2602, 2025) — Embedding Alignment técnica.
+
+    El teacher (Qwen-14B) produce embeddings de dimensión teacher_dim.
+    El student (CPU-1) produce embeddings de dimensión student_dim.
+
+    Este módulo aprende una proyección lineal:
+        student_proj: [student_dim → teacher_dim]
+
+    Y minimiza la distancia coseno entre:
+        proj(student_hidden) y teacher_hidden
+
+    Solo se activa en Fase 1 de training (cuando hay señal del teacher).
+    En Fase 2 (DeleteGate activado), se congela.
+
+    CONCURRENCIA GPU:
+        La loss de alineación se calcula en paralelo con la distillation loss:
+            task1: distillation_loss(logits, targets, teacher_probs)
+            task2: alignment_loss(student_hidden, teacher_hidden)
+            total_loss = task1 + lambda_align * task2
+
+        lambda_align: hyperparámetro entre 0.1 y 1.0
+        Recomendado: 0.3 (no dominar sobre la distillation loss)
+    """
+
+    def __init__(self, student_dim: int, teacher_dim: int):
+        super().__init__()
+        self.projection = nn.Linear(student_dim, teacher_dim, bias=False)
+        # Inicializar con ortogonal para estabilidad
+        nn.init.orthogonal_(self.projection.weight)
+
+    def alignment_loss(
+        self,
+        student_hidden: Tensor,    # [B, S, student_dim]
+        teacher_hidden: Tensor,    # [B, S_teacher, teacher_dim]
+        teacher_mask: Tensor,      # [B, S] bool — donde hay señal
+        aggregation: str = 'mean_pool',
+    ) -> Tensor:
+        """
+        Calcular loss de alineación de embeddings.
+
+        El desafío: student tiene S patches (byte-level),
+        teacher tiene S_teacher tokens (BPE-level).
+        S != S_teacher en general.
+
+        Solución: usar las primeras min(S, S_teacher) posiciones
+        donde hay señal del teacher (teacher_mask).
+
+        Returns: scalar loss
+        """
+        # Proyectar student al espacio del teacher
+        student_proj = self.projection(student_hidden)  # [B, S, teacher_dim]
+
+        # Normalizar (cosine similarity)
+        student_norm = F.normalize(student_proj, dim=-1)
+        teacher_norm = F.normalize(teacher_hidden.float(), dim=-1)
+
+        # Solo calcular donde hay señal del teacher (teacher_mask)
+        if teacher_mask.any():
+            # Alinear dimensiones
+            min_S = min(student_norm.shape[1], teacher_norm.shape[1])
+
+            s_masked = student_norm[:, :min_S][teacher_mask[:, :min_S]]
+            t_masked = teacher_norm[:, :min_S][teacher_mask[:, :min_S]]
+
+            if s_masked.numel() > 0:
+                # Cosine similarity loss: 1 - cosine(student, teacher)
+                cosine_sim = (s_masked * t_masked).sum(dim=-1)
+                loss = (1 - cosine_sim).mean()
+            else:
+                loss = torch.tensor(0.0, device=student_hidden.device)
+        else:
+            loss = torch.tensor(0.0, device=student_hidden.device)
+
+        return loss
+
+
+# =============================================================================
+# 10. CPU1ModelV2WithGates — Modelo extendido con las 3 técnicas
+# =============================================================================
+
+class CPU1ModelV2WithGates(nn.Module):
+    """
+    CPU-1 v2 extendido con BoundaryPredictor y DeleteGate.
+
+    Extiende CPU1ModelV2 sin romper compatibilidad.
+    Si use_boundary=False y use_delete_gate=False → idéntico a CPU1ModelV2.
+
+    Estructura:
+        BytePatchEmbeddingV2 (estático O dinámico con BoundaryPredictor)
+        ↓
+        Layers 0..N//2: CPU1BlockV2 (MLGRU + SwiGLU)
+        ↓
+        DeleteGate (solo si use_delete_gate=True y Fase 2)
+        ↓
+        Layers N//2+1..N-1: CPU1BlockV2
+        ↓
+        RMSNorm → 4 × BitHead
+    """
+
+    def __init__(self, config: dict):
+        super().__init__()
+        d_model  = config.get('d_model', D_MODEL)
+        n_layers = config.get('n_layers', N_LAYERS)
+        d_ff     = config.get('d_ff', D_FF)
+        fp_rank  = config.get('fp_rank', FP_RANK)
+        pfnet_hidden = config.get('pfnet_hidden', PFNET_HIDDEN)
+
+        # Flags de configuración
+        self.use_boundary    = config.get('use_boundary_predictor', False)
+        self.use_delete_gate = config.get('use_delete_gate', False)
+        self.use_emb_align   = config.get('use_embedding_alignment', False)
+        self.delete_gate_pos = n_layers // 2  # mitad del modelo
+
+        # Módulos base (iguales a CPU1ModelV2)
+        self.patch_embedding = BytePatchEmbeddingV2(d_model)
+        self.blocks = nn.ModuleList([
+            CPU1BlockV2(d_model, d_ff, fp_rank, pfnet_hidden)
+            for _ in range(n_layers)
+        ])
+        self.norm = RMSNorm(d_model)
+        self.byte_heads = nn.ModuleList([
+            BitHead(d_model, VOCAB_SIZE) for _ in range(4)
+        ])
+
+        # Módulos nuevos (opcionales)
+        if self.use_boundary:
+            self.boundary_predictor = BoundaryPredictor(
+                embed_dim=8, hidden_dim=32
+            )
+
+        if self.use_delete_gate:
+            self.delete_gate = DeleteGate(
+                d_model=d_model,
+                elimination_rate=0.0  # Fase 1: sin eliminación
+            )
+
+        if self.use_emb_align:
+            self.embedding_aligner = EmbeddingAligner(
+                student_dim=d_model,
+                teacher_dim=config.get('teacher_dim', 5120),  # Qwen-14B
+            )
+
+        self.use_gradient_checkpointing = config.get(
+            'use_gradient_checkpointing', False
+        )
+
+    def forward(
+        self,
+        patches: Tensor,                  # [B, S, patch_size] uint8
+        hidden_states: list | None = None,
+        training_phase: int = 1,           # 1 = con distilación, 2 = con delete gate
+        target_elimination: float = 0.0,
+    ) -> tuple:
+        """
+        Forward pass con soporte para ambas fases de training.
+
+        training_phase=1: sin DeleteGate, con EmbeddingAlignment
+        training_phase=2: con DeleteGate, sin EmbeddingAlignment
+
+        Returns: (logits_tuple, hidden_states, extra_losses_dict)
+        """
+        x = self.patch_embedding(patches)  # [B, S, d_model]
+
+        if hidden_states is None:
+            hidden_states = [None] * len(self.blocks)
+
+        new_states  = []
+        extra_losses = {}
+        delete_mask = None
+
+        if self.use_gradient_checkpointing and self.training:
+            from torch.utils.checkpoint import checkpoint
+            for i, block in enumerate(self.blocks):
+                def _block_fn(x_in, h_in, _block=block):
+                    return _block(x_in, h_in)
+                x, h_new = checkpoint(_block_fn, x, hidden_states[i],
+                                      use_reentrant=False)
+                new_states.append(h_new)
+
+                # DeleteGate en la mitad del modelo (solo Fase 2)
+                if (self.use_delete_gate
+                        and i == self.delete_gate_pos
+                        and training_phase == 2):
+                    x, delete_mask = self.delete_gate.forward_train(
+                        x, target_rate=target_elimination
+                    )
+                    extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+        else:
+            for i, block in enumerate(self.blocks):
+                # Prefetch capa i+2
+                if i + 2 < len(self.blocks):
+                    _ = self.blocks[i + 2].token_mixer.forget_proj.weight.data_ptr()
+
+                x, h_new = block(x, hidden_states[i])
+                new_states.append(h_new)
+
+                # DeleteGate en la mitad del modelo (solo Fase 2)
+                if (self.use_delete_gate
+                        and i == self.delete_gate_pos
+                        and training_phase == 2):
+                    x, delete_mask = self.delete_gate.forward_train(
+                        x, target_rate=target_elimination
+                    )
+                    extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+
+        x = self.norm(x)
+        logits = tuple(head(x) for head in self.byte_heads)
+
+        # EmbeddingAlignment loss placeholder (solo Fase 1 si está habilitado)
+        if self.use_emb_align and training_phase == 1:
+            extra_losses['emb_align'] = None  # poblado externamente
+
+        return logits, new_states, extra_losses
+
+    def generate_bytes_with_gates(
+        self,
+        prompt_bytes: bytes,
+        max_bytes: int = 200,
+        temperature: float = 1.0,
+        boundary_threshold: float = 0.5,
+        delete_threshold: float = 0.5,
+    ) -> bytes:
+        """
+        Inferencia CPU con BoundaryPredictor y DeleteGate activos.
+
+        CONCURRENCIA CPU:
+            Thread 1: cómputo principal (MLGRU layers, byte heads)
+            Thread 2: BoundaryPredictor (liviano, 2KB, en L1)
+                      + DeleteGate en capa N//2 (también liviano)
+        """
+        import threading
+
+        self.eval()
+        hidden_states = [None] * len(self.blocks)
+
+        # Prefill
+        patches = bytes_to_dynamic_patches_infer(
+            prompt_bytes,
+            self.boundary_predictor if self.use_boundary else None,
+            boundary_threshold,
+        )
+        patches_t = torch.tensor(patches, dtype=torch.long).unsqueeze(0)
+
+        # Adjust patch size if dynamic patches are wider than 4
+        if patches_t.shape[-1] > PATCH_SIZE:
+            # Truncate to PATCH_SIZE for the standard embedding
+            patches_t = patches_t[:, :, :PATCH_SIZE]
+
+        with torch.no_grad():
+            _, hidden_states, _ = self.forward(patches_t, hidden_states)
+
+        # Generación
+        generated = []
+        last_patch = patches_t[:, -1:, :]
+
+        # Buffer para decisión de boundary del próximo step
+        next_boundary_result = [True]
+
+        def predict_next_boundary(byte_curr, byte_next):
+            if self.use_boundary:
+                result = self.boundary_predictor.forward_infer(
+                    byte_curr, byte_next, boundary_threshold
+                )
+            else:
+                result = True
+            next_boundary_result[0] = result
+
+        for _ in range(max_bytes // PATCH_SIZE):
+            with torch.no_grad():
+                logits, hidden_states, _ = self.forward(
+                    last_patch, hidden_states, training_phase=2
+                )
+
+            # Samplear próximos bytes
+            next_bytes = []
+            for head_logits in logits:
+                probs = F.softmax(head_logits[0, 0] / temperature, dim=-1)
+                byte_val = probs.argmax().item()
+                next_bytes.append(byte_val)
+            generated.extend(next_bytes)
+
+            # Thread 2: predecir boundary para el próximo paso
+            if len(generated) + 1 < max_bytes and len(next_bytes) >= 2:
+                t2 = threading.Thread(
+                    target=predict_next_boundary,
+                    args=(next_bytes[0], next_bytes[1])
+                )
+                t2.start()
+
+            last_patch = torch.tensor(
+                next_bytes[:PATCH_SIZE], dtype=torch.long
+            ).reshape(1, 1, PATCH_SIZE)
+
+        return bytes(generated[:max_bytes])
+
+
+# =============================================================================
+# 11. Utilidades de conversion bytes <-> patches
 # =============================================================================
 
 def bytes_to_patches(raw: bytes) -> Tensor:

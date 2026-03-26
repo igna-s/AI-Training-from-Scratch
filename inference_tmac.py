@@ -394,6 +394,8 @@ class CPU1InferenceEngineLUT(CPU1InferenceEngine):
         self.hidden_states = alloc_hidden_states(n_layers, d_model)
         self.logits_buf = torch.zeros(4, VOCAB_SIZE, dtype=torch.float32)
         self.probs_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
+        self.sorted_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
+        self.idx_buf = torch.zeros(VOCAB_SIZE, dtype=torch.long)
 
         # Compilar
         compiled = compile_for_cpu_inference(model)
