@@ -1104,17 +1104,14 @@ class CPU1ModelV2WithGates(nn.Module):
         """
         Inferencia CPU con BoundaryPredictor y DeleteGate activos.
 
-        CONCURRENCIA CPU:
-            Thread 1: cómputo principal (MLGRU layers, byte heads)
-            Thread 2: BoundaryPredictor (liviano, 2KB, en L1)
-                      + DeleteGate en capa N//2 (también liviano)
+        BoundaryPredictor determina cuántos bytes aceptar de cada patch.
+        Es tan liviano (~2KB, <0.01ms) que se ejecuta inline — el overhead
+        de crear un thread en Windows (~0.1ms) supera el cómputo en sí.
         """
-        import threading
-
         self.eval()
         hidden_states = [None] * len(self.blocks)
 
-        # Prefill
+        # Prefill con parches dinámicos
         patches = bytes_to_dynamic_patches_infer(
             prompt_bytes,
             self.boundary_predictor if self.use_boundary else None,
@@ -1122,9 +1119,7 @@ class CPU1ModelV2WithGates(nn.Module):
         )
         patches_t = torch.tensor(patches, dtype=torch.long).unsqueeze(0)
 
-        # Adjust patch size if dynamic patches are wider than 4
         if patches_t.shape[-1] > PATCH_SIZE:
-            # Truncate to PATCH_SIZE for the standard embedding
             patches_t = patches_t[:, :, :PATCH_SIZE]
 
         with torch.no_grad():
@@ -1134,42 +1129,36 @@ class CPU1ModelV2WithGates(nn.Module):
         generated = []
         last_patch = patches_t[:, -1:, :]
 
-        # Buffer para decisión de boundary del próximo step
-        next_boundary_result = [True]
-
-        def predict_next_boundary(byte_curr, byte_next):
-            if self.use_boundary:
-                result = self.boundary_predictor.forward_infer(
-                    byte_curr, byte_next, boundary_threshold
-                )
-            else:
-                result = True
-            next_boundary_result[0] = result
-
-        for _ in range(max_bytes // PATCH_SIZE):
+        while len(generated) < max_bytes:
             with torch.no_grad():
                 logits, hidden_states, _ = self.forward(
                     last_patch, hidden_states, training_phase=2
                 )
 
-            # Samplear próximos bytes
+            # Samplear próximos bytes (todos los heads)
             next_bytes = []
             for head_logits in logits:
                 probs = F.softmax(head_logits[0, 0] / temperature, dim=-1)
                 byte_val = probs.argmax().item()
                 next_bytes.append(byte_val)
-            generated.extend(next_bytes)
 
-            # Thread 2: predecir boundary para el próximo paso
-            if len(generated) + 1 < max_bytes and len(next_bytes) >= 2:
-                t2 = threading.Thread(
-                    target=predict_next_boundary,
-                    args=(next_bytes[0], next_bytes[1])
-                )
-                t2.start()
+            # Boundary: determinar cuántos bytes aceptar del patch
+            patch_len = len(next_bytes)
+            if self.use_boundary and len(next_bytes) >= 2:
+                for k in range(len(next_bytes) - 1):
+                    if self.boundary_predictor.forward_infer(
+                        next_bytes[k], next_bytes[k + 1], boundary_threshold
+                    ):
+                        patch_len = k + 1
+                        break
 
+            generated.extend(next_bytes[:patch_len])
+
+            # Preparar siguiente input (pad si más corto que PATCH_SIZE)
+            input_bytes = next_bytes[:patch_len]
+            input_bytes += [0] * (PATCH_SIZE - len(input_bytes))
             last_patch = torch.tensor(
-                next_bytes[:PATCH_SIZE], dtype=torch.long
+                input_bytes, dtype=torch.long
             ).reshape(1, 1, PATCH_SIZE)
 
         return bytes(generated[:max_bytes])

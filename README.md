@@ -154,7 +154,7 @@ Raw Text Corpus
       ▼
 ┌─────────────────────────────┐
 │  train.py                   │  Student training with distillation
-│  (DDP, AMP, gradient        │  → Checkpoints
+│  (AMP, gradient              │  → Checkpoints
 │   accumulation)             │
 └─────────────────────────────┘
       │
@@ -191,9 +191,6 @@ Teacher (Qwen-14B in 4-bit NF4) runs **once**. Produces:
 # Single GPU
 python ablation_train.py --run run_10
 
-# Kaggle 2×T4
-torchrun --nproc_per_node=2 ablation_train.py --run run_10
-
 # Dry run (no GPU, random data)
 python ablation_train.py --run run_01 --dry_run --total_steps 10
 ```
@@ -204,11 +201,11 @@ For runs using DeleteGate (MrT5), training proceeds in two phases:
 
 - **Phase 1 (Distillation):** Standard knowledge distillation from Qwen-14B.
   DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
-  Command: `torchrun ... --run run_14 --phase 1`
+  Command: `python ablation_train.py --run run_14 --phase 1`
 
 - **Phase 2 (Compression):** DeleteGate activated. EmbeddingAligner frozen.
   Loss changes from KL+CE to CE-only (sequence length varies with gate).
-  Command: `torchrun ... --run run_14 --phase 2 --phase1_ckpt <path>`
+  Command: `python ablation_train.py --run run_14 --phase 2 --phase1_ckpt <path>`
 
 Suggested order to maximize early signal:
 ```bash
@@ -332,7 +329,7 @@ pip install pyarrow numpy
 
 - **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (`model_v2.py`)
 - **Data pipeline** — Teacher logprob extraction + BPE→byte marginalization (`extract_logprobs.py`, `byte_marginalization.py`)
-- **Training** — DDP, AMP, gradient accumulation, distillation loss with temperature scaling (`train.py`)
+- **Training** — AMP, gradient accumulation, distillation loss with temperature scaling (`train.py`)
 - **CPU inference** — INT8 packing with `torch._int_mm`, weight transposition, `torch.compile` (`inference_v2.py`)
 - **T-MAC LUT inference** — Zero-multiplication engine: ternary weights → precomputed LUT, lookup + accumulate only (`inference_tmac.py`)
 - **Ablation system** — 15-run experimental design, configurable models (Transformer/MLGRU × BPE/Byte × FP16/Ternary × CE/Distil), unified training loop, shared dataset pipeline, LaTeX table generation
@@ -340,7 +337,7 @@ pip install pyarrow numpy
 
 ### Pending
 
-- Run 15 ablation experiments on Kaggle 2×T4 and collect metrics
+- Run 15 ablation experiments on Kaggle T4 and collect metrics
 - Scale winning ablation config to 170M and train on full dataset
 - T-MAC C++ kernel integration (bitnet.cpp / llama.cpp)
 

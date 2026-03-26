@@ -1,7 +1,7 @@
 """
 Ablation experiment configuration for CPU-1 v2.
 
-Design: 11 runs at 50M params on Kaggle 2×T4, shared dataset.
+Design: 11 runs at 50M params on Kaggle T4, shared dataset.
 Variables under study:
   1. Token mixer:      Transformer (SlidingWindowAttention) vs MLGRU (MatMul-free)
   2. Tokenization:     BPE (~152K vocab) vs Byte-level (patches of 4 bytes)

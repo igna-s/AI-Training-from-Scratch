@@ -1,16 +1,13 @@
 """
 Training loop para CPU-1 con distillation loss.
-Diseñado para Kaggle 2×T4 con DDP, compatible con single-GPU y CPU (dry-run).
+Diseñado para Kaggle con 1×T4, compatible con CPU (dry-run).
 
 Uso:
     # Dry-run (testing sin GPU)
     python train.py --dry-run --total-steps 10 --log-every 1
 
-    # Single GPU con datos reales
+    # Single T4 con datos reales (Kaggle)
     python train.py --data-path ./distillation_dataset --total-steps 100000
-
-    # 2×T4 con DDP (Kaggle)
-    torchrun --nproc_per_node=2 train.py --data-path ./distillation_dataset
 """
 
 import os
@@ -24,10 +21,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 
 from model_v2 import CPU1ModelV2, D_MODEL, VOCAB_SIZE, PATCH_SIZE
@@ -399,7 +393,7 @@ def save_checkpoint(
     Guarda checkpoint a disco y opcionalmente sube a HuggingFace Hub.
 
     Args:
-        model:        modelo (puede ser DDP wrapper o modelo directo)
+        model:        modelo
         optimizer:    estado del optimizador (momentum, etc.)
         scaler:       estado del GradScaler (escala FP16 actual)
         step:         step de training actual
@@ -407,12 +401,8 @@ def save_checkpoint(
         path:         ruta local donde guardar el .pt
         upload_to_hf: si True, sube el .pt al repo de HuggingFace
         hf_repo:      repo HF destino (default: Cukinator/cpu1-checkpoints)
-
-    Nota: guarda model/optimizer/scaler state_dicts para poder resumir training.
-    Si el modelo esta wrapeado en DDP, extrae model.module para guardar sin el wrapper.
     """
-    # .module unwraps DDP para obtener el modelo real
-    state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+    state = model.state_dict()
     checkpoint = {
         'step': step,
         'model_state_dict': state,
@@ -447,16 +437,14 @@ def load_checkpoint(
 
     Args:
         path:      ruta al archivo .pt
-        model:     modelo destino (puede ser DDP wrapper)
+        model:     modelo destino
         optimizer: si se pasa, restaura el estado del optimizador (momentum, etc.)
         scaler:    si se pasa, restaura el estado del GradScaler
     Returns:
         step (int) desde el cual resumir el training
     """
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-
-    target = model.module if hasattr(model, 'module') else model
-    target.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint['model_state_dict'])
 
     if optimizer and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -468,48 +456,13 @@ def load_checkpoint(
 
 
 # =============================================================================
-# 6. DDP Setup
-# =============================================================================
-
-def setup_ddp() -> tuple[int, int]:
-    """
-    Inicializa DDP para 2xT4 en Kaggle (PCIe only, sin NVLink).
-
-    Returns:
-        (local_rank, world_size): indice de GPU local y cantidad total de GPUs
-
-    Las variables de entorno NCCL desactivan P2P e InfiniBand porque las T4
-    de Kaggle estan conectadas por PCIe, no por NVLink. Sin esto, NCCL intenta
-    usar P2P que falla silenciosamente y mata el rendimiento.
-    """
-    os.environ.setdefault("NCCL_P2P_DISABLE", "1")    # Sin peer-to-peer GPU directo
-    os.environ.setdefault("NCCL_IB_DISABLE", "1")     # Sin InfiniBand
-    os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo") # Usar loopback para comunicacion
-
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])  # Seteado por torchrun
-    torch.cuda.set_device(local_rank)
-
-    return local_rank, dist.get_world_size()
-
-
-# =============================================================================
-# 7. Training Loop
+# 6. Training Loop
 # =============================================================================
 
 def train(args: argparse.Namespace):
-    """Training loop principal."""
+    """Training loop principal (single T4)."""
     # --- Setup dispositivo ---
-    is_ddp = 'LOCAL_RANK' in os.environ
-    if is_ddp:
-        local_rank, world_size = setup_ddp()
-        device = torch.device(f'cuda:{local_rank}')
-        is_main = (local_rank == 0)
-    else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        local_rank = 0
-        world_size = 1
-        is_main = True
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # --- Optimizaciones globales GPU ---
     if device.type == 'cuda':
@@ -518,20 +471,15 @@ def train(args: argparse.Namespace):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    if is_main:
-        print(f"Device: {device} | World size: {world_size}")
+    print(f"Device: {device}")
 
     # --- Modelo ---
     model = CPU1ModelV2({
         'use_gradient_checkpointing': args.gradient_checkpointing,
     }).to(device)
 
-    if is_ddp:
-        model = DDP(model, device_ids=[local_rank])
-
-    if is_main:
-        n_params = sum(p.numel() for p in model.parameters())
-        print(f"Parámetros: {n_params:,}")
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Parámetros: {n_params:,}")
 
     # --- Optimizer ---
     param_groups = build_param_groups(model)
@@ -558,16 +506,14 @@ def train(args: argparse.Namespace):
             seq_len=args.seq_len,
         )
 
-    sampler = DistributedSampler(dataset, shuffle=True) if is_ddp else None
     use_workers = args.num_workers > 0 and not args.dry_run
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_per_gpu,
-        sampler=sampler,
-        shuffle=(sampler is None),
+        shuffle=True,
         num_workers=args.num_workers if not args.dry_run else 0,
-        pin_memory=(device.type == 'cuda'),  # Siempre pinned para GPU (DMA transfer)
-        drop_last=True,
+        pin_memory=(device.type == 'cuda'),  # DMA transfer directo sin copia extra
+        drop_last=False,
         persistent_workers=use_workers,  # Evita re-fork de workers cada epoch
         prefetch_factor=2 if use_workers else None,  # Prefetch 2 batches por worker
     )
@@ -576,19 +522,17 @@ def train(args: argparse.Namespace):
     start_step = 0
     if args.resume_from:
         start_step = load_checkpoint(args.resume_from, model, optimizer, scaler)
-        if is_main:
-            print(f"Resumiendo desde step {start_step}")
+        print(f"Resumiendo desde step {start_step}")
 
     # --- Config ---
     grad_accum = args.gradient_accumulation_steps
     total_steps = args.total_steps
-    effective_batch = args.batch_per_gpu * grad_accum * world_size
+    effective_batch = args.batch_per_gpu * grad_accum
 
-    if is_main:
-        print(f"Batch efectivo: {effective_batch} "
-              f"({args.batch_per_gpu} × {grad_accum} accum × {world_size} GPUs)")
-        print(f"Steps: {start_step} ->{total_steps}")
-        print(f"Seq len: {args.seq_len} patches = {args.seq_len * PATCH_SIZE} bytes")
+    print(f"Batch efectivo: {effective_batch} "
+          f"({args.batch_per_gpu} × {grad_accum} accum)")
+    print(f"Steps: {start_step} → {total_steps}")
+    print(f"Seq len: {args.seq_len} patches = {args.seq_len * PATCH_SIZE} bytes")
 
     # --- Training loop ---
     model.train()
@@ -605,7 +549,7 @@ def train(args: argparse.Namespace):
             pg['lr'] = lr * pg.get('lr_scale', 1.0)
 
         optimizer.zero_grad(set_to_none=True)  # Más rápido que fill(0): libera memoria
-        should_log = (step % args.log_every == 0) and is_main
+        should_log = (step % args.log_every == 0)
 
         for micro_step in range(grad_accum):
             # Obtener batch (reciclar dataloader al agotarse)
@@ -613,8 +557,6 @@ def train(args: argparse.Namespace):
                 batch = next(data_iter)
             except StopIteration:
                 epoch += 1
-                if is_ddp:
-                    sampler.set_epoch(epoch)
                 data_iter = iter(dataloader)
                 batch = next(data_iter)
 
@@ -623,26 +565,20 @@ def train(args: argparse.Namespace):
             teacher_probs = batch['teacher_probs'].to(device, non_blocking=True)
             teacher_mask = batch['teacher_mask'].to(device, non_blocking=True)
 
-            # no_sync() evita sincronizar gradientes entre GPUs en micro-steps intermedios.
-            # Solo en el ultimo micro-step se hace all-reduce (suma gradientes de ambas GPUs).
-            # Esto ahorra ancho de banda PCIe, critico sin NVLink.
             is_last_micro = (micro_step == grad_accum - 1)
-            sync_ctx = contextlib.nullcontext() if (is_last_micro or not is_ddp) else model.no_sync()
+            amp_ctx = torch.amp.autocast('cuda', dtype=torch.float16) if use_amp else contextlib.nullcontext()
+            with amp_ctx:
+                logits, _ = model(patches)
+                loss, metrics = distillation_loss(
+                    logits, targets, teacher_probs, teacher_mask,
+                    temperature=args.temperature,
+                    compute_metrics=(should_log and is_last_micro),
+                )
+                if is_last_micro:
+                    last_loss = loss.item()
+                loss = loss / grad_accum
 
-            with sync_ctx:
-                amp_ctx = torch.amp.autocast('cuda', dtype=torch.float16) if use_amp else contextlib.nullcontext()
-                with amp_ctx:
-                    logits, _ = model(patches)
-                    loss, metrics = distillation_loss(
-                        logits, targets, teacher_probs, teacher_mask,
-                        temperature=args.temperature,
-                        compute_metrics=(should_log and is_last_micro),
-                    )
-                    if is_last_micro:
-                        last_loss = loss.item()
-                    loss = loss / grad_accum
-
-                scaler.scale(loss).backward()
+            scaler.scale(loss).backward()
 
         # Gradient clipping
         scaler.unscale_(optimizer)
@@ -676,7 +612,7 @@ def train(args: argparse.Namespace):
             log_timer = time.time()
 
         # Checkpoint
-        if step > 0 and step % args.save_every == 0 and is_main:
+        if step > 0 and step % args.save_every == 0:
             ckpt_path = str(Path(args.output_dir) / f"checkpoint_{step}.pt")
             save_checkpoint(
                 model, optimizer, scaler, step,
@@ -687,18 +623,14 @@ def train(args: argparse.Namespace):
             print(f"  Checkpoint: {ckpt_path}")
 
     # --- Final ---
-    if is_main:
-        ckpt_path = str(Path(args.output_dir) / f"checkpoint_final.pt")
-        save_checkpoint(
-            model, optimizer, scaler, total_steps,
-            last_loss,
-            ckpt_path,
-            upload_to_hf=args.upload_hf,
-        )
-        print(f"Training completo. Final: {ckpt_path}")
-
-    if is_ddp:
-        dist.destroy_process_group()
+    ckpt_path = str(Path(args.output_dir) / f"checkpoint_final.pt")
+    save_checkpoint(
+        model, optimizer, scaler, total_steps,
+        last_loss,
+        ckpt_path,
+        upload_to_hf=args.upload_hf,
+    )
+    print(f"Training completo. Final: {ckpt_path}")
 
 
 # =============================================================================
@@ -738,7 +670,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--resume-from', type=str, default=None,
                    help="Ruta a checkpoint .pt para resumir")
 
-    # Workers: 4 por GPU para saturar el pipeline de datos en T4
+    # Workers: 4 para saturar el pipeline de datos en T4
     p.add_argument('--num-workers', type=int, default=4)
 
     return p.parse_args()
@@ -780,8 +712,7 @@ def train_phase2(
         El "nuevo teacher" para Fase 2 es el propio modelo de Fase 1.
 
     CONCURRENCIA GPU en Fase 2:
-        - Mismo DDP setup que Fase 1
-        - La elimination_loss es reducida con dist.all_reduce
+        - Single T4: gradient accumulation para batch efectivo grande
         - Los gradientes fluyen a través del soft mask del DeleteGate
     """
     from model_v2 import CPU1ModelV2WithGates

@@ -5,11 +5,8 @@ One script runs any of the 11 ablation runs based on config.
 All runs share the same dataset (Cukinator/cpu1-ablation-dataset).
 
 Usage:
-    # Single GPU
+    # Single T4 (Kaggle)
     python ablation_train.py --run run_10
-
-    # Kaggle 2×T4
-    torchrun --nproc_per_node=2 ablation_train.py --run run_10
 
     # Dry run (no GPU, random data)
     python ablation_train.py --run run_01 --dry_run --total_steps 10
@@ -27,9 +24,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from torch.utils.data import Dataset, DataLoader
 from torch import Tensor
 
 from ablation_config import BASE_CONFIG, RUN_CONFIGS, get_run_config
@@ -369,9 +364,8 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
     perplexity = math.exp(min(avg_loss, 20))  # cap to avoid overflow
 
     # CPU throughput
-    raw_model = model.module if hasattr(model, 'module') else model
-    tps = measure_cpu_throughput(raw_model, config)
-    ram_mb = sum(p.numel() * p.element_size() for p in raw_model.parameters()) / 1e6
+    tps = measure_cpu_throughput(model, config)
+    ram_mb = sum(p.numel() * p.element_size() for p in model.parameters()) / 1e6
 
     metrics = {
         'run_name': config.get('name', 'unknown'),
@@ -379,7 +373,7 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
         'tokens_per_sec_cpu': tps,
         'ram_mb': ram_mb,
         'val_loss': avg_loss,
-        'n_params_M': sum(p.numel() for p in raw_model.parameters()) / 1e6,
+        'n_params_M': sum(p.numel() for p in model.parameters()) / 1e6,
     }
 
     print(f"\n[Val] {config.get('name', '?')}")
@@ -398,10 +392,9 @@ def save_checkpoint(model: nn.Module, optimizer, run_name: str,
                     metrics: dict, config: dict, step: int) -> str:
     """Save checkpoint locally and optionally to HuggingFace Hub."""
     path = f"checkpoint_{run_name}_step{step}.pt"
-    raw_model = model.module if hasattr(model, 'module') else model
 
     torch.save({
-        'model_state_dict': raw_model.state_dict(),
+        'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'metrics': metrics,
         'step': step,
@@ -444,20 +437,12 @@ def train_run(run_name: str, dry_run: bool = False,
 
     assert config['seed'] == BASE_CONFIG['seed'], "Seed mismatch"
 
-    # DDP setup
-    use_ddp = 'WORLD_SIZE' in os.environ and int(os.environ['WORLD_SIZE']) > 1
-    if use_ddp:
-        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
-        dist.init_process_group(backend="nccl")
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(local_rank)
-    else:
-        local_rank = 0
-        if torch.cuda.is_available() and not dry_run:
-            torch.cuda.set_device(0)
+    # Device setup (single T4)
+    if torch.cuda.is_available() and not dry_run:
+        torch.cuda.set_device(0)
 
     torch.manual_seed(config['seed'])
-    device = torch.device('cpu') if dry_run else torch.device(f'cuda:{local_rank}')
+    device = torch.device('cpu') if dry_run else torch.device('cuda:0')
 
     # Optimizaciones globales GPU (T4)
     if device.type == 'cuda':
@@ -466,12 +451,11 @@ def train_run(run_name: str, dry_run: bool = False,
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    if local_rank == 0:
-        print(f"\n{'=' * 60}")
-        print(f"Run: {run_name}")
-        print(f"Description: {config['description']}")
-        print(f"Device: {device}")
-        print(f"{'=' * 60}\n")
+    print(f"\n{'=' * 60}")
+    print(f"Run: {run_name}")
+    print(f"Description: {config['description']}")
+    print(f"Device: {device}")
+    print(f"{'=' * 60}\n")
 
     # Build model — activar gradient checkpointing para ahorrar VRAM en T4
     if not dry_run:
@@ -480,44 +464,33 @@ def train_run(run_name: str, dry_run: bool = False,
 
     # Phase 2: load Phase 1 checkpoint, activate DeleteGate, freeze EmbAligner
     if phase == 2 and phase1_ckpt:
-        if local_rank == 0:
-            print(f"[Phase 2] Loading Phase 1 checkpoint: {phase1_ckpt}")
+        print(f"[Phase 2] Loading Phase 1 checkpoint: {phase1_ckpt}")
         ckpt = torch.load(phase1_ckpt, map_location='cpu', weights_only=False)
-        raw_model = model
-        raw_model.load_state_dict(ckpt['model_state_dict'], strict=False)
-        if hasattr(raw_model, 'delete_gate'):
-            raw_model.delete_gate.set_elimination_rate(
+        model.load_state_dict(ckpt['model_state_dict'], strict=False)
+        if hasattr(model, 'delete_gate'):
+            model.delete_gate.set_elimination_rate(
                 config.get('target_elimination', 0.4)
             )
-        if hasattr(raw_model, 'embedding_aligner'):
-            for p in raw_model.embedding_aligner.parameters():
+        if hasattr(model, 'embedding_aligner'):
+            for p in model.embedding_aligner.parameters():
                 p.requires_grad = False
-        if local_rank == 0:
-            print(f"[Phase 2] DeleteGate active, EmbAligner frozen")
-
-    if use_ddp:
-        model = DDP(model, device_ids=[local_rank])
+        print(f"[Phase 2] DeleteGate active, EmbAligner frozen")
 
     # Dataset
     train_ds = load_ablation_dataset(config, split='train', dry_run=dry_run)
     val_ds = load_ablation_dataset(config, split='val' if not dry_run else 'train',
                                     dry_run=dry_run)
 
-    train_sampler = (
-        DistributedSampler(train_ds, shuffle=True, seed=config['seed'])
-        if use_ddp else None
-    )
     n_workers = 0 if dry_run else 4  # 4 workers: paralelismo de datos para saturar GPU
     train_loader = DataLoader(
         train_ds,
         batch_size=config['batch_per_gpu'],
-        sampler=train_sampler,
-        shuffle=(train_sampler is None),
+        shuffle=True,
         num_workers=n_workers,
         pin_memory=(device.type == 'cuda'),  # DMA transfer GPU sin copia extra
         persistent_workers=(n_workers > 0),  # Evitar re-fork cada epoch
         prefetch_factor=2 if n_workers > 0 else None,  # Prefetch 2 batches/worker
-        drop_last=True,  # Evitar batches irregulares que causan DDP hangs
+        drop_last=False,
     )
 
     # Optimizer with per-group weight decay
@@ -550,17 +523,14 @@ def train_run(run_name: str, dry_run: bool = False,
     use_amp = not dry_run and device.type == 'cuda'
     scaler = torch.amp.GradScaler() if use_amp else None
 
-    # torch.compile para training: fusiona kernels, reduce overhead de lanzamiento CUDA
+    # torch.compile: fusiona kernels, reduce overhead de lanzamiento CUDA
     # En T4 con modelos ~50M params, ganancia tipica 10-20% throughput.
-    # PyTorch 2.x recomienda: DDP primero, compile despues (compile wrappea DDP).
     if device.type == 'cuda' and not dry_run:
         try:
             model = torch.compile(model, mode="reduce-overhead")
-            if local_rank == 0:
-                print("[Opt] torch.compile enabled for training")
+            print("[Opt] torch.compile enabled for training")
         except Exception as e:
-            if local_rank == 0:
-                print(f"[Opt] torch.compile failed ({e}), using eager mode")
+            print(f"[Opt] torch.compile failed ({e}), using eager mode")
 
     # Training loop
     model.train()
@@ -595,42 +565,33 @@ def train_run(run_name: str, dry_run: bool = False,
             if t_ids is not None:
                 t_ids = t_ids.to(device, non_blocking=True)
 
-            # no_sync() evita all-reduce en micro-steps intermedios.
-            # CRITICO para 2xT4 PCIe: sin esto, cada micro-step sincroniza
-            # gradientes por PCIe (~12 GB/s), desperdiciando ~50% del bandwidth.
-            # Solo el ultimo micro-step hace all-reduce (suma gradientes de ambas GPUs).
             is_last_micro = (micro_step % accum_steps == accum_steps - 1)
-            sync_ctx = (contextlib.nullcontext()
-                        if (is_last_micro or not use_ddp)
-                        else model.no_sync())
-
-            with sync_ctx:
-                amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
-                           if use_amp else contextlib.nullcontext())
-                with amp_ctx:
-                    # Support both 2-tuple (runs 01-11) and 3-tuple (runs 12-15)
-                    training_phase = config.get('_current_phase', 1)
-                    target_elim = config.get('target_elimination', 0.0)
-                    result = model(
-                        x, training_phase=training_phase,
-                        target_elimination=target_elim,
-                    )
-                    if len(result) == 3:
-                        logits, _, extra_losses = result
-                    else:
-                        logits, _ = result
-                        extra_losses = {}
-                    loss = compute_loss(logits, targets, t_probs, t_mask, config,
-                                        teacher_ids=t_ids)
-                    # Add extra losses from gates (runs 12-15)
-                    if 'delete_gate' in extra_losses:
-                        loss = loss + 0.1 * extra_losses['delete_gate']
-                    loss = loss / accum_steps
-
-                if use_amp:
-                    scaler.scale(loss).backward()
+            amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
+                       if use_amp else contextlib.nullcontext())
+            with amp_ctx:
+                # Support both 2-tuple (runs 01-11) and 3-tuple (runs 12-15)
+                training_phase = config.get('_current_phase', 1)
+                target_elim = config.get('target_elimination', 0.0)
+                result = model(
+                    x, training_phase=training_phase,
+                    target_elimination=target_elim,
+                )
+                if len(result) == 3:
+                    logits, _, extra_losses = result
                 else:
-                    loss.backward()
+                    logits, _ = result
+                    extra_losses = {}
+                loss = compute_loss(logits, targets, t_probs, t_mask, config,
+                                    teacher_ids=t_ids)
+                # Add extra losses from gates (runs 12-15)
+                if 'delete_gate' in extra_losses:
+                    loss = loss + 0.1 * extra_losses['delete_gate']
+                loss = loss / accum_steps
+
+            if use_amp:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
             losses.append(loss.item() * accum_steps)
             micro_step += 1
@@ -655,7 +616,7 @@ def train_run(run_name: str, dry_run: bool = False,
                 for pg in optimizer.param_groups:
                     pg['lr'] = get_lr(optim_step, config)
 
-                if optim_step % 500 == 0 and local_rank == 0:
+                if optim_step % 500 == 0:
                     avg_loss = sum(losses[-100:]) / min(100, len(losses))
                     elapsed = time.time() - t_start
                     print(f"Step {optim_step:5d}/{total_steps} | "
@@ -666,28 +627,22 @@ def train_run(run_name: str, dry_run: bool = False,
                 # Save periodic checkpoint
                 if (optim_step > 0
                         and optim_step % config['save_every_steps'] == 0
-                        and local_rank == 0 and not dry_run):
+                        and not dry_run):
                     save_checkpoint(model, optimizer, run_name, {},
                                     config, optim_step)
 
     # Final evaluation
-    if local_rank == 0:
-        val_metrics = evaluate_run(model, val_ds, config, device)
+    val_metrics = evaluate_run(model, val_ds, config, device)
 
-        if not dry_run:
-            save_checkpoint(model, optimizer, run_name, val_metrics,
-                            config, optim_step)
+    if not dry_run:
+        save_checkpoint(model, optimizer, run_name, val_metrics,
+                        config, optim_step)
 
-        # Save metrics JSON
-        metrics_path = f"metrics_{run_name}.json"
-        with open(metrics_path, 'w') as f:
-            json.dump(val_metrics, f, indent=2)
-        print(f"\n[Done] Metrics saved to {metrics_path}")
-    else:
-        val_metrics = {}
-
-    if use_ddp:
-        dist.destroy_process_group()
+    # Save metrics JSON
+    metrics_path = f"metrics_{run_name}.json"
+    with open(metrics_path, 'w') as f:
+        json.dump(val_metrics, f, indent=2)
+    print(f"\n[Done] Metrics saved to {metrics_path}")
 
     return val_metrics
 
