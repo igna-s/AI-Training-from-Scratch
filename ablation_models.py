@@ -373,6 +373,8 @@ class AblationModel(nn.Module):
         hidden_states: list | None = None,
         training_phase: int = 1,
         target_elimination: float = 0.0,
+        teacher_hidden: Tensor | None = None,
+        teacher_mask: Tensor | None = None,
     ) -> tuple:
         """
         Args:
@@ -380,6 +382,8 @@ class AblationModel(nn.Module):
             hidden_states: list of per-layer MLGRU states (None for transformer)
             training_phase: 1 = distillation, 2 = with delete gate
             target_elimination: fraction of states to eliminate (Phase 2)
+            teacher_hidden: [B, S, teacher_dim] float — projected teacher hidden states
+            teacher_mask: [B, S] bool — where teacher signal exists
 
         Returns:
             For byte:  (tuple of 4 × [B, S, 256], new_hidden_states, extra_losses)
@@ -435,9 +439,12 @@ class AblationModel(nn.Module):
         else:
             logits = self.heads[0](h)
 
-        # EmbeddingAlignment placeholder (Phase 1 only)
-        if self.use_emb_align and training_phase == 1:
-            extra_losses['emb_align'] = None  # populated externally
+        # EmbeddingAlignment (Phase 1 only)
+        if (self.use_emb_align and training_phase == 1
+                and teacher_hidden is not None and teacher_mask is not None):
+            extra_losses['emb_align'] = self.embedding_aligner.alignment_loss(
+                h, teacher_hidden, teacher_mask,
+            )
 
         return logits, new_states, extra_losses
 

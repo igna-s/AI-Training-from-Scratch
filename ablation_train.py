@@ -1,7 +1,7 @@
 """
 Unified training loop for the CPU-1 ablation study.
 
-One script runs any of the 11 ablation runs based on config.
+One script runs any of the 15 ablation runs based on config.
 All runs share the same dataset (Cukinator/cpu1-ablation-dataset).
 
 Usage:
@@ -56,15 +56,18 @@ class DryRunDataset(Dataset):
             if self.sig in ('distillation', 'distillation_then_ce'):
                 sample['teacher_probs'] = torch.zeros(self.seq_len, 256)
                 sample['teacher_mask'] = torch.zeros(self.seq_len, dtype=torch.bool)
+            if self.config.get('use_embedding_alignment'):
+                teacher_dim = self.config.get('teacher_dim', 5120)
+                sample['teacher_hidden'] = torch.randn(self.seq_len, teacher_dim)
         else:
             vocab = self.config.get('bpe_vocab_size', 152064)
             input_ids = torch.randint(0, vocab, (self.seq_len,))
             labels = torch.randint(0, vocab, (self.seq_len,))
             sample = {'input_ids': input_ids, 'labels': labels}
             if self.sig == 'distillation':
-                sample['teacher_probs_bpe'] = torch.zeros(self.seq_len, 64)
+                sample['teacher_probs_bpe'] = torch.zeros(self.seq_len, 128)
                 sample['teacher_ids_bpe'] = torch.zeros(
-                    self.seq_len, 64, dtype=torch.long
+                    self.seq_len, 128, dtype=torch.long
                 )
                 sample['teacher_mask_bpe'] = torch.zeros(
                     self.seq_len, dtype=torch.bool
@@ -104,6 +107,13 @@ class ByteLevelDataset(Dataset):
             sample['teacher_mask'] = torch.tensor(
                 row['teacher_mask'], dtype=torch.bool
             )
+        if 'teacher_hidden' in row and row['teacher_hidden'] is not None:
+            teacher_dim = row.get('teacher_dim', 0)
+            if teacher_dim > 0:
+                sample['teacher_hidden'] = (
+                    torch.tensor(row['teacher_hidden'], dtype=torch.float32)
+                    .reshape(S, teacher_dim)
+                )
         return sample
 
 
@@ -116,7 +126,7 @@ class BPEDataset(Dataset):
       teacher_ids_bpe       → [seq_len * TOP_K] int32,   reshaped to [seq_len, TOP_K]
       teacher_mask_bpe      → [seq_len] bool
     """
-    TOP_K = 64
+    TOP_K = 128
 
     def __init__(self, hf_dataset, config: dict):
         self.ds = hf_dataset
@@ -558,12 +568,15 @@ def train_run(run_name: str, dry_run: bool = False,
             t_probs = batch.get('teacher_probs', batch.get('teacher_probs_bpe'))
             t_mask = batch.get('teacher_mask', batch.get('teacher_mask_bpe'))
             t_ids = batch.get('teacher_ids_bpe')
+            t_hidden = batch.get('teacher_hidden')
             if t_probs is not None:
                 t_probs = t_probs.to(device, non_blocking=True)
             if t_mask is not None:
                 t_mask = t_mask.to(device, non_blocking=True)
             if t_ids is not None:
                 t_ids = t_ids.to(device, non_blocking=True)
+            if t_hidden is not None:
+                t_hidden = t_hidden.to(device, non_blocking=True)
 
             is_last_micro = (micro_step % accum_steps == accum_steps - 1)
             amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
@@ -575,6 +588,7 @@ def train_run(run_name: str, dry_run: bool = False,
                 result = model(
                     x, training_phase=training_phase,
                     target_elimination=target_elim,
+                    teacher_hidden=t_hidden, teacher_mask=t_mask,
                 )
                 if len(result) == 3:
                     logits, _, extra_losses = result
@@ -583,9 +597,11 @@ def train_run(run_name: str, dry_run: bool = False,
                     extra_losses = {}
                 loss = compute_loss(logits, targets, t_probs, t_mask, config,
                                     teacher_ids=t_ids)
-                # Add extra losses from gates (runs 12-15)
+                # Add extra losses (runs 12-15)
                 if 'delete_gate' in extra_losses:
                     loss = loss + 0.1 * extra_losses['delete_gate']
+                if 'emb_align' in extra_losses and extra_losses['emb_align'] is not None:
+                    loss = loss + config.get('lambda_align', 0.3) * extra_losses['emb_align']
                 loss = loss / accum_steps
 
             if use_amp:

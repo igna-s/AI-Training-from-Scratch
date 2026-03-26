@@ -1,13 +1,15 @@
 """
-Build the shared dataset for the CPU-1 ablation study.
+Build the shared dataset for the CPU-1 ablation study (all 15 runs).
 
 Runs ONCE. Produces both BPE and byte-level datasets from the same corpus,
-using Qwen-14B as teacher. All 11 ablation runs share this dataset.
+using Qwen-14B as teacher. Teacher hidden states are projected (5120→128)
+for EmbeddingAligner (runs 13, 15).
 
 Pipeline:
   1. Download FineWeb corpus
-  2. Extract top-k logprobs from Qwen-14B (4-bit NF4) — THE SLOW PART (~6-10h on T4)
-  3a. Marginalize BPE→byte for byte-level runs (08-11)
+  2. Extract top-128 logprobs + projected hidden states from Qwen-14B (4-bit NF4)
+     THE SLOW PART (~8-12h on T4 with seq_len=5000)
+  3a. Marginalize BPE→byte for byte-level runs (08-15)
   3b. Build BPE dataset for BPE runs (01-07)
   4. Upload to HuggingFace Hub
 
@@ -47,12 +49,26 @@ from tqdm import tqdm
 TEACHER_MODEL = "Qwen/Qwen2.5-14B"
 DATASET_REPO = "Cukinator/cpu1-ablation-dataset"
 OUTPUT_DIR = Path("./shared_dataset")
-TOP_K_LOGPROBS = 64
+TOP_K_LOGPROBS = 128
 PATCH_SIZE = 4
-SEQ_LEN_PATCHES = 2048
-SEQ_LEN_TOKENS = 2048
+SEQ_LEN_PATCHES = 5000
+SEQ_LEN_TOKENS = 5000
+ALIGN_DIM = 128             # Project teacher hidden 5120→128 (Johnson-Lindenstrauss)
 SEED = 42
 BATCH_SIZE_TEACHER = 4
+
+# Lazy-initialized random orthogonal projection matrix
+_PROJECTION_MATRIX = None
+
+def _get_projection_matrix(teacher_dim: int, align_dim: int = ALIGN_DIM):
+    """Random orthogonal projection, seeded for reproducibility."""
+    global _PROJECTION_MATRIX
+    if _PROJECTION_MATRIX is None:
+        rng = np.random.RandomState(SEED)
+        rand_mat = rng.randn(teacher_dim, align_dim).astype(np.float32)
+        q, _ = np.linalg.qr(rand_mat)
+        _PROJECTION_MATRIX = torch.from_numpy(q[:, :align_dim])
+    return _PROJECTION_MATRIX
 
 
 # ============================================================
@@ -70,7 +86,7 @@ def load_teacher(model_name: str = TEACHER_MODEL):
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_use_double_quant=True,
-        device_map="auto",
+        device_map="cuda:0",
     )
     model.eval()
     print(f"[Teacher] Ready. Vocab size: {tokenizer.vocab_size}")
@@ -190,8 +206,9 @@ def extract_logprobs_and_hidden(
         mid_layer = hidden_layer if hidden_layer >= 0 else n_layers // 2
         teacher_hidden = outputs.hidden_states[mid_layer][0]  # [S, D]
 
-        # Comprimir a FP16 para ahorrar espacio
-        teacher_hidden_fp16 = teacher_hidden.half().cpu()
+        # Project 5120→ALIGN_DIM and compress to FP16
+        proj = _get_projection_matrix(teacher_hidden.shape[-1])
+        teacher_hidden_proj = (teacher_hidden.float().cpu() @ proj).half()
 
     log_probs = torch.log_softmax(logits, dim=-1)
     top_logprobs, top_indices = torch.topk(log_probs, k=top_k, dim=-1)
@@ -241,19 +258,28 @@ def extract_logprobs_and_hidden(
         'text_bytes': list(text.encode('utf-8')),
         'positions': positions,
         'n_tokens': len(tokens),
-        'teacher_hidden': teacher_hidden_fp16.tolist(),  # [n_tokens, teacher_dim]
-        'teacher_dim': teacher_hidden_fp16.shape[-1],
+        'teacher_hidden': teacher_hidden_proj.tolist(),  # [n_tokens, ALIGN_DIM]
+        'teacher_dim': teacher_hidden_proj.shape[-1],
     }
 
 
 def _append_to_parquet(records: list[dict], path: Path) -> None:
     """Append records to a Parquet file."""
-    table = pa.table({
+    columns = {
         'doc_id':     pa.array([r['doc_id'] for r in records], type=pa.int32()),
         'text_bytes': pa.array([r['text_bytes'] for r in records]),
         'positions':  pa.array([r['positions'] for r in records], type=pa.string()),
         'n_tokens':   pa.array([r['n_tokens'] for r in records], type=pa.int32()),
-    })
+    }
+    if records and 'teacher_hidden' in records[0]:
+        columns['teacher_hidden'] = pa.array(
+            [r['teacher_hidden'] for r in records],
+            type=pa.list_(pa.float32()),
+        )
+        columns['teacher_dim'] = pa.array(
+            [r['teacher_dim'] for r in records], type=pa.int32(),
+        )
+    table = pa.table(columns)
     if path.exists():
         existing = pq.read_table(str(path))
         combined = pa.concat_tables([existing, table])
@@ -267,7 +293,12 @@ def run_logprob_extraction(
     output_path: str,
     resume: bool = True,
 ) -> None:
-    """Extract logprobs for entire corpus. Supports resume."""
+    """Extract logprobs + projected hidden states for entire corpus.
+
+    Always extracts teacher hidden states (projected 5120→ALIGN_DIM)
+    for EmbeddingAligner (runs 13, 15). Uses ~50% more VRAM but
+    storage is small thanks to random orthogonal projection.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -285,13 +316,21 @@ def run_logprob_extraction(
         if not text.strip():
             continue
 
-        result = extract_logprobs_single(model, tokenizer, text, TOP_K_LOGPROBS)
-        batch_results.append({
+        result = extract_logprobs_and_hidden(
+            model, tokenizer, text, TOP_K_LOGPROBS,
+        )
+        record = {
             'doc_id':     i,
             'text_bytes': result['text_bytes'],
             'positions':  json.dumps(result['positions']),
             'n_tokens':   result['n_tokens'],
-        })
+            # Flatten [n_tokens, ALIGN_DIM] → [n_tokens * ALIGN_DIM]
+            'teacher_hidden': [
+                v for row in result['teacher_hidden'] for v in row
+            ],
+            'teacher_dim': result['teacher_dim'],
+        }
+        batch_results.append(record)
 
         # Save every 100 docs for crash safety
         if len(batch_results) >= 100:
@@ -330,8 +369,18 @@ def _marginalize_one_row(row: dict) -> dict:
             byte_probs = {k: v / total for k, v in byte_probs.items()}
         byte_to_teacher[byte_off] = byte_probs
 
+    # Teacher hidden alignment (for EmbeddingAligner, runs 13/15)
+    has_hidden = 'teacher_hidden' in row and row['teacher_hidden'] is not None
+    teacher_dim = row.get('teacher_dim', 0) if has_hidden else 0
+    byte_offset_to_pos = {}
+    if has_hidden:
+        for pos_idx, pos in enumerate(positions):
+            byte_offset_to_pos[pos['byte_offset']] = pos_idx
+        hidden_flat = row['teacher_hidden']
+
     n_patches = len(text_bytes) // PATCH_SIZE
     patches, targets, teacher_probs, teacher_mask = [], [], [], []
+    teacher_hidden_patches = [] if has_hidden else None
     n_with_teacher = 0
 
     for p_idx in range(n_patches - 1):
@@ -348,11 +397,24 @@ def _marginalize_one_row(row: dict) -> dict:
             teacher_probs.append([0.0] * 256)
         teacher_mask.append(has_teacher)
 
-    return {
+        if has_hidden:
+            if has_teacher and target_start in byte_offset_to_pos:
+                pos_idx = byte_offset_to_pos[target_start]
+                start = pos_idx * teacher_dim
+                end = start + teacher_dim
+                teacher_hidden_patches.append(hidden_flat[start:end])
+            else:
+                teacher_hidden_patches.append([0.0] * teacher_dim)
+
+    result = {
         'patches': patches, 'targets': targets,
         'teacher_probs': teacher_probs, 'teacher_mask': teacher_mask,
         'n_with_teacher': n_with_teacher,
     }
+    if has_hidden:
+        result['teacher_hidden'] = teacher_hidden_patches
+        result['teacher_dim'] = teacher_dim
+    return result
 
 
 def build_byte_level_dataset(
@@ -366,10 +428,11 @@ def build_byte_level_dataset(
     Parallelizado con ProcessPoolExecutor para saturar CPU multi-core.
 
     Output per sequence:
-        patches:       [seq_len, 4] uint8
-        targets:       [seq_len, 4] uint8
-        teacher_probs: [seq_len, 256] float32  (sparse)
-        teacher_mask:  [seq_len] bool
+        patches:        [seq_len, 4] uint8
+        targets:        [seq_len, 4] uint8
+        teacher_probs:  [seq_len, 256] float32  (sparse)
+        teacher_mask:   [seq_len] bool
+        teacher_hidden: [seq_len, teacher_dim] float32  (optional, if extracted)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -385,6 +448,9 @@ def build_byte_level_dataset(
     all_targets = []
     all_teacher_probs = []
     all_teacher_mask = []
+    all_teacher_hidden = []
+    has_hidden = False
+    teacher_dim = 0
     stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
 
     # Descomposición de datos: cada worker procesa un documento independiente
@@ -406,17 +472,25 @@ def build_byte_level_dataset(
         all_teacher_mask.extend(result['teacher_mask'])
         stats['n_with_teacher'] += result['n_with_teacher']
         stats['n_patches_total'] += len(result['patches'])
+        if 'teacher_hidden' in result:
+            has_hidden = True
+            teacher_dim = result['teacher_dim']
+            all_teacher_hidden.extend(result['teacher_hidden'])
 
         while len(all_patches) >= seq_len:
+            hidden_slice = all_teacher_hidden[:seq_len] if has_hidden else None
             _save_byte_sequence(
                 all_patches[:seq_len], all_targets[:seq_len],
                 all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
                 output_dir, stats['n_sequences'],
+                teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
             )
             all_patches = all_patches[seq_len:]
             all_targets = all_targets[seq_len:]
             all_teacher_probs = all_teacher_probs[seq_len:]
             all_teacher_mask = all_teacher_mask[seq_len:]
+            if has_hidden:
+                all_teacher_hidden = all_teacher_hidden[seq_len:]
             stats['n_sequences'] += 1
 
     coverage = stats['n_with_teacher'] / max(stats['n_patches_total'], 1) * 100
@@ -430,21 +504,30 @@ def build_byte_level_dataset(
 
 
 def _save_byte_sequence(patches, targets, teacher_probs, teacher_mask,
-                        output_dir: Path, seq_idx: int) -> None:
+                        output_dir: Path, seq_idx: int,
+                        teacher_hidden=None, teacher_dim: int = 0) -> None:
     """Save one byte-level sequence as a single Parquet row (flat arrays)."""
     # Store the entire sequence (seq_len patches) as ONE row with flat arrays.
     # Shapes: patches/targets → [seq_len*4], teacher_probs → [seq_len*256],
     # teacher_mask → [seq_len]. The Dataset wrapper reshapes on load.
+    # Optional: teacher_hidden → [seq_len*teacher_dim] float32
     flat_patches = [b for p in patches for b in p]
     flat_targets = [b for t in targets for b in t]
     flat_probs = [v for row in teacher_probs for v in row]
 
-    table = pa.table({
+    columns = {
         'patches':       pa.array([flat_patches], type=pa.list_(pa.uint8())),
         'targets':       pa.array([flat_targets], type=pa.list_(pa.uint8())),
         'teacher_probs': pa.array([flat_probs],   type=pa.list_(pa.float32())),
         'teacher_mask':  pa.array([teacher_mask], type=pa.list_(pa.bool_())),
-    })
+    }
+    if teacher_hidden is not None:
+        flat_hidden = [v for row in teacher_hidden for v in row]
+        columns['teacher_hidden'] = pa.array(
+            [flat_hidden], type=pa.list_(pa.float32()),
+        )
+        columns['teacher_dim'] = pa.array([teacher_dim], type=pa.int32())
+    table = pa.table(columns)
     shard = seq_idx // 1000
     shard_path = output_dir / f"shard_{shard:04d}.parquet"
     if shard_path.exists():
@@ -657,12 +740,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
     Complete dataset construction pipeline.
 
     Step 1: Download FineWeb corpus
-    Step 2: Extract logprobs with Qwen-14B (SLOW — ~6-10h on T4)
-    Step 3a: Marginalize BPE→byte
+    Step 2: Extract logprobs + projected hidden states with Qwen-14B
+    Step 3a: Marginalize BPE→byte (with teacher_hidden for runs 13, 15)
     Step 3b: Build BPE dataset
     Step 4: Upload to HuggingFace Hub
 
-    Only needs to run ONCE.
+    Only needs to run ONCE. Covers all 15 ablation runs.
     """
     from datasets import load_dataset
 
@@ -705,7 +788,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
     # Step 3a: Byte-level dataset
     print(f"\n{'=' * 60}")
-    print("STEP 3a: Building byte-level dataset (runs 08-11)")
+    print("STEP 3a: Building byte-level dataset (runs 08-15)")
     print(f"{'=' * 60}")
 
     byte_stats = build_byte_level_dataset(
@@ -723,6 +806,10 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
         str(OUTPUT_DIR / "bpe_tokenized"),
     )
 
+    # Save projection matrix for reproducibility
+    proj = _get_projection_matrix(5120)
+    np.save(str(OUTPUT_DIR / "projection_matrix.npy"), proj.numpy())
+
     # Step 4: Upload
     print(f"\n{'=' * 60}")
     print("STEP 4: Uploading to HuggingFace Hub")
@@ -738,7 +825,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
     print(f"  BPE:        {bpe_stats['n_sequences']:,} sequences")
     print(f"  Coverage teacher (byte): {byte_stats['coverage_pct']:.1f}%")
     print(f"  Hub: https://huggingface.co/datasets/{DATASET_REPO}")
-    print(f"\n  All 11 ablation runs can start now.")
+    print(f"\n  All 15 ablation runs can start now.")
+    print(f"  Teacher hidden (projected {ALIGN_DIM}d) included for EmbeddingAligner.")
     print(f"  Teacher does NOT need to run again.")
 
 

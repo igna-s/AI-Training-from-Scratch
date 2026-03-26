@@ -1,7 +1,7 @@
 """
 Ablation experiment configuration for CPU-1 v2.
 
-Design: 11 runs at 50M params on Kaggle T4, shared dataset.
+Design: 15 runs at 50M params on Kaggle T4, shared dataset.
 Variables under study:
   1. Token mixer:      Transformer (SlidingWindowAttention) vs MLGRU (MatMul-free)
   2. Tokenization:     BPE (~152K vocab) vs Byte-level (patches of 4 bytes)
@@ -21,7 +21,7 @@ Justified with citations (no runs needed):
 """
 
 # ============================================================
-# Base config shared by ALL 11 runs (50M params)
+# Base config shared by ALL 15 runs (50M params)
 # ============================================================
 
 BASE_CONFIG = {
@@ -51,10 +51,12 @@ BASE_CONFIG = {
     'temperature':  4.0,
     'alpha_kl':     0.9,
     'alpha_ce':     0.1,
+    'lambda_align': 0.3,            # EmbeddingAligner weight (runs 13, 15)
+    'teacher_dim':  128,            # projected dim for EmbeddingAligner
 
     # Dataset
     'dataset_repo':     'Cukinator/cpu1-ablation-dataset',
-    'seq_len':          2048,
+    'seq_len':          5000,
     'patch_size':       4,
 
     # Checkpoints
