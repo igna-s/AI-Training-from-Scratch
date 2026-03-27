@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from model_v2 import CPU1ModelV2, BitLinear, bytes_to_patches  # noqa: E402
+from model import CPU1ModelV2, BitLinear, bytes_to_patches  # noqa: E402
 
 
 def configure_cpu_threads(n_threads: int | None = None) -> int:

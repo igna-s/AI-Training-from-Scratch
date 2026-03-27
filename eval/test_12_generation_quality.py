@@ -12,7 +12,7 @@ import os
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model_v2 import bytes_to_patches
+from model import bytes_to_patches
 
 
 def test_generation_quality(model, n_chars: int = 500):

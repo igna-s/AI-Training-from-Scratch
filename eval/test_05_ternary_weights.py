@@ -10,7 +10,7 @@ Criterio: 0% (exacto)
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model_v2 import BitLinear
+from model import BitLinear
 
 
 def test_ternary_weights(model):

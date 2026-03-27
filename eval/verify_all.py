@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, EVAL_DIR)
 
 import torch
-from model_v2 import CPU1ModelV2
+from model import CPU1ModelV2
 
 # Modelo minimo para tests rapidos
 MINI_CONFIG = {
@@ -159,7 +159,7 @@ def main():
         """Solo verifica que genera sin crash, no calidad."""
         model.eval()
         model.cpu()
-        from model_v2 import bytes_to_patches
+        from model import bytes_to_patches
         prompt = b"The history of artificial intelligence"
         patches = bytes_to_patches(prompt)
         states = None

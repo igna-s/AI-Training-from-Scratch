@@ -1,23 +1,17 @@
 """
-First-byte marginalization y construccion del dataset de distillation.
+Dataset creation for CPU-1: BPE-to-byte alignment and dataset pipeline.
 
-Toma los logprobs crudos del teacher (de extract_logprobs.py) y produce
-el dataset final alineado con patches de 4 bytes para entrenar CPU-1.
+Section 1 - Core algorithms: BPE-to-byte alignment, first-byte marginalization,
+            document packing, and dynamic patch marginalization.
+Section 2 - Pipeline: teacher logprob extraction (Qwen-14B), byte-level and
+            BPE dataset construction, and HuggingFace Hub upload.
 
-Resuelve el problema de alineamiento BPE <-> byte patches:
-- Caso 1: patch boundary = BPE boundary -> senal teacher (first-byte marginal)
-- Caso 2: patch boundary dentro de un token BPE -> solo CE (byte deterministico)
-- Caso 3: multiples tokens BPE dentro de un patch -> senal solo en el primero
+Usage:
+    # Full pipeline
+    python create_dataset.py --n_docs 50000
 
-Uso:
-    # Construir dataset de distillation
-    python byte_marginalization.py --logprobs-dir ./logprobs --output-dir ./dataset
-
-    # Validar dataset
-    python byte_marginalization.py --output-dir ./dataset --validate
-
-    # Sin argumentos: correr tests
-    python byte_marginalization.py
+    # Build byte marginalization dataset from logprobs
+    python create_dataset.py --logprobs-dir ./logprobs --output-dir ./dataset
 """
 
 import argparse
@@ -26,10 +20,12 @@ import json
 import math
 import os
 from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+import torch
 
 try:
     import pyarrow as pa
@@ -38,6 +34,15 @@ except ImportError:
     pa = None
     pq = None
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(it, **kw): return it
+
+
+# =============================================================================
+# Section 1: BPE-to-Byte Alignment Core
+# =============================================================================
 
 # CPU-1 procesa texto como patches de 4 bytes cada uno
 PATCH_SIZE = 4
@@ -941,5 +946,850 @@ def main():
     builder.build()
 
 
+
+
+# =============================================================================
+# Section 2: Dataset Pipeline
+# =============================================================================
+
+# ============================================================
+# Configuration
+# ============================================================
+
+TEACHER_MODEL = "Qwen/Qwen2.5-14B"
+DATASET_REPO = "Cukinator/cpu1-ablation-dataset"
+OUTPUT_DIR = Path("./shared_dataset")
+TOP_K_LOGPROBS = 128
+PATCH_SIZE = 4
+SEQ_LEN_PATCHES = 5000
+SEQ_LEN_TOKENS = 5000
+ALIGN_DIM = 128             # Project teacher hidden 5120→128 (Johnson-Lindenstrauss)
+SEED = 42
+BATCH_SIZE_TEACHER = 4
+
+# Lazy-initialized random orthogonal projection matrix
+_PROJECTION_MATRIX = None
+
+def _get_projection_matrix(teacher_dim: int, align_dim: int = ALIGN_DIM):
+    """Random orthogonal projection, seeded for reproducibility."""
+    global _PROJECTION_MATRIX
+    if _PROJECTION_MATRIX is None:
+        rng = np.random.RandomState(SEED)
+        rand_mat = rng.randn(teacher_dim, align_dim).astype(np.float32)
+        q, _ = np.linalg.qr(rand_mat)
+        _PROJECTION_MATRIX = torch.from_numpy(q[:, :align_dim])
+    return _PROJECTION_MATRIX
+
+
+# ============================================================
+# STEP 1: Extract teacher logprobs
+# ============================================================
+
+def load_teacher(model_name: str = TEACHER_MODEL):
+    """Load Qwen-14B in 4-bit NF4 for logprob extraction (~8GB VRAM)."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print(f"[Teacher] Loading {model_name} in 4-bit NF4...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+        device_map="cuda:0",
+    )
+    model.eval()
+    print(f"[Teacher] Ready. Vocab size: {tokenizer.vocab_size}")
+    return model, tokenizer
+
+
+def extract_logprobs_single(
+    model,
+    tokenizer,
+    text: str,
+    top_k: int = TOP_K_LOGPROBS,
+    seq_len: int = SEQ_LEN_TOKENS,
+) -> dict:
+    """
+    Extract top-k logprobs for every position of a single text.
+
+    Returns dict with:
+        text_bytes:  list[int]   — UTF-8 bytes of original text
+        positions:   list[dict]  — per-position top-k logprobs
+        n_tokens:    int
+    """
+    enc = tokenizer(
+        text, return_tensors='pt',
+        truncation=True, max_length=seq_len,
+    )
+    input_ids = enc['input_ids'].to(model.device)
+
+    with torch.no_grad():
+        logits = model(input_ids).logits[0]  # [seq_len, vocab_size]
+
+    log_probs = torch.log_softmax(logits, dim=-1)
+    top_logprobs, top_indices = torch.topk(log_probs, k=top_k, dim=-1)
+
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
+    byte_offset = 0
+    positions = []
+
+    for pos_idx, (token_id, token_str) in enumerate(
+        zip(input_ids[0].tolist(), tokens)
+    ):
+        try:
+            token_byte_seq = tokenizer.convert_tokens_to_string(
+                [token_str]
+            ).encode('utf-8')
+        except Exception:
+            token_byte_seq = b'\x00'
+
+        pos_top = []
+        for k_idx in range(top_k):
+            cand_id = top_indices[pos_idx, k_idx].item()
+            cand_lp = top_logprobs[pos_idx, k_idx].item()
+            cand_tok = tokenizer.convert_ids_to_tokens([cand_id])[0]
+            try:
+                cand_bytes = list(
+                    tokenizer.convert_tokens_to_string(
+                        [cand_tok]
+                    ).encode('utf-8')
+                )
+            except Exception:
+                cand_bytes = [0]
+
+            pos_top.append({
+                'token_id': cand_id,
+                'token': cand_tok,
+                'bytes': cand_bytes,
+                'logprob': cand_lp,
+            })
+
+        positions.append({
+            'byte_offset': byte_offset,
+            'top_tokens': pos_top,
+        })
+        byte_offset += len(token_byte_seq)
+
+    return {
+        'text_bytes': list(text.encode('utf-8')),
+        'positions': positions,
+        'n_tokens': len(tokens),
+    }
+
+
+def extract_logprobs_and_hidden(
+    model,
+    tokenizer,
+    text: str,
+    top_k: int = TOP_K_LOGPROBS,
+    seq_len: int = SEQ_LEN_TOKENS,
+    hidden_layer: int = -1,  # -1 = capa del medio, o específica
+) -> dict:
+    """
+    Versión extendida de extract_logprobs_single que también guarda
+    los hidden states del teacher en la capa del medio.
+
+    El hidden state se usa para EmbeddingAligner en Fase 1.
+
+    Costo adicional: ~50% más memoria por batch (activaciones intermedias).
+    Workaround si la memoria es justa: extraer en un segundo pass separado.
+
+    Output adicional por posición:
+        'teacher_hidden': list[list[float]]  # [n_tokens, teacher_dim] FP16
+    """
+    enc = tokenizer(
+        text, return_tensors='pt',
+        truncation=True, max_length=seq_len,
+    )
+    input_ids = enc['input_ids'].to(model.device)
+
+    with torch.no_grad():
+        outputs = model(
+            input_ids,
+            output_hidden_states=True,
+        )
+        logits = outputs.logits[0]  # [seq_len, vocab_size]
+
+        # Hidden state de la capa del medio
+        n_layers = len(outputs.hidden_states)
+        mid_layer = hidden_layer if hidden_layer >= 0 else n_layers // 2
+        teacher_hidden = outputs.hidden_states[mid_layer][0]  # [S, D]
+
+        # Project 5120→ALIGN_DIM and compress to FP16
+        proj = _get_projection_matrix(teacher_hidden.shape[-1])
+        teacher_hidden_proj = (teacher_hidden.float().cpu() @ proj).half()
+
+    log_probs = torch.log_softmax(logits, dim=-1)
+    top_logprobs, top_indices = torch.topk(log_probs, k=top_k, dim=-1)
+
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
+    byte_offset = 0
+    positions = []
+
+    for pos_idx, (token_id, token_str) in enumerate(
+        zip(input_ids[0].tolist(), tokens)
+    ):
+        try:
+            token_byte_seq = tokenizer.convert_tokens_to_string(
+                [token_str]
+            ).encode('utf-8')
+        except Exception:
+            token_byte_seq = b'\x00'
+
+        pos_top = []
+        for k_idx in range(top_k):
+            cand_id = top_indices[pos_idx, k_idx].item()
+            cand_lp = top_logprobs[pos_idx, k_idx].item()
+            cand_tok = tokenizer.convert_ids_to_tokens([cand_id])[0]
+            try:
+                cand_bytes = list(
+                    tokenizer.convert_tokens_to_string(
+                        [cand_tok]
+                    ).encode('utf-8')
+                )
+            except Exception:
+                cand_bytes = [0]
+
+            pos_top.append({
+                'token_id': cand_id,
+                'token': cand_tok,
+                'bytes': cand_bytes,
+                'logprob': cand_lp,
+            })
+
+        positions.append({
+            'byte_offset': byte_offset,
+            'top_tokens': pos_top,
+        })
+        byte_offset += len(token_byte_seq)
+
+    return {
+        'text_bytes': list(text.encode('utf-8')),
+        'positions': positions,
+        'n_tokens': len(tokens),
+        'teacher_hidden': teacher_hidden_proj.tolist(),  # [n_tokens, ALIGN_DIM]
+        'teacher_dim': teacher_hidden_proj.shape[-1],
+    }
+
+
+def _append_to_parquet(records: list[dict], path: Path) -> None:
+    """Append records to a Parquet file."""
+    columns = {
+        'doc_id':     pa.array([r['doc_id'] for r in records], type=pa.int32()),
+        'text_bytes': pa.array([r['text_bytes'] for r in records]),
+        'positions':  pa.array([r['positions'] for r in records], type=pa.string()),
+        'n_tokens':   pa.array([r['n_tokens'] for r in records], type=pa.int32()),
+    }
+    if records and 'teacher_hidden' in records[0]:
+        columns['teacher_hidden'] = pa.array(
+            [r['teacher_hidden'] for r in records],
+            type=pa.list_(pa.float32()),
+        )
+        columns['teacher_dim'] = pa.array(
+            [r['teacher_dim'] for r in records], type=pa.int32(),
+        )
+    table = pa.table(columns)
+    if path.exists():
+        existing = pq.read_table(str(path))
+        combined = pa.concat_tables([existing, table])
+        pq.write_table(combined, str(path))
+    else:
+        pq.write_table(table, str(path))
+
+
+def run_logprob_extraction(
+    corpus_texts: list[str],
+    output_path: str,
+    resume: bool = True,
+) -> None:
+    """Extract logprobs + projected hidden states for entire corpus.
+
+    Always extracts teacher hidden states (projected 5120→ALIGN_DIM)
+    for EmbeddingAligner (runs 13, 15). Uses ~50% more VRAM but
+    storage is small thanks to random orthogonal projection.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    start_idx = 0
+    if resume and output_path.exists():
+        existing = pq.read_table(str(output_path))
+        start_idx = len(existing)
+        print(f"[Extraction] Resuming from doc {start_idx}/{len(corpus_texts)}")
+
+    model, tokenizer = load_teacher()
+    batch_results = []
+
+    for i in tqdm(range(start_idx, len(corpus_texts)), desc="Extracting logprobs"):
+        text = corpus_texts[i]
+        if not text.strip():
+            continue
+
+        result = extract_logprobs_and_hidden(
+            model, tokenizer, text, TOP_K_LOGPROBS,
+        )
+        record = {
+            'doc_id':     i,
+            'text_bytes': result['text_bytes'],
+            'positions':  json.dumps(result['positions']),
+            'n_tokens':   result['n_tokens'],
+            # Flatten [n_tokens, ALIGN_DIM] → [n_tokens * ALIGN_DIM]
+            'teacher_hidden': [
+                v for row in result['teacher_hidden'] for v in row
+            ],
+            'teacher_dim': result['teacher_dim'],
+        }
+        batch_results.append(record)
+
+        # Save every 100 docs for crash safety
+        if len(batch_results) >= 100:
+            _append_to_parquet(batch_results, output_path)
+            batch_results = []
+            print(f"  Saved through doc {i}")
+
+    if batch_results:
+        _append_to_parquet(batch_results, output_path)
+
+    print(f"[Extraction] Complete: {output_path}")
+
+
+# ============================================================
+# STEP 2a: Marginalize BPE→Byte
+# ============================================================
+
+def _marginalize_one_row(row: dict) -> dict:
+    """Marginalizar un doc BPE→byte. Diseñado para multiprocessing (sin estado compartido)."""
+    text_bytes = bytes(row['text_bytes'])
+    positions = json.loads(row['positions'])
+
+    byte_to_teacher = {}
+    for pos in positions:
+        byte_off = pos['byte_offset']
+        top_toks = pos['top_tokens']
+        byte_probs = {}
+        for item in top_toks:
+            if not item['bytes']:
+                continue
+            first_byte = item['bytes'][0]
+            prob = math.exp(item['logprob'])
+            byte_probs[first_byte] = byte_probs.get(first_byte, 0.0) + prob
+        total = sum(byte_probs.values())
+        if total > 0:
+            byte_probs = {k: v / total for k, v in byte_probs.items()}
+        byte_to_teacher[byte_off] = byte_probs
+
+    # Teacher hidden alignment (for EmbeddingAligner, runs 13/15)
+    has_hidden = 'teacher_hidden' in row and row['teacher_hidden'] is not None
+    teacher_dim = row.get('teacher_dim', 0) if has_hidden else 0
+    byte_offset_to_pos = {}
+    if has_hidden:
+        for pos_idx, pos in enumerate(positions):
+            byte_offset_to_pos[pos['byte_offset']] = pos_idx
+        hidden_flat = row['teacher_hidden']
+
+    n_patches = len(text_bytes) // PATCH_SIZE
+    patches, targets, teacher_probs, teacher_mask = [], [], [], []
+    teacher_hidden_patches = [] if has_hidden else None
+    n_with_teacher = 0
+
+    for p_idx in range(n_patches - 1):
+        patch_start = p_idx * PATCH_SIZE
+        target_start = (p_idx + 1) * PATCH_SIZE
+        patches.append(list(text_bytes[patch_start:patch_start + PATCH_SIZE]))
+        targets.append(list(text_bytes[target_start:target_start + PATCH_SIZE]))
+        has_teacher = target_start in byte_to_teacher
+        if has_teacher:
+            bp = byte_to_teacher[target_start]
+            teacher_probs.append([bp.get(b, 0.0) for b in range(256)])
+            n_with_teacher += 1
+        else:
+            teacher_probs.append([0.0] * 256)
+        teacher_mask.append(has_teacher)
+
+        if has_hidden:
+            if has_teacher and target_start in byte_offset_to_pos:
+                pos_idx = byte_offset_to_pos[target_start]
+                start = pos_idx * teacher_dim
+                end = start + teacher_dim
+                teacher_hidden_patches.append(hidden_flat[start:end])
+            else:
+                teacher_hidden_patches.append([0.0] * teacher_dim)
+
+    result = {
+        'patches': patches, 'targets': targets,
+        'teacher_probs': teacher_probs, 'teacher_mask': teacher_mask,
+        'n_with_teacher': n_with_teacher,
+    }
+    if has_hidden:
+        result['teacher_hidden'] = teacher_hidden_patches
+        result['teacher_dim'] = teacher_dim
+    return result
+
+
+def build_byte_level_dataset(
+    logprobs_parquet: str,
+    output_dir: str,
+    seq_len: int = SEQ_LEN_PATCHES,
+    n_workers: int = 0,
+) -> dict:
+    """
+    Convert BPE logprobs to byte-level distributions.
+    Parallelizado con ProcessPoolExecutor para saturar CPU multi-core.
+
+    Output per sequence:
+        patches:        [seq_len, 4] uint8
+        targets:        [seq_len, 4] uint8
+        teacher_probs:  [seq_len, 256] float32  (sparse)
+        teacher_mask:   [seq_len] bool
+        teacher_hidden: [seq_len, teacher_dim] float32  (optional, if extracted)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logprobs_table = pq.read_table(logprobs_parquet)
+    rows = logprobs_table.to_pylist()
+
+    # Autodetectar workers si no se especifica
+    if n_workers <= 0:
+        n_workers = max(1, (os.cpu_count() or 4) - 1)
+
+    all_patches = []
+    all_targets = []
+    all_teacher_probs = []
+    all_teacher_mask = []
+    all_teacher_hidden = []
+    has_hidden = False
+    teacher_dim = 0
+    stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
+
+    # Descomposición de datos: cada worker procesa un documento independiente
+    print(f"[Byte dataset] Marginalizing with {n_workers} workers...")
+    if n_workers > 1 and len(rows) > 10:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            results = list(tqdm(
+                executor.map(_marginalize_one_row, rows, chunksize=max(1, len(rows) // (n_workers * 4))),
+                total=len(rows), desc="Marginalizing BPE→byte (parallel)",
+            ))
+    else:
+        results = [_marginalize_one_row(r) for r in tqdm(rows, desc="Marginalizing BPE→byte")]
+
+    # Aglomerar resultados y empaquetar en secuencias
+    for result in results:
+        all_patches.extend(result['patches'])
+        all_targets.extend(result['targets'])
+        all_teacher_probs.extend(result['teacher_probs'])
+        all_teacher_mask.extend(result['teacher_mask'])
+        stats['n_with_teacher'] += result['n_with_teacher']
+        stats['n_patches_total'] += len(result['patches'])
+        if 'teacher_hidden' in result:
+            has_hidden = True
+            teacher_dim = result['teacher_dim']
+            all_teacher_hidden.extend(result['teacher_hidden'])
+
+        while len(all_patches) >= seq_len:
+            hidden_slice = all_teacher_hidden[:seq_len] if has_hidden else None
+            _save_byte_sequence(
+                all_patches[:seq_len], all_targets[:seq_len],
+                all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
+                output_dir, stats['n_sequences'],
+                teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
+            )
+            all_patches = all_patches[seq_len:]
+            all_targets = all_targets[seq_len:]
+            all_teacher_probs = all_teacher_probs[seq_len:]
+            all_teacher_mask = all_teacher_mask[seq_len:]
+            if has_hidden:
+                all_teacher_hidden = all_teacher_hidden[seq_len:]
+            stats['n_sequences'] += 1
+
+    coverage = stats['n_with_teacher'] / max(stats['n_patches_total'], 1) * 100
+    stats['coverage_pct'] = coverage
+
+    print(f"[Byte dataset] {stats['n_sequences']} sequences")
+    print(f"[Byte dataset] Teacher coverage: {coverage:.1f}%")
+
+    _save_split_info(stats['n_sequences'], output_dir)
+    return stats
+
+
+def _save_byte_sequence(patches, targets, teacher_probs, teacher_mask,
+                        output_dir: Path, seq_idx: int,
+                        teacher_hidden=None, teacher_dim: int = 0) -> None:
+    """Save one byte-level sequence as a single Parquet row (flat arrays)."""
+    # Store the entire sequence (seq_len patches) as ONE row with flat arrays.
+    # Shapes: patches/targets → [seq_len*4], teacher_probs → [seq_len*256],
+    # teacher_mask → [seq_len]. The Dataset wrapper reshapes on load.
+    # Optional: teacher_hidden → [seq_len*teacher_dim] float32
+    flat_patches = [b for p in patches for b in p]
+    flat_targets = [b for t in targets for b in t]
+    flat_probs = [v for row in teacher_probs for v in row]
+
+    columns = {
+        'patches':       pa.array([flat_patches], type=pa.list_(pa.uint8())),
+        'targets':       pa.array([flat_targets], type=pa.list_(pa.uint8())),
+        'teacher_probs': pa.array([flat_probs],   type=pa.list_(pa.float32())),
+        'teacher_mask':  pa.array([teacher_mask], type=pa.list_(pa.bool_())),
+    }
+    if teacher_hidden is not None:
+        flat_hidden = [v for row in teacher_hidden for v in row]
+        columns['teacher_hidden'] = pa.array(
+            [flat_hidden], type=pa.list_(pa.float32()),
+        )
+        columns['teacher_dim'] = pa.array([teacher_dim], type=pa.int32())
+    table = pa.table(columns)
+    shard = seq_idx // 1000
+    shard_path = output_dir / f"shard_{shard:04d}.parquet"
+    if shard_path.exists():
+        existing = pq.read_table(str(shard_path))
+        pq.write_table(pa.concat_tables([existing, table]), str(shard_path))
+    else:
+        pq.write_table(table, str(shard_path))
+
+
+# ============================================================
+# STEP 2b: Build BPE dataset
+# ============================================================
+
+def _tokenize_bpe_row(args: tuple) -> dict:
+    """Procesar un documento BPE -> tokens + teacher signals.
+    Diseñado para ProcessPoolExecutor (sin estado compartido).
+
+    Args:
+        args: (row_dict, tokenizer_name, seq_len, top_k)
+    Returns:
+        dict con ids, probs, top_ids, mask
+    """
+    row, tokenizer_name, seq_len_max, top_k = args
+
+    # Lazy import para workers (cada worker importa una vez)
+    from transformers import AutoTokenizer
+    if not hasattr(_tokenize_bpe_row, '_tokenizer'):
+        _tokenize_bpe_row._tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = _tokenize_bpe_row._tokenizer
+
+    text_bytes = bytes(row['text_bytes'])
+    positions = json.loads(row['positions'])
+    text = text_bytes.decode('utf-8', errors='replace')
+    enc = tokenizer(text, truncation=True, max_length=seq_len_max * 2)
+    ids = enc['input_ids']
+
+    result_ids = []
+    result_probs = []
+    result_top_ids = []
+    result_mask = []
+
+    for pos_idx, (token_id, pos_data) in enumerate(
+        zip(ids, positions[:len(ids)])
+    ):
+        top_toks = pos_data.get('top_tokens', [])
+        probs = [0.0] * top_k
+        top_ids = [0] * top_k
+        has_teacher = len(top_toks) > 0
+
+        if has_teacher:
+            for k_idx, item in enumerate(top_toks[:top_k]):
+                probs[k_idx] = math.exp(item['logprob'])
+                top_ids[k_idx] = item.get('token_id', 0)
+
+        result_ids.append(token_id)
+        result_probs.append(probs)
+        result_top_ids.append(top_ids)
+        result_mask.append(has_teacher)
+
+    return {
+        'ids': result_ids, 'probs': result_probs,
+        'top_ids': result_top_ids, 'mask': result_mask,
+    }
+
+
+def build_bpe_dataset(
+    logprobs_parquet: str,
+    output_dir: str,
+    seq_len: int = SEQ_LEN_TOKENS,
+    n_workers: int = 0,
+) -> dict:
+    """
+    Build BPE dataset from the same teacher logprobs.
+    Produces dataset for runs 01-07 (BPE).
+    Paralelizado con ProcessPoolExecutor: cada worker tokeniza un doc independiente.
+
+    Teacher logprobs are kept in BPE space (no marginalization).
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logprobs_table = pq.read_table(logprobs_parquet)
+    rows = logprobs_table.to_pylist()
+
+    if n_workers <= 0:
+        n_workers = max(1, (os.cpu_count() or 4) - 1)
+
+    stats = {'n_sequences': 0, 'n_tokens_total': 0}
+    buffer_ids = []
+    buffer_probs = []
+    buffer_top_ids = []
+    buffer_mask = []
+
+    # Descomposición de datos: cada worker procesa un documento independiente
+    print(f"[BPE dataset] Tokenizing with {n_workers} workers...")
+    work_args = [(row, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for row in rows]
+
+    if n_workers > 1 and len(rows) > 10:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            results = list(tqdm(
+                executor.map(_tokenize_bpe_row, work_args,
+                             chunksize=max(1, len(rows) // (n_workers * 4))),
+                total=len(rows), desc="Building BPE dataset (parallel)",
+            ))
+    else:
+        results = [_tokenize_bpe_row(a) for a in tqdm(work_args, desc="Building BPE dataset")]
+
+    # Aglomerar resultados y empaquetar en secuencias
+    for result in results:
+        buffer_ids.extend(result['ids'])
+        buffer_probs.extend(result['probs'])
+        buffer_top_ids.extend(result['top_ids'])
+        buffer_mask.extend(result['mask'])
+        stats['n_tokens_total'] += len(result['ids'])
+
+        while len(buffer_ids) >= seq_len + 1:
+            _save_bpe_sequence(
+                buffer_ids[:seq_len],
+                buffer_ids[1:seq_len + 1],
+                buffer_probs[:seq_len],
+                buffer_top_ids[:seq_len],
+                buffer_mask[:seq_len],
+                output_dir,
+                stats['n_sequences'],
+            )
+            buffer_ids = buffer_ids[seq_len:]
+            buffer_probs = buffer_probs[seq_len:]
+            buffer_top_ids = buffer_top_ids[seq_len:]
+            buffer_mask = buffer_mask[seq_len:]
+            stats['n_sequences'] += 1
+
+    print(f"[BPE dataset] {stats['n_sequences']} sequences")
+    _save_split_info(stats['n_sequences'], output_dir)
+    return stats
+
+
+def _save_bpe_sequence(input_ids, labels, teacher_probs, teacher_ids_top,
+                       teacher_mask, output_dir: Path, seq_idx: int) -> None:
+    """Save one BPE sequence as a single Parquet row (flat arrays).
+
+    teacher_probs and teacher_ids_top are stored flat ([seq_len * TOP_K])
+    so the Dataset wrapper can reshape them to [seq_len, TOP_K] on load.
+    """
+    flat_probs = [v for row in teacher_probs for v in row]
+    flat_ids = [v for row in teacher_ids_top for v in row]
+
+    table = pa.table({
+        'input_ids':        pa.array([input_ids],  type=pa.list_(pa.int32())),
+        'labels':           pa.array([labels],     type=pa.list_(pa.int32())),
+        'teacher_probs_bpe': pa.array([flat_probs], type=pa.list_(pa.float32())),
+        'teacher_ids_bpe':  pa.array([flat_ids],   type=pa.list_(pa.int32())),
+        'teacher_mask_bpe': pa.array([teacher_mask], type=pa.list_(pa.bool_())),
+    })
+    shard = seq_idx // 1000
+    shard_path = output_dir / f"shard_{shard:04d}.parquet"
+    if shard_path.exists():
+        existing = pq.read_table(str(shard_path))
+        pq.write_table(pa.concat_tables([existing, table]), str(shard_path))
+    else:
+        pq.write_table(table, str(shard_path))
+
+
+# ============================================================
+# STEP 3: Split info & upload
+# ============================================================
+
+def _save_split_info(n_sequences: int, output_dir: Path) -> None:
+    """Save train/val/test split with fixed seed."""
+    rng = np.random.RandomState(SEED)
+    indices = rng.permutation(n_sequences).tolist()
+
+    n_train = int(0.95 * n_sequences)
+    n_val = int(0.025 * n_sequences)
+
+    split = {
+        'train': indices[:n_train],
+        'val': indices[n_train:n_train + n_val],
+        'test': indices[n_train + n_val:],
+        'seed': SEED,
+        'n_sequences': n_sequences,
+    }
+    with open(output_dir / 'split_info.json', 'w') as f:
+        json.dump(split, f)
+
+
+def upload_dataset_to_hub(local_dir: str = str(OUTPUT_DIR)) -> None:
+    """Upload complete dataset to HuggingFace Hub."""
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    api.create_repo(DATASET_REPO, repo_type="dataset", exist_ok=True)
+    api.upload_folder(
+        folder_path=local_dir,
+        repo_id=DATASET_REPO,
+        repo_type="dataset",
+        ignore_patterns=["*.tmp", "__pycache__"],
+    )
+    print(f"\n[Upload] Dataset available at:")
+    print(f"  https://huggingface.co/datasets/{DATASET_REPO}")
+
+
+# ============================================================
+# MAIN: Full pipeline
+# ============================================================
+
+def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
+                       n_docs: int = 50_000,
+                       skip_extraction: bool = False) -> None:
+    """
+    Complete dataset construction pipeline.
+
+    Step 1: Download FineWeb corpus
+    Step 2: Extract logprobs + projected hidden states with Qwen-14B
+    Step 3a: Marginalize BPE→byte (with teacher_hidden for runs 13, 15)
+    Step 3b: Build BPE dataset
+    Step 4: Upload to HuggingFace Hub
+
+    Only needs to run ONCE. Covers all 15 ablation runs.
+    """
+    from datasets import load_dataset
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    logprobs_path = OUTPUT_DIR / "teacher_logprobs" / "logprobs_raw.parquet"
+
+    if not skip_extraction:
+        # Step 1: Download corpus
+        print(f"\n{'=' * 60}")
+        print("STEP 1: Downloading FineWeb corpus")
+        print(f"{'=' * 60}")
+
+        fw = load_dataset(corpus_name, name="sample-10BT", split="train",
+                          streaming=True)
+        texts = []
+        for i, doc in enumerate(fw):
+            if i >= n_docs:
+                break
+            texts.append(doc['text'])
+
+        print(f"  Corpus: {len(texts):,} documents")
+
+        # Save corpus sample for reference
+        corpus_path = OUTPUT_DIR / "corpus_texts.json"
+        with open(corpus_path, 'w') as f:
+            json.dump(texts[:1000], f)
+
+        # Step 2: Extract logprobs (the slow part)
+        print(f"\n{'=' * 60}")
+        print("STEP 2: Extracting teacher logprobs (Qwen-14B)")
+        print("  (~6-10 hours on T4, supports resume)")
+        print(f"{'=' * 60}")
+
+        run_logprob_extraction(texts, str(logprobs_path), resume=True)
+    else:
+        assert logprobs_path.exists(), (
+            f"Logprobs not found at {logprobs_path}. "
+            f"Run without --skip_extraction first."
+        )
+
+    # Step 3a: Byte-level dataset
+    print(f"\n{'=' * 60}")
+    print("STEP 3a: Building byte-level dataset (runs 08-15)")
+    print(f"{'=' * 60}")
+
+    byte_stats = build_byte_level_dataset(
+        str(logprobs_path),
+        str(OUTPUT_DIR / "byte_marginalized"),
+    )
+
+    # Step 3b: BPE dataset
+    print(f"\n{'=' * 60}")
+    print("STEP 3b: Building BPE dataset (runs 01-07)")
+    print(f"{'=' * 60}")
+
+    bpe_stats = build_bpe_dataset(
+        str(logprobs_path),
+        str(OUTPUT_DIR / "bpe_tokenized"),
+    )
+
+    # Save projection matrix for reproducibility
+    proj = _get_projection_matrix(5120)
+    np.save(str(OUTPUT_DIR / "projection_matrix.npy"), proj.numpy())
+
+    # Step 4: Upload
+    print(f"\n{'=' * 60}")
+    print("STEP 4: Uploading to HuggingFace Hub")
+    print(f"{'=' * 60}")
+
+    upload_dataset_to_hub()
+
+    # Summary
+    print(f"\n{'=' * 60}")
+    print("DATASET READY — Summary")
+    print(f"{'=' * 60}")
+    print(f"  Byte-level: {byte_stats['n_sequences']:,} sequences")
+    print(f"  BPE:        {bpe_stats['n_sequences']:,} sequences")
+    print(f"  Coverage teacher (byte): {byte_stats['coverage_pct']:.1f}%")
+    print(f"  Hub: https://huggingface.co/datasets/{DATASET_REPO}")
+    print(f"\n  All 15 ablation runs can start now.")
+    print(f"  Teacher hidden (projected {ALIGN_DIM}d) included for EmbeddingAligner.")
+    print(f"  Teacher does NOT need to run again.")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) == 1:
+        # No arguments -> run byte_marginalization tests
+        print("Sin argumentos -> corriendo tests\n")
+        print("=" * 60)
+        test_alignment_cases()
+        print()
+        test_first_byte_marginalization()
+        print()
+        test_document_processing()
+        print()
+        test_document_packing()
+        print("\n" + "=" * 60)
+        print("Todos los tests pasaron.")
+    elif '--logprobs-dir' in sys.argv or '--validate' in sys.argv:
+        # Byte marginalization mode
+        args = parse_args()
+        if args.validate:
+            builder = DistillationDatasetBuilder(
+                logprobs_dir=args.logprobs_dir or ".",
+                output_dir=args.output_dir,
+                seq_len=args.seq_len,
+            )
+            builder.validate_sample()
+        elif args.logprobs_dir:
+            builder = DistillationDatasetBuilder(
+                logprobs_dir=args.logprobs_dir,
+                output_dir=args.output_dir,
+                seq_len=args.seq_len,
+            )
+            builder.build()
+        else:
+            print("Error: --logprobs-dir requerido")
+    else:
+        # Full pipeline mode
+        parser = argparse.ArgumentParser(
+            description="Build shared dataset for CPU-1 ablation study"
+        )
+        parser.add_argument('--n_docs', type=int, default=50_000,
+                            help="Number of FineWeb documents")
+        parser.add_argument('--skip_extraction', action='store_true',
+                            help="Skip logprob extraction (if already exists)")
+        parser.add_argument('--only_upload', action='store_true',
+                            help="Only upload existing dataset to Hub")
+        args = parser.parse_args()
+
+        if args.only_upload:
+            upload_dataset_to_hub()
+        else:
+            build_full_dataset(n_docs=args.n_docs,
+                               skip_extraction=args.skip_extraction)

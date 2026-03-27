@@ -14,7 +14,7 @@ Uso:
 import time
 import torch
 import torch.nn.functional as F
-from model_v2 import CPU1ModelV2, BitLinear, PATCH_SIZE, count_parameters
+from model import CPU1ModelV2, BitLinear, PATCH_SIZE, count_parameters
 
 
 N_PATCHES = 10_000   # 10000 patches × 4 bytes = 40000 bytes

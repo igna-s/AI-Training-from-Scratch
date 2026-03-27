@@ -20,7 +20,7 @@ if EVAL_DIR not in sys.path:
     sys.path.insert(0, EVAL_DIR)
 
 import torch
-from model_v2 import CPU1ModelV2
+from model import CPU1ModelV2
 from helpers import configure_cpu_threads
 
 # Configurar threads igual que inferencia (cores fisicos, sin HT)

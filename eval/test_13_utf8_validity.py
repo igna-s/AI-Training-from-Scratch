@@ -11,7 +11,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model_v2 import CPU1ModelV2
+from model import CPU1ModelV2
 
 
 def _is_valid_utf8(b: bytes) -> bool:
