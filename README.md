@@ -1,6 +1,6 @@
 # CPU-1 — Byte-Level Language Model with Ternary Weights
 
-> A ~170M parameter byte-level language model trained via knowledge distillation from Qwen-14B, using fully ternary weights {-1, 0, 1}, MatMul-free token mixing (MLGRU), and zero matrix multiplications at inference (T-MAC LUT). Optimized for consumer CPU (4 cores, 16GB RAM, 32MB L3).
+> A ~170M parameter byte-level language model trained via knowledge distillation from Qwen-7B, using fully ternary weights {-1, 0, 1}, MatMul-free token mixing (MLGRU), and zero matrix multiplications at inference (T-MAC LUT). Optimized for consumer CPU (4 cores, 16GB RAM, 32MB L3).
 
 ---
 
@@ -43,17 +43,11 @@
 
 CPU-1 v3 extends the base architecture with three optional modules:
 
-- **BoundaryPredictor** (Bolmo-inspired): Replaces fixed 4-byte patches with
-  dynamic patches that align with natural language boundaries. Adds ~2KB of
-  parameters, runs in Thread 2 during CPU inference with zero added latency.
+- **BoundaryPredictor** (Bolmo-inspired): Replaces fixed 4-byte patches with dynamic patches that align with natural language boundaries. Adds ~2KB of parameters, runs in Thread 2 during CPU inference with zero added latency.
 
-- **DeleteGate** (MrT5-inspired): Placed after layer N//2, learns to discard
-  uninformative states before the remaining layers. Reduces active states by
-  up to 40%, activated only in training Phase 2.
+- **DeleteGate** (MrT5-inspired): Placed after layer N//2, learns to discard uninformative states before the remaining layers. Reduces active states by up to 40%, activated only in training Phase 2.
 
-- **EmbeddingAligner** (arXiv 2602): Aligns the student's hidden space with
-  the teacher's embedding space via cosine similarity loss. Trained in Phase 1
-  only, frozen in Phase 2.
+- **EmbeddingAligner** (arXiv 2602): Aligns the student's hidden space with the teacher's embedding space via cosine similarity loss. Trained in Phase 1 only, frozen in Phase 2.
 
 All three modules are optional and controlled by config flags:
 ```
@@ -139,118 +133,108 @@ Raw Text Corpus
       │
       ▼
 ┌─────────────────────────────┐
-│  extract_logprobs.py        │  Teacher logprob extraction
-│  (Transformers or Ollama    │  → Parquet with top-k logprobs per position
-│   backend, 4-bit NF4)       │
-└─────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────┐
-│  byte_marginalization.py    │  BPE → Byte alignment
-│                             │  → Dataset of (patches, targets,
-│                             │    teacher_probs, teacher_mask)
+│  create_dataset.py          │  Teacher logprob extraction
+│  (Transformers or Ollama    │  + BPE→byte marginalization
+│   backend, 4-bit NF4)       │  → Parquet with patches, targets,
+│                             │    teacher_probs, teacher_mask
 └─────────────────────────────┘
       │
       ▼
 ┌─────────────────────────────┐
 │  train.py                   │  Student training with distillation
-│  (AMP, gradient              │  → Checkpoints
+│  (AMP, gradient             │  → Checkpoints → HuggingFace Hub
 │   accumulation)             │
 └─────────────────────────────┘
       │
       ▼
 ┌─────────────────────────────┐
-│  inference_v2.py            │  CPU-optimized generation
-│  inference_tmac.py          │  → INT8 packing / T-MAC LUT
+│  inference.py               │  CPU-optimized generation
+│                             │  INT8 packing  or  T-MAC LUT
 └─────────────────────────────┘
 ```
 
-### Ablation Pipeline (50M × 11 runs)
+### Ablation Pipeline (50M × 15 runs on Kaggle T4)
 
 #### 1. Build Shared Dataset (once)
 
 ```bash
-# Full pipeline: extract teacher logprobs + build both BPE and byte datasets
-python build_shared_dataset.py --n_docs 50000
+# Full pipeline: extract teacher logprobs + build byte and BPE datasets
+python create_dataset.py --n_docs 50000
 
-# Resume after interruption
-python build_shared_dataset.py --n_docs 50000
-
-# Upload existing dataset
-python build_shared_dataset.py --only_upload
+# Build only byte-marginalization from existing logprobs
+python create_dataset.py --logprobs-dir ./logprobs --output-dir ./dataset
 ```
 
-Teacher (Qwen-14B in 4-bit NF4) runs **once**. Produces:
+Teacher (Qwen-7B in 4-bit NF4) runs **once**. Produces:
 - `byte_marginalized/` — patches, targets, teacher_probs, teacher_mask
 - `bpe_tokenized/` — input_ids, labels, teacher_probs_bpe, teacher_mask_bpe
-- Uploaded to `Cukinator/cpu1-ablation-dataset`
+- Uploaded to `Cukinator/cpu1-ablation-dataset` on HuggingFace Hub
 
 #### 2. Train Ablation Runs
 
 ```bash
-# Single GPU
-python ablation_train.py --run run_10
+# Single ablation run (GPU)
+python train.py --mode ablation --run run_10
 
-# Dry run (no GPU, random data)
-python ablation_train.py --run run_01 --dry_run --total_steps 10
+# Dry run (no GPU, synthetic data)
+python train.py --mode ablation --run run_01 --dry_run --total_steps 10
+
+# With HF-mount (lazy dataset streaming, no full download)
+python train.py --mode ablation --run run_10 --hf-mount
 ```
 
-#### Two-Phase Training (runs 14-15 only)
+#### Two-Phase Training (runs 14–15 only)
 
 For runs using DeleteGate (MrT5), training proceeds in two phases:
 
-- **Phase 1 (Distillation):** Standard knowledge distillation from Qwen-14B.
-  DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
-  Command: `python ablation_train.py --run run_14 --phase 1`
+- **Phase 1 (Distillation):** Standard knowledge distillation from Qwen-7B. DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
+  `python train.py --mode ablation --run run_14 --phase 1`
 
-- **Phase 2 (Compression):** DeleteGate activated. EmbeddingAligner frozen.
-  Loss changes from KL+CE to CE-only (sequence length varies with gate).
-  Command: `python ablation_train.py --run run_14 --phase 2 --phase1_ckpt <path>`
-
-Suggested order to maximize early signal:
-```bash
-# Day 1: extremes
-ablation_train.py --run run_01   # baseline
-ablation_train.py --run run_10   # proposed
-
-# Day 2: complete 2×2 grid
-ablation_train.py --run run_02   # Transformer + Byte
-ablation_train.py --run run_05   # MLGRU + BPE
-ablation_train.py --run run_08   # MLGRU + Byte FP16
-
-# Day 3-4: quantization + distillation
-ablation_train.py --run run_03
-ablation_train.py --run run_06
-ablation_train.py --run run_09
-
-# Day 5: complete table
-ablation_train.py --run run_04
-ablation_train.py --run run_07
-
-# Day 6: FPResidual ablation
-ablation_train.py --run run_11
-
-# Day 7-8: Extended techniques (requires runs 01-11 working)
-ablation_train.py --run run_13                    # EmbAlign (1 phase)
-ablation_train.py --run run_12                    # Bolmo (1 phase)
-ablation_train.py --run run_14 --phase 1          # DeleteGate Phase 1
-ablation_train.py --run run_14 --phase 2 --phase1_ckpt <path>  # Phase 2
-
-# Day 9-10: Full v3 (2 phases)
-ablation_train.py --run run_15 --phase 1
-ablation_train.py --run run_15 --phase 2 --phase1_ckpt <path>
-```
+- **Phase 2 (Compression):** DeleteGate activated. EmbeddingAligner frozen. Loss changes from KL+CE to CE-only.
+  `python train.py --mode ablation --run run_14 --phase 2 --phase1_ckpt <path>`
 
 #### 3. Analyze Results
 
 ```bash
-python ablation_analysis.py --metrics_dir .
+python ablation.py --metrics_dir .
 ```
 
-Generates:
-- Text table for terminal
-- LaTeX table for paper (`ablation_table.tex`)
-- Key comparisons (MLGRU effect, byte effect, quantization effect, etc.)
+Generates a text table for terminal and a LaTeX table for the paper (`ablation_table.tex`).
+
+---
+
+### Kaggle Workflow
+
+The `kaggle/` directory contains scripts ready to run directly in Kaggle notebooks (T4 GPU):
+
+| Script | Purpose |
+|---|---|
+| `kaggle/cpu1-create-dataset.py` | Runs Qwen-7B teacher, builds and uploads the shared dataset to HF Hub |
+| `kaggle/cpu1-training.py` | Trains a specific ablation run; configure `RUN_NAME` and `PHASE` at the top |
+
+Both scripts read `HF_TOKEN` from Kaggle Secrets automatically. To push an updated script:
+
+```bash
+kaggle kernels push -p kaggle/  # uses kernel-metadata.json / training-metadata.json
+```
+
+---
+
+## Inference
+
+Two engines, both in `inference.py`:
+
+```python
+# INT8 — ternary weights as quantized float32 + torch.compile
+engine = CPU1InferenceEngine.from_checkpoint('checkpoint.pt', config)
+output = engine.generate(b"Buenos dias", max_bytes=200)
+
+# T-MAC LUT — zero multiplications: precomputed lookup table + gather
+engine = CPU1InferenceEngineLUT.from_checkpoint_with_lut(
+    'checkpoint.pt', config, group_size=4
+)
+output = engine.generate(b"Buenos dias", max_bytes=200)
+```
 
 ---
 
@@ -259,37 +243,78 @@ Generates:
 ```
 1.58bits/
 │
-│  Dataset
-├── build_shared_dataset.py   # Genera el dataset compartido: corre el teacher (Qwen-14B),
-│                             #   extrae logprobs + hidden states, y lo sube a HuggingFace
-├── extract_logprobs.py       # Extrae logprobs del teacher para distillación (BPE→byte mapping)
-├── byte_marginalization.py   # Convierte probabilidades BPE del teacher a probabilidades
-│                             #   a nivel de byte (marginalización). Soporta parches dinámicos (Bolmo)
+│  Core
+├── model.py              # Full CPU-1 architecture: MLGRU + PFNet + FPResidual +
+│                         #   BoundaryPredictor + DeleteGate + EmbeddingAligner
+├── train.py              # Training loop — two modes:
+│                         #   default: 170M production model
+│                         #   --mode ablation --run run_XX: ablation run
+├── ablation.py           # Ablation system: BASE_CONFIG + 15 RUN_CONFIGS,
+│                         #   configurable model variants, analysis + LaTeX tables
+├── create_dataset.py     # Full dataset pipeline: teacher logprob extraction,
+│                         #   BPE→byte marginalization, HuggingFace Hub upload
+├── inference.py          # CPU inference: INT8 packing + T-MAC LUT engine
+├── hf_mount.py           # Lazy HF filesystem mount via NFS — fetches dataset
+│                         #   on-demand without downloading the full ~5 GB
 │
-│  Modelo principal (170M params)
-├── model_v2.py               # Arquitectura completa CPU-1: MLGRU + byte-level + ternary
-│                             #   + PFNet + FPResidual + BoundaryPredictor + DeleteGate
-│                             #   + EmbeddingAligner. El corazón del proyecto
-├── train.py                  # Loop de entrenamiento del modelo principal de 170M
+│  Kaggle
+├── kaggle/
+│   ├── cpu1-create-dataset.py   # Kaggle script: build + upload shared dataset (T4)
+│   ├── cpu1-training.py         # Kaggle script: train ablation run (T4)
+│   ├── create-dataset-metadata.json
+│   ├── kernel-metadata.json
+│   └── training-metadata.json
 │
-│  Inferencia
-├── inference_v2.py           # Inferencia estándar del modelo v2 (generación, sampling)
-├── inference_tmac.py         # Inferencia optimizada con T-MAC: usa LUT (lookup tables)
-│                             #   en vez de multiplicaciones para pesos ternarios
-├── eval_cpu.py               # Benchmarks rápidos de rendimiento en CPU
+│  Evaluation
+├── eval/
+│   ├── run_all_tests.py         # Runs all 21 tests, saves report to resultados/
+│   ├── verify_all.py            # Quick correctness check
+│   ├── eval_cpu.py              # CPU performance benchmark
+│   ├── benchmark_external.py    # External model comparison
+│   ├── bpe_vs_bytebatch_benchmark.py
+│   ├── helpers.py
+│   └── test_01_forward.py … test_21_mlgru_state_size.py
 │
-│  Ablación (15 runs × 50M params)
-├── ablation_config.py        # BASE_CONFIG + RUN_CONFIGS para los 15 runs
-├── ablation_models.py        # Variantes configurables (Transformer/MLGRU × BPE/Byte)
-├── ablation_train.py         # Loop de entrenamiento unificado para cualquier run
-├── ablation_analysis.py      # Resultados → tablas texto + LaTeX para el paper
-│
-│  Evaluación y referencia
-├── eval/                     # Suite de 21 tests (correctitud, velocidad, calidad)
-├── resultados/               # Reportes de benchmark en markdown
-├── papers/                   # Papers de referencia
-└── Prompts/                  # System prompts (design docs)
+│  Results & Reference
+├── models/distilgpt2/    # Local distilgpt2 (82M) used as eval baseline
+├── checkpoints/          # Training checkpoints
+├── resultados/           # Benchmark reports (markdown) per model
+├── papers/               # Reference PDFs
+└── Prompts/              # Design documents per pipeline stage
 ```
+
+---
+
+## Evaluation Suite
+
+21 test files across 6 categories (16 run automatically, 5 require manual invocation). Run with:
+
+```bash
+python eval/run_all_tests.py --model models/distilgpt2
+```
+
+| Category | Tests |
+|---|---|
+| Correctness | 01 forward, 02 probs, 03 determinism, 04 state propagation, 05 ternary weights |
+| CPU speed | 06 throughput, 07 latency, 08 jitter, 09 context scaling, 10 RAM |
+| Quality | 11 perplexity, 12 generation, 13 UTF-8 validity |
+| Training | 14 convergence |
+| Ablation | 15 FPResidual*, 16 MLGRU vs Transformer*, 17 teacher coverage, 18 teacher entropy |
+| Full | 19 benchmark*, 20 scaling*, 21 MLGRU state / KV cache |
+
+\* Run manually (not included in `run_all_tests.py`).
+
+**Baseline (distilgpt2, 82M FP32, local CPU):**
+
+| Metric | Value |
+|---|---|
+| Throughput | 43.8 tok/s |
+| Latency p50 | 22.3 ms |
+| Perplexity | 65.4 |
+| RAM delta | 11.5 MB |
+| UTF-8 valid | 100% |
+
+Full report: [`resultados/distilgpt2.md`](resultados/distilgpt2.md)
 
 ---
 
@@ -308,17 +333,29 @@ MLGRU's mixing `h_t = f*h + (1-f)*c` is a linear interpolation — all nonlinear
 {-1, 0, 1} weights reduce model size to ~44 MB and enable integer arithmetic (INT8 MAC or T-MAC LUT). FPResidual low-rank branches provide precision recovery.
 
 **Why distill from BPE models?**
-Strong pretrained BPE models (Qwen-14B) encode rich language knowledge. Distillation transfers this to the byte-level student more efficiently than training from scratch, despite the tokenization mismatch. First-byte marginalization solves the BPE-to-byte alignment problem.
+Strong pretrained BPE models (Qwen-7B) encode rich language knowledge. Distillation transfers this to the byte-level student more efficiently than training from scratch, despite the tokenization mismatch. First-byte marginalization solves the BPE-to-byte alignment problem.
+
+**Why hf_mount?**
+The ablation dataset is ~5 GB. Downloading it in full on each Kaggle session wastes time and disk quota. `hf_mount` uses NFS to mount the HF bucket and fetches only the bytes actually read — compatible with Kaggle's Linux environment, no root required.
 
 ---
 
 ## Dependencies
 
 ```bash
-pip install torch
-pip install transformers datasets huggingface_hub
-pip install bitsandbytes          # 4-bit NF4 for teacher
-pip install pyarrow numpy
+pip install -r requirements.txt
+```
+
+Key packages:
+```
+torch==2.6.0+cu124          # CUDA 12.4 build (compatible with 12.6 driver)
+transformers==5.3.0
+datasets==4.8.4
+huggingface_hub==1.8.0
+bitsandbytes==0.49.2        # 4-bit NF4 for Qwen-7B teacher
+pyarrow==23.0.1
+numpy==2.4.3
+tqdm==4.67.3
 ```
 
 ---
@@ -327,17 +364,19 @@ pip install pyarrow numpy
 
 ### Implemented
 
-- **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (`model_v2.py`)
-- **Data pipeline** — Teacher logprob extraction + BPE→byte marginalization (`extract_logprobs.py`, `byte_marginalization.py`)
-- **Training** — AMP, gradient accumulation, distillation loss with temperature scaling (`train.py`)
-- **CPU inference** — INT8 packing with `torch._int_mm`, weight transposition, `torch.compile` (`inference_v2.py`)
-- **T-MAC LUT inference** — Zero-multiplication engine: ternary weights → precomputed LUT, lookup + accumulate only (`inference_tmac.py`)
-- **Ablation system** — 15-run experimental design, configurable models (Transformer/MLGRU × BPE/Byte × FP16/Ternary × CE/Distil), unified training loop, shared dataset pipeline, LaTeX table generation
-- **Extended techniques (v3)** — BoundaryPredictor (Bolmo), DeleteGate (MrT5), EmbeddingAligner (arXiv 2602), two-phase training support
+- **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (`model.py`)
+- **Extended techniques (v3)** — BoundaryPredictor (Bolmo), DeleteGate (MrT5), EmbeddingAligner (arXiv 2602), two-phase training
+- **Dataset pipeline** — Teacher logprob extraction + BPE→byte marginalization + HF Hub upload (`create_dataset.py`)
+- **HF-mount** — Lazy NFS-based dataset access, no full download needed (`hf_mount.py`)
+- **Training** — AMP, gradient accumulation, distillation loss, both main and ablation modes in one script (`train.py`)
+- **Ablation system** — 15-run experimental design, configurable variants, shared dataset, LaTeX table generation (`ablation.py`)
+- **CPU inference** — INT8 packing with `torch.compile` + T-MAC LUT zero-multiplication engine (`inference.py`)
+- **Evaluation suite** — 21 tests: correctness, speed, quality, training, ablation metrics (`eval/`)
+- **Kaggle scripts** — Ready-to-run notebooks for dataset creation and training on T4 (`kaggle/`)
 
 ### Pending
 
-- Run 15 ablation experiments on Kaggle T4 and collect metrics
+- Run the 15 ablation experiments on Kaggle T4 and collect metrics
 - Scale winning ablation config to 170M and train on full dataset
 - T-MAC C++ kernel integration (bitnet.cpp / llama.cpp)
 

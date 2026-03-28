@@ -881,7 +881,7 @@ class EmbeddingAligner(nn.Module):
     Basado en: "Distilling Byte-Level Models from Tokenizer-Based LMs"
     (arXiv 2602, 2025) — Embedding Alignment técnica.
 
-    El teacher (Qwen-14B) produce embeddings de dimensión teacher_dim.
+    El teacher (Qwen-7B) produce embeddings de dimensión teacher_dim.
     El student (CPU-1) produce embeddings de dimensión student_dim.
 
     Este módulo aprende una proyección lineal:
@@ -1018,7 +1018,7 @@ class CPU1ModelV2WithGates(nn.Module):
         if self.use_emb_align:
             self.embedding_aligner = EmbeddingAligner(
                 student_dim=d_model,
-                teacher_dim=config.get('teacher_dim', 5120),  # Qwen-14B
+                teacher_dim=config.get('teacher_dim', 3584),  # Qwen-7B
             )
 
         self.use_gradient_checkpointing = config.get(

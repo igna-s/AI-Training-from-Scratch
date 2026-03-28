@@ -3,7 +3,7 @@ Dataset creation for CPU-1: BPE-to-byte alignment and dataset pipeline.
 
 Section 1 - Core algorithms: BPE-to-byte alignment, first-byte marginalization,
             document packing, and dynamic patch marginalization.
-Section 2 - Pipeline: teacher logprob extraction (Qwen-14B), byte-level and
+Section 2 - Pipeline: teacher logprob extraction (Qwen-7B), byte-level and
             BPE dataset construction, and HuggingFace Hub upload.
 
 Usage:
@@ -19,6 +19,8 @@ import enum
 import json
 import math
 import os
+import shutil
+import threading
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -956,14 +958,20 @@ def main():
 # Configuration
 # ============================================================
 
-TEACHER_MODEL = "Qwen/Qwen2.5-14B"
+TEACHER_MODEL = "Qwen/Qwen2.5-7B"
+
+# Module-level cache: tokenizer id → {token_id: bytes}
+_TOKEN_BYTES_CACHE: dict = {}
 DATASET_REPO = "Cukinator/cpu1-ablation-dataset"
+DATASET_BUCKET = "Cukinator/cpu1-ablation-dataset"  # HF Bucket (read-write via hf-mount)
 OUTPUT_DIR = Path("./shared_dataset")
 TOP_K_LOGPROBS = 128
 PATCH_SIZE = 4
 SEQ_LEN_PATCHES = 5000
 SEQ_LEN_TOKENS = 5000
-ALIGN_DIM = 128             # Project teacher hidden 5120→128 (Johnson-Lindenstrauss)
+MAX_EXTRACTION_TOKENS = 2048  # T4 SDPA usa O(seq²) → 4096 OOM con batch≥2; 2048 usa 0.9 GB vs 3.5 GB
+TEACHER_HIDDEN_DIM = 3584   # Qwen2.5-7B hidden size
+ALIGN_DIM = 128             # Project teacher hidden 3584→128 (Johnson-Lindenstrauss)
 SEED = 42
 BATCH_SIZE_TEACHER = 4
 
@@ -985,21 +993,25 @@ def _get_projection_matrix(teacher_dim: int, align_dim: int = ALIGN_DIM):
 # STEP 1: Extract teacher logprobs
 # ============================================================
 
-def load_teacher(model_name: str = TEACHER_MODEL):
-    """Load Qwen-14B in 4-bit NF4 for logprob extraction (~8GB VRAM)."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+def load_teacher(model_name: str = TEACHER_MODEL, device: str = "cuda:0"):
+    """Load Qwen-7B in 4-bit NF4 (~4GB VRAM)."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-    print(f"[Teacher] Loading {model_name} in 4-bit NF4...")
+    print(f"[Teacher] Loading {model_name} in 4-bit NF4 on {device}...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+    bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_use_double_quant=True,
-        device_map="cuda:0",
+        bnb_4bit_quant_type="nf4",
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map={"": device},
     )
     model.eval()
-    print(f"[Teacher] Ready. Vocab size: {tokenizer.vocab_size}")
+    print(f"[Teacher] Ready on {device}. Vocab size: {tokenizer.vocab_size}")
     return model, tokenizer
 
 
@@ -1173,6 +1185,157 @@ def extract_logprobs_and_hidden(
     }
 
 
+def _get_token_bytes_cache(tokenizer) -> dict:
+    """Build (once per tokenizer) a full vocab id → UTF-8 bytes lookup table."""
+    key = id(tokenizer)
+    if key not in _TOKEN_BYTES_CACHE:
+        print("[BatchExtract] Building token→bytes cache (~1 s)...")
+        vocab_size = tokenizer.vocab_size
+        all_tokens = tokenizer.convert_ids_to_tokens(list(range(vocab_size)))
+        cache: dict = {}
+        for tid, tok in enumerate(all_tokens):
+            if tok is None:
+                cache[tid] = b'\x00'
+            else:
+                try:
+                    cache[tid] = tokenizer.convert_tokens_to_string([tok]).encode('utf-8')
+                except Exception:
+                    cache[tid] = b'\x00'
+        _TOKEN_BYTES_CACHE[key] = cache
+        print(f"[BatchExtract] Cache ready: {vocab_size} tokens")
+    return _TOKEN_BYTES_CACHE[key]
+
+
+def extract_logprobs_and_hidden_batch(
+    model,
+    tokenizer,
+    texts: list[str],
+    top_k: int = TOP_K_LOGPROBS,
+    seq_len: int = MAX_EXTRACTION_TOKENS,
+    hidden_layer: int = -1,
+    logit_chunk_size: int = 256,
+) -> list[dict]:
+    """
+    Batched version of extract_logprobs_and_hidden.
+
+    Processes a list of texts in one forward pass for better GPU utilisation.
+
+    Memory optimisations vs naïve batch:
+    - Forward hooks instead of output_hidden_states=True → stores 2 layers, not 28
+    - Chunked lm_head (logit_chunk_size positions per step) → avoids B×S×151k tensor
+    - Pre-built token→bytes cache → no per-token tokenizer calls at build time
+
+    Returns list[dict] with the same schema as extract_logprobs_and_hidden.
+    """
+    if not texts:
+        return []
+
+    bytes_cache = _get_token_bytes_cache(tokenizer)
+    n_layers    = model.config.num_hidden_layers
+    mid_idx     = hidden_layer if hidden_layer >= 0 else n_layers // 2
+
+    # ── Register hooks to capture mid-layer and last-layer hidden states ──
+    captured: dict = {}
+
+    def _mid_hook(module, inp, out):
+        h = out[0] if isinstance(out, tuple) else out
+        captured['mid'] = h.detach()      # [B, S, D]
+
+    def _last_hook(module, inp, out):
+        h = out[0] if isinstance(out, tuple) else out
+        captured['last'] = h.detach()     # [B, S, D]
+
+    hook_mid  = model.model.layers[mid_idx].register_forward_hook(_mid_hook)
+    hook_last = model.model.layers[-1].register_forward_hook(_last_hook)
+
+    try:
+        enc = tokenizer(
+            texts,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+            max_length=seq_len,
+        )
+        input_ids = enc['input_ids'].to(model.device)        # [B, S_pad]
+        attn_mask = enc['attention_mask'].to(model.device)   # [B, S_pad]
+
+        with torch.no_grad():
+            # Forward populates captured via hooks; we discard the output logits
+            model(input_ids, attention_mask=attn_mask)
+
+    finally:
+        hook_mid.remove()
+        hook_last.remove()
+
+    B, S_pad = input_ids.shape
+
+    # ── Project mid-layer hidden → ALIGN_DIM (on CPU to save VRAM) ────────
+    proj = _get_projection_matrix(model.config.hidden_size)
+    mid_proj = (captured['mid'].float().cpu() @ proj).half()  # [B, S_pad, ALIGN_DIM]
+
+    # ── Chunked logit computation from last-layer hidden + final norm ─────
+    with torch.no_grad():
+        last_normed = model.model.norm(captured['last'])   # [B, S_pad, D]
+
+    all_top_idx: list = []
+    all_top_lp:  list = []
+    with torch.no_grad():
+        for cs in range(0, S_pad, logit_chunk_size):
+            ce = min(cs + logit_chunk_size, S_pad)
+            chunk  = last_normed[:, cs:ce, :].contiguous()   # [B, C, D]
+            logits = model.lm_head(chunk).float()             # [B, C, V]
+            log_p  = torch.log_softmax(logits, dim=-1)
+            top_lp, top_idx = torch.topk(log_p, k=top_k, dim=-1)
+            all_top_idx.append(top_idx.cpu())
+            all_top_lp.append(top_lp.cpu())
+            del logits, log_p
+
+    top_idx_all = torch.cat(all_top_idx, dim=1)   # [B, S_pad, K]
+    top_lp_all  = torch.cat(all_top_lp,  dim=1)   # [B, S_pad, K]
+
+    input_ids_cpu = input_ids.cpu()
+    attn_mask_cpu = attn_mask.cpu()
+
+    # ── Build one result dict per sample ──────────────────────────────────
+    results = []
+    for b in range(B):
+        actual_len  = int(attn_mask_cpu[b].sum().item())
+        ids         = input_ids_cpu[b, :actual_len].tolist()
+
+        byte_offset = 0
+        positions   = []
+        for pos_idx, token_id in enumerate(ids):
+            token_bytes_seq = bytes_cache.get(token_id, b'\x00')
+
+            pos_top = []
+            for k_idx in range(top_k):
+                cand_id = top_idx_all[b, pos_idx, k_idx].item()
+                cand_lp = top_lp_all[b,  pos_idx, k_idx].item()
+                pos_top.append({
+                    'token_id': cand_id,
+                    'token':    '',   # not used downstream
+                    'bytes':    list(bytes_cache.get(cand_id, b'\x00')),
+                    'logprob':  cand_lp,
+                })
+
+            positions.append({
+                'byte_offset': byte_offset,
+                'top_tokens':  pos_top,
+            })
+            byte_offset += len(token_bytes_seq)
+
+        hidden_proj = mid_proj[b, :actual_len, :]   # [L, ALIGN_DIM]
+        results.append({
+            'text_bytes':    list(texts[b].encode('utf-8')),
+            'positions':     positions,
+            'n_tokens':      actual_len,
+            'teacher_hidden': hidden_proj.tolist(),
+            'teacher_dim':   int(hidden_proj.shape[-1]),
+        })
+
+    return results
+
+
 def _append_to_parquet(records: list[dict], path: Path) -> None:
     """Append records to a Parquet file."""
     columns = {
@@ -1205,9 +1368,11 @@ def run_logprob_extraction(
 ) -> None:
     """Extract logprobs + projected hidden states for entire corpus.
 
+    Uses all available GPUs in parallel (one Qwen-7B teacher per GPU).
+    Each T4 holds one 4-bit NF4 model (~4GB VRAM), so 2×T4 = 2× throughput.
+
     Always extracts teacher hidden states (projected 5120→ALIGN_DIM)
-    for EmbeddingAligner (runs 13, 15). Uses ~50% more VRAM but
-    storage is small thanks to random orthogonal projection.
+    for EmbeddingAligner (runs 13, 15).
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1218,40 +1383,143 @@ def run_logprob_extraction(
         start_idx = len(existing)
         print(f"[Extraction] Resuming from doc {start_idx}/{len(corpus_texts)}")
 
+    if start_idx >= len(corpus_texts):
+        print("[Extraction] All docs already extracted")
+        return
+
+    n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+
+    if n_gpus >= 2:
+        print(f"[Extraction] Using {n_gpus} GPUs in parallel "
+              f"({', '.join(torch.cuda.get_device_name(i) for i in range(n_gpus))})")
+        _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus)
+    else:
+        _run_extraction_single_gpu(corpus_texts, output_path, start_idx)
+
+    print(f"[Extraction] Complete: {output_path}")
+
+
+def _run_extraction_single_gpu(corpus_texts, output_path, start_idx, batch_size: int = 2):
+    """Single-GPU batched extraction (batch_size docs per forward pass)."""
+    import traceback
     model, tokenizer = load_teacher()
     batch_results = []
 
-    for i in tqdm(range(start_idx, len(corpus_texts)), desc="Extracting logprobs"):
-        text = corpus_texts[i]
-        if not text.strip():
+    valid_indices = [i for i in range(start_idx, len(corpus_texts))
+                     if corpus_texts[i].strip()]
+
+    for batch_start in tqdm(range(0, len(valid_indices), batch_size),
+                            desc="Extracting logprobs"):
+        batch_indices = valid_indices[batch_start:batch_start + batch_size]
+        batch_texts   = [corpus_texts[i] for i in batch_indices]
+
+        try:
+            batch_out = extract_logprobs_and_hidden_batch(
+                model, tokenizer, batch_texts,
+                top_k=TOP_K_LOGPROBS, seq_len=MAX_EXTRACTION_TOKENS,
+            )
+        except Exception:
+            print(f"\n[GPU 0] ERROR en batch docs {batch_indices[0]}-{batch_indices[-1]}:")
+            traceback.print_exc()
+            torch.cuda.empty_cache()
             continue
 
-        result = extract_logprobs_and_hidden(
-            model, tokenizer, text, TOP_K_LOGPROBS,
-        )
-        record = {
-            'doc_id':     i,
-            'text_bytes': result['text_bytes'],
-            'positions':  json.dumps(result['positions']),
-            'n_tokens':   result['n_tokens'],
-            # Flatten [n_tokens, ALIGN_DIM] → [n_tokens * ALIGN_DIM]
-            'teacher_hidden': [
-                v for row in result['teacher_hidden'] for v in row
-            ],
-            'teacher_dim': result['teacher_dim'],
-        }
-        batch_results.append(record)
+        for i, result in zip(batch_indices, batch_out):
+            batch_results.append({
+                'doc_id':         i,
+                'text_bytes':     result['text_bytes'],
+                'positions':      json.dumps(result['positions']),
+                'n_tokens':       result['n_tokens'],
+                'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
+                'teacher_dim':    result['teacher_dim'],
+            })
 
-        # Save every 100 docs for crash safety
+        torch.cuda.empty_cache()
+
         if len(batch_results) >= 100:
             _append_to_parquet(batch_results, output_path)
             batch_results = []
-            print(f"  Saved through doc {i}")
+            print(f"  Saved through doc {batch_indices[-1]}")
 
     if batch_results:
         _append_to_parquet(batch_results, output_path)
 
-    print(f"[Extraction] Complete: {output_path}")
+
+def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus):
+    """Multi-GPU extraction: one Qwen-7B teacher per GPU, docs split evenly.
+
+    Usa threading porque las operaciones CUDA liberan el GIL,
+    permitiendo que ambas GPUs computen en paralelo.
+    Lock para escritura thread-safe al parquet compartido.
+    """
+    output_path = Path(output_path)
+    lock = threading.Lock()
+
+    remaining_indices = list(range(start_idx, len(corpus_texts)))
+    # Interleave para balancear carga (docs largos/cortos distribuidos)
+    gpu_indices = [remaining_indices[i::n_gpus] for i in range(n_gpus)]
+
+    # Cargar modelos SECUENCIALMENTE para evitar OOM por carga paralela en GPU 0
+    print("[Extraction] Loading models sequentially...")
+    models = []
+    for gpu_id in range(n_gpus):
+        m, tok = load_teacher(device=f"cuda:{gpu_id}")
+        torch.cuda.empty_cache()
+        models.append((m, tok))
+    print("[Extraction] All models loaded. Starting parallel extraction...")
+
+    def worker(gpu_id, doc_indices, model, tokenizer, batch_size: int = 2):
+        import traceback
+        batch_results = []
+
+        valid_indices = [i for i in doc_indices if corpus_texts[i].strip()]
+
+        for batch_start in tqdm(range(0, len(valid_indices), batch_size),
+                                desc=f"GPU {gpu_id}", position=gpu_id):
+            batch_indices = valid_indices[batch_start:batch_start + batch_size]
+            batch_texts   = [corpus_texts[i] for i in batch_indices]
+
+            try:
+                batch_out = extract_logprobs_and_hidden_batch(
+                    model, tokenizer, batch_texts,
+                    top_k=TOP_K_LOGPROBS, seq_len=MAX_EXTRACTION_TOKENS,
+                )
+            except Exception:
+                print(f"\n[GPU {gpu_id}] ERROR en batch docs {batch_indices[0]}-{batch_indices[-1]}:")
+                traceback.print_exc()
+                torch.cuda.empty_cache()
+                continue
+
+            for i, result in zip(batch_indices, batch_out):
+                batch_results.append({
+                    'doc_id':         i,
+                    'text_bytes':     result['text_bytes'],
+                    'positions':      json.dumps(result['positions']),
+                    'n_tokens':       result['n_tokens'],
+                    'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
+                    'teacher_dim':    result['teacher_dim'],
+                })
+
+            torch.cuda.empty_cache()
+
+            if len(batch_results) >= 50:
+                with lock:
+                    _append_to_parquet(batch_results, output_path)
+                batch_results = []
+
+        if batch_results:
+            with lock:
+                _append_to_parquet(batch_results, output_path)
+
+    threads = []
+    for gpu_id in range(n_gpus):
+        model, tokenizer = models[gpu_id]
+        t = threading.Thread(target=worker, args=(gpu_id, gpu_indices[gpu_id], model, tokenizer))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
 
 
 # ============================================================
@@ -1332,7 +1600,9 @@ def build_byte_level_dataset(
     output_dir: str,
     seq_len: int = SEQ_LEN_PATCHES,
     n_workers: int = 0,
-) -> dict:
+    seq_offset: int = 0,
+    carry_state: dict = None,
+) -> tuple:
     """
     Convert BPE logprobs to byte-level distributions.
     Parallelizado con ProcessPoolExecutor para saturar CPU multi-core.
@@ -1354,13 +1624,22 @@ def build_byte_level_dataset(
     if n_workers <= 0:
         n_workers = max(1, (os.cpu_count() or 4) - 1)
 
-    all_patches = []
-    all_targets = []
-    all_teacher_probs = []
-    all_teacher_mask = []
-    all_teacher_hidden = []
-    has_hidden = False
-    teacher_dim = 0
+    if carry_state is not None:
+        all_patches = carry_state['patches']
+        all_targets = carry_state['targets']
+        all_teacher_probs = carry_state['teacher_probs']
+        all_teacher_mask = carry_state['teacher_mask']
+        all_teacher_hidden = carry_state['teacher_hidden']
+        has_hidden = carry_state['has_hidden']
+        teacher_dim = carry_state['teacher_dim']
+    else:
+        all_patches = []
+        all_targets = []
+        all_teacher_probs = []
+        all_teacher_mask = []
+        all_teacher_hidden = []
+        has_hidden = False
+        teacher_dim = 0
     stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
 
     # Descomposición de datos: cada worker procesa un documento independiente
@@ -1392,7 +1671,7 @@ def build_byte_level_dataset(
             _save_byte_sequence(
                 all_patches[:seq_len], all_targets[:seq_len],
                 all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
-                output_dir, stats['n_sequences'],
+                output_dir, seq_offset + stats['n_sequences'],
                 teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
             )
             all_patches = all_patches[seq_len:]
@@ -1406,11 +1685,16 @@ def build_byte_level_dataset(
     coverage = stats['n_with_teacher'] / max(stats['n_patches_total'], 1) * 100
     stats['coverage_pct'] = coverage
 
-    print(f"[Byte dataset] {stats['n_sequences']} sequences")
+    print(f"[Byte dataset] {stats['n_sequences']} sequences (chunk), total offset {seq_offset + stats['n_sequences']}")
     print(f"[Byte dataset] Teacher coverage: {coverage:.1f}%")
 
-    _save_split_info(stats['n_sequences'], output_dir)
-    return stats
+    next_carry = {
+        'patches': all_patches, 'targets': all_targets,
+        'teacher_probs': all_teacher_probs, 'teacher_mask': all_teacher_mask,
+        'teacher_hidden': all_teacher_hidden,
+        'has_hidden': has_hidden, 'teacher_dim': teacher_dim,
+    }
+    return stats, next_carry
 
 
 def _save_byte_sequence(patches, targets, teacher_probs, teacher_mask,
@@ -1508,7 +1792,9 @@ def build_bpe_dataset(
     output_dir: str,
     seq_len: int = SEQ_LEN_TOKENS,
     n_workers: int = 0,
-) -> dict:
+    seq_offset: int = 0,
+    carry_state: dict = None,
+) -> tuple:
     """
     Build BPE dataset from the same teacher logprobs.
     Produces dataset for runs 01-07 (BPE).
@@ -1526,10 +1812,16 @@ def build_bpe_dataset(
         n_workers = max(1, (os.cpu_count() or 4) - 1)
 
     stats = {'n_sequences': 0, 'n_tokens_total': 0}
-    buffer_ids = []
-    buffer_probs = []
-    buffer_top_ids = []
-    buffer_mask = []
+    if carry_state is not None:
+        buffer_ids = carry_state['ids']
+        buffer_probs = carry_state['probs']
+        buffer_top_ids = carry_state['top_ids']
+        buffer_mask = carry_state['mask']
+    else:
+        buffer_ids = []
+        buffer_probs = []
+        buffer_top_ids = []
+        buffer_mask = []
 
     # Descomposición de datos: cada worker procesa un documento independiente
     print(f"[BPE dataset] Tokenizing with {n_workers} workers...")
@@ -1561,7 +1853,7 @@ def build_bpe_dataset(
                 buffer_top_ids[:seq_len],
                 buffer_mask[:seq_len],
                 output_dir,
-                stats['n_sequences'],
+                seq_offset + stats['n_sequences'],
             )
             buffer_ids = buffer_ids[seq_len:]
             buffer_probs = buffer_probs[seq_len:]
@@ -1569,9 +1861,12 @@ def build_bpe_dataset(
             buffer_mask = buffer_mask[seq_len:]
             stats['n_sequences'] += 1
 
-    print(f"[BPE dataset] {stats['n_sequences']} sequences")
-    _save_split_info(stats['n_sequences'], output_dir)
-    return stats
+    print(f"[BPE dataset] {stats['n_sequences']} sequences (chunk), total offset {seq_offset + stats['n_sequences']}")
+    next_carry = {
+        'ids': buffer_ids, 'probs': buffer_probs,
+        'top_ids': buffer_top_ids, 'mask': buffer_mask,
+    }
+    return stats, next_carry
 
 
 def _save_bpe_sequence(input_ids, labels, teacher_probs, teacher_ids_top,
@@ -1604,6 +1899,50 @@ def _save_bpe_sequence(input_ids, labels, teacher_probs, teacher_ids_top,
 # STEP 3: Split info & upload
 # ============================================================
 
+def _save_stream_checkpoint(api, repo_id: str, chunk_idx: int,
+                            byte_seq_offset: int, bpe_seq_offset: int,
+                            byte_carry: dict, bpe_carry: dict) -> None:
+    """Guarda checkpoint en HF Hub para poder retomar si se corta la sesion."""
+    import pickle, io
+    checkpoint = {
+        'last_completed_chunk': chunk_idx,
+        'byte_seq_offset': byte_seq_offset,
+        'bpe_seq_offset': bpe_seq_offset,
+    }
+    # Metadata JSON
+    buf = io.BytesIO(json.dumps(checkpoint).encode())
+    api.upload_file(path_or_fileobj=buf, path_in_repo='stream_checkpoint.json',
+                    repo_id=repo_id, repo_type='dataset')
+    # Carry states (pickle)
+    carry_buf = io.BytesIO(pickle.dumps({'byte': byte_carry, 'bpe': bpe_carry}))
+    api.upload_file(path_or_fileobj=carry_buf, path_in_repo='stream_carry.pkl',
+                    repo_id=repo_id, repo_type='dataset')
+    print(f"  [checkpoint] Chunk {chunk_idx} saved to HF Hub")
+
+
+def _load_stream_checkpoint(api, repo_id: str):
+    """Carga checkpoint de HF Hub. Retorna (checkpoint_dict, carry_dict) o (None, None)."""
+    import pickle
+    from huggingface_hub import hf_hub_download
+    try:
+        files = list(api.list_repo_files(repo_id, repo_type='dataset'))
+        if 'stream_checkpoint.json' not in files:
+            return None, None
+        ckpt_path = hf_hub_download(repo_id=repo_id, filename='stream_checkpoint.json',
+                                    repo_type='dataset')
+        with open(ckpt_path) as f:
+            checkpoint = json.load(f)
+        carry_path = hf_hub_download(repo_id=repo_id, filename='stream_carry.pkl',
+                                     repo_type='dataset')
+        with open(carry_path, 'rb') as f:
+            carry = pickle.load(f)
+        print(f"  [checkpoint] Resuming from chunk {checkpoint['last_completed_chunk'] + 1}")
+        return checkpoint, carry
+    except Exception as e:
+        print(f"  [checkpoint] No checkpoint found or error loading: {e}")
+        return None, None
+
+
 def _save_split_info(n_sequences: int, output_dir: Path) -> None:
     """Save train/val/test split with fixed seed."""
     rng = np.random.RandomState(SEED)
@@ -1623,8 +1962,29 @@ def _save_split_info(n_sequences: int, output_dir: Path) -> None:
         json.dump(split, f)
 
 
+def _upload_sealed_shards(output_dir: Path, api, repo_id: str,
+                          repo_subdir: str, total_seqs: int) -> None:
+    """Upload and delete shards that are complete (won't receive more sequences).
+
+    A shard N is sealed when total_seqs > (N+1)*1000, meaning all 1000
+    of its sequences have been written.
+    """
+    max_sealed = total_seqs // 1000  # shards 0..max_sealed-1 are complete
+    for shard_idx in range(max_sealed):
+        shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
+        if shard_path.exists():
+            api.upload_file(
+                path_or_fileobj=str(shard_path),
+                path_in_repo=f"{repo_subdir}/shard_{shard_idx:04d}.parquet",
+                repo_id=repo_id,
+                repo_type="dataset",
+            )
+            shard_path.unlink()
+            print(f"  [hub] Uploaded + deleted {repo_subdir}/shard_{shard_idx:04d}.parquet")
+
+
 def upload_dataset_to_hub(local_dir: str = str(OUTPUT_DIR)) -> None:
-    """Upload complete dataset to HuggingFace Hub."""
+    """Upload complete dataset to HuggingFace Hub (fallback si no se usa hf-mount)."""
     from huggingface_hub import HfApi
 
     api = HfApi()
@@ -1645,19 +2005,36 @@ def upload_dataset_to_hub(local_dir: str = str(OUTPUT_DIR)) -> None:
 
 def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                        n_docs: int = 50_000,
-                       skip_extraction: bool = False) -> None:
+                       skip_extraction: bool = False,
+                       use_hf_mount: bool = False,
+                       stream_to_hub: bool = False,
+                       chunk_size: int = 500) -> None:
     """
     Complete dataset construction pipeline.
 
     Step 1: Download FineWeb corpus
-    Step 2: Extract logprobs + projected hidden states with Qwen-14B
+    Step 2: Extract logprobs + projected hidden states with Qwen-7B
     Step 3a: Marginalize BPE→byte (with teacher_hidden for runs 13, 15)
     Step 3b: Build BPE dataset
-    Step 4: Upload to HuggingFace Hub
+    Step 4: Upload (hf-mount: ya esta en el bucket; sin mount: upload via API)
 
     Only needs to run ONCE. Covers all 15 ablation runs.
+
+    Args:
+        use_hf_mount: si True, monta un HF Bucket y escribe directo ahi.
+                      Los archivos van a HF storage en tiempo real, sin paso
+                      de upload separado. Ahorra disco local en Kaggle.
     """
+    global OUTPUT_DIR
     from datasets import load_dataset
+
+    # Si hf-mount esta habilitado, montar bucket y escribir directo ahi
+    mount_path = None
+    if use_hf_mount:
+        from hf_mount import mount_bucket
+        mount_path = mount_bucket(DATASET_BUCKET)
+        OUTPUT_DIR = mount_path
+        print(f"[hf-mount] Output dir -> {OUTPUT_DIR} (bucket: {DATASET_BUCKET})")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     logprobs_path = OUTPUT_DIR / "teacher_logprobs" / "logprobs_raw.parquet"
@@ -1684,48 +2061,205 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             json.dump(texts[:1000], f)
 
         # Step 2: Extract logprobs (the slow part)
+        n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
         print(f"\n{'=' * 60}")
-        print("STEP 2: Extracting teacher logprobs (Qwen-14B)")
-        print("  (~6-10 hours on T4, supports resume)")
+        print("STEP 2: Extracting teacher logprobs (Qwen-7B)")
+        if n_gpus >= 2:
+            print(f"  {n_gpus} GPUs detectadas → extraccion en paralelo (~3-5 hours)")
+        else:
+            print("  (~6-10 hours on single T4, supports resume)")
         print(f"{'=' * 60}")
 
-        run_logprob_extraction(texts, str(logprobs_path), resume=True)
-    else:
-        assert logprobs_path.exists(), (
-            f"Logprobs not found at {logprobs_path}. "
-            f"Run without --skip_extraction first."
+        if stream_to_hub:
+            # === STREAMING MODE ===
+            # Procesar en chunks: extract → byte/BPE → upload shards → delete local.
+            # Evita acumular el parquet de logprobs completo en disco.
+            from huggingface_hub import HfApi
+            hf_token = os.environ.get('HF_TOKEN')
+            print(f"  [hub] HF_TOKEN: {'set (' + str(len(hf_token)) + ' chars)' if hf_token else 'NOT SET / EMPTY'}")
+            api = HfApi(token=hf_token)
+            try:
+                api.create_repo(DATASET_REPO, repo_type="dataset", exist_ok=True)
+                print(f"  [hub] Repo ready: {DATASET_REPO}")
+            except Exception as e:
+                print(f"  [hub] create_repo FAILED: {e}")
+                raise
+
+            byte_dir = OUTPUT_DIR / "byte_marginalized"
+            bpe_dir = OUTPUT_DIR / "bpe_tokenized"
+            byte_dir.mkdir(parents=True, exist_ok=True)
+            bpe_dir.mkdir(parents=True, exist_ok=True)
+
+            byte_seq_offset = 0
+            bpe_seq_offset = 0
+            byte_carry = None
+            bpe_carry = None
+            total_byte_coverage = 0.0
+            total_chunks = 0
+            resume_from_chunk = 0
+
+            # Resume desde checkpoint si existe
+            ckpt, carry = _load_stream_checkpoint(api, DATASET_REPO)
+            if ckpt is not None:
+                resume_from_chunk = ckpt['last_completed_chunk'] + 1
+                byte_seq_offset = ckpt['byte_seq_offset']
+                bpe_seq_offset = ckpt['bpe_seq_offset']
+                byte_carry = carry['byte']
+                bpe_carry = carry['bpe']
+                print(f"  [resume] Saltando chunks 0-{resume_from_chunk - 1}, "
+                      f"byte_seqs={byte_seq_offset}, bpe_seqs={bpe_seq_offset}")
+
+            for chunk_start in range(0, len(texts), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(texts))
+                chunk_texts = texts[chunk_start:chunk_end]
+                chunk_idx = chunk_start // chunk_size
+                total_chunks += 1
+
+                if chunk_idx < resume_from_chunk:
+                    continue
+
+                print(f"\n{'=' * 60}")
+                print(f"CHUNK {chunk_idx+1}: docs {chunk_start}-{chunk_end-1} of {len(texts)}")
+                print(f"{'=' * 60}")
+
+                # Extract logprobs for this chunk → temp file
+                tmp_parquet = Path(f'/tmp/logprobs_chunk_{chunk_idx:04d}.parquet')
+                run_logprob_extraction(chunk_texts, str(tmp_parquet), resume=False)
+
+                if not tmp_parquet.exists():
+                    raise RuntimeError(
+                        f"Extraction failed for chunk {chunk_idx}: "
+                        f"{tmp_parquet} was not created."
+                    )
+
+                # Byte-level dataset
+                print(f"\n  [Chunk {chunk_idx+1}] Building byte-level dataset...")
+                b_stats, byte_carry = build_byte_level_dataset(
+                    str(tmp_parquet), str(byte_dir),
+                    seq_offset=byte_seq_offset, carry_state=byte_carry,
+                )
+                byte_seq_offset += b_stats['n_sequences']
+                total_byte_coverage += b_stats.get('coverage_pct', 0)
+
+                # Upload sealed byte shards
+                _upload_sealed_shards(byte_dir, api, DATASET_REPO,
+                                      "byte_marginalized", byte_seq_offset)
+
+                # BPE dataset
+                print(f"  [Chunk {chunk_idx+1}] Building BPE dataset...")
+                p_stats, bpe_carry = build_bpe_dataset(
+                    str(tmp_parquet), str(bpe_dir),
+                    seq_offset=bpe_seq_offset, carry_state=bpe_carry,
+                )
+                bpe_seq_offset += p_stats['n_sequences']
+
+                # Upload sealed BPE shards
+                _upload_sealed_shards(bpe_dir, api, DATASET_REPO,
+                                      "bpe_tokenized", bpe_seq_offset)
+
+                # Delete temp logprobs chunk
+                tmp_parquet.unlink(missing_ok=True)
+                print(f"  [Chunk {chunk_idx+1}] Done. Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs")
+
+                # Guardar checkpoint
+                _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
+                                        byte_seq_offset, bpe_seq_offset,
+                                        byte_carry, bpe_carry)
+
+            # Upload any remaining (incomplete) shards
+            print("\n  Uploading remaining shards...")
+            for shard_path in sorted(byte_dir.glob("shard_*.parquet")):
+                api.upload_file(
+                    path_or_fileobj=str(shard_path),
+                    path_in_repo=f"byte_marginalized/{shard_path.name}",
+                    repo_id=DATASET_REPO, repo_type="dataset",
+                )
+                shard_path.unlink()
+            for shard_path in sorted(bpe_dir.glob("shard_*.parquet")):
+                api.upload_file(
+                    path_or_fileobj=str(shard_path),
+                    path_in_repo=f"bpe_tokenized/{shard_path.name}",
+                    repo_id=DATASET_REPO, repo_type="dataset",
+                )
+                shard_path.unlink()
+
+            # Save split info and upload
+            _save_split_info(byte_seq_offset, byte_dir)
+            _save_split_info(bpe_seq_offset, bpe_dir)
+            for info_file in [byte_dir / 'split_info.json', bpe_dir / 'split_info.json']:
+                if info_file.exists():
+                    subdir = "byte_marginalized" if "byte" in info_file.parent.name else "bpe_tokenized"
+                    api.upload_file(
+                        path_or_fileobj=str(info_file),
+                        path_in_repo=f"{subdir}/split_info.json",
+                        repo_id=DATASET_REPO, repo_type="dataset",
+                    )
+
+            # Save projection matrix and upload
+            proj = _get_projection_matrix(TEACHER_HIDDEN_DIM)
+            proj_path = OUTPUT_DIR / "projection_matrix.npy"
+            np.save(str(proj_path), proj.numpy())
+            api.upload_file(
+                path_or_fileobj=str(proj_path),
+                path_in_repo="projection_matrix.npy",
+                repo_id=DATASET_REPO, repo_type="dataset",
+            )
+            proj_path.unlink(missing_ok=True)
+
+            byte_stats = {'n_sequences': byte_seq_offset,
+                          'coverage_pct': total_byte_coverage / max(total_chunks, 1)}
+            bpe_stats = {'n_sequences': bpe_seq_offset}
+
+        else:
+            run_logprob_extraction(texts, str(logprobs_path), resume=True)
+
+    if not stream_to_hub:
+        if skip_extraction:
+            assert logprobs_path.exists(), (
+                f"Logprobs not found at {logprobs_path}. "
+                f"Run without --skip_extraction first."
+            )
+
+        # Step 3a: Byte-level dataset
+        print(f"\n{'=' * 60}")
+        print("STEP 3a: Building byte-level dataset (runs 08-15)")
+        print(f"{'=' * 60}")
+
+        byte_dir = OUTPUT_DIR / "byte_marginalized"
+        byte_stats, _ = build_byte_level_dataset(
+            str(logprobs_path),
+            str(byte_dir),
         )
+        _save_split_info(byte_stats['n_sequences'], byte_dir)
 
-    # Step 3a: Byte-level dataset
-    print(f"\n{'=' * 60}")
-    print("STEP 3a: Building byte-level dataset (runs 08-15)")
-    print(f"{'=' * 60}")
+        # Step 3b: BPE dataset
+        print(f"\n{'=' * 60}")
+        print("STEP 3b: Building BPE dataset (runs 01-07)")
+        print(f"{'=' * 60}")
 
-    byte_stats = build_byte_level_dataset(
-        str(logprobs_path),
-        str(OUTPUT_DIR / "byte_marginalized"),
-    )
+        bpe_dir = OUTPUT_DIR / "bpe_tokenized"
+        bpe_stats, _ = build_bpe_dataset(
+            str(logprobs_path),
+            str(bpe_dir),
+        )
+        _save_split_info(bpe_stats['n_sequences'], bpe_dir)
 
-    # Step 3b: BPE dataset
-    print(f"\n{'=' * 60}")
-    print("STEP 3b: Building BPE dataset (runs 01-07)")
-    print(f"{'=' * 60}")
+        # Save projection matrix for reproducibility
+        proj = _get_projection_matrix(TEACHER_HIDDEN_DIM)
+        np.save(str(OUTPUT_DIR / "projection_matrix.npy"), proj.numpy())
 
-    bpe_stats = build_bpe_dataset(
-        str(logprobs_path),
-        str(OUTPUT_DIR / "bpe_tokenized"),
-    )
-
-    # Save projection matrix for reproducibility
-    proj = _get_projection_matrix(5120)
-    np.save(str(OUTPUT_DIR / "projection_matrix.npy"), proj.numpy())
-
-    # Step 4: Upload
-    print(f"\n{'=' * 60}")
-    print("STEP 4: Uploading to HuggingFace Hub")
-    print(f"{'=' * 60}")
-
-    upload_dataset_to_hub()
+        # Step 4: Upload o unmount
+        if use_hf_mount and mount_path is not None:
+            print(f"\n{'=' * 60}")
+            print("STEP 4: Datos ya en HF Bucket (hf-mount, sin upload separado)")
+            print(f"{'=' * 60}")
+            from hf_mount import unmount
+            unmount(mount_path)
+        else:
+            print(f"\n{'=' * 60}")
+            print("STEP 4: Uploading to HuggingFace Hub")
+            print(f"{'=' * 60}")
+            upload_dataset_to_hub()
 
     # Summary
     print(f"\n{'=' * 60}")
@@ -1734,7 +2268,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
     print(f"  Byte-level: {byte_stats['n_sequences']:,} sequences")
     print(f"  BPE:        {bpe_stats['n_sequences']:,} sequences")
     print(f"  Coverage teacher (byte): {byte_stats['coverage_pct']:.1f}%")
-    print(f"  Hub: https://huggingface.co/datasets/{DATASET_REPO}")
+    if stream_to_hub:
+        print(f"  Hub: https://huggingface.co/datasets/{DATASET_REPO} (streaming mode)")
+    elif use_hf_mount:
+        print(f"  Bucket: {DATASET_BUCKET} (via hf-mount)")
+    else:
+        print(f"  Hub: https://huggingface.co/datasets/{DATASET_REPO}")
     print(f"\n  All 15 ablation runs can start now.")
     print(f"  Teacher hidden (projected {ALIGN_DIM}d) included for EmbeddingAligner.")
     print(f"  Teacher does NOT need to run again.")
@@ -1786,10 +2325,14 @@ if __name__ == "__main__":
                             help="Skip logprob extraction (if already exists)")
         parser.add_argument('--only_upload', action='store_true',
                             help="Only upload existing dataset to Hub")
+        parser.add_argument('--hf-mount', action='store_true',
+                            help="Write dataset directly to HF Bucket via hf-mount "
+                                 "(no local copy, no upload step)")
         args = parser.parse_args()
 
         if args.only_upload:
             upload_dataset_to_hub()
         else:
             build_full_dataset(n_docs=args.n_docs,
-                               skip_extraction=args.skip_extraction)
+                               skip_extraction=args.skip_extraction,
+                               use_hf_mount=args.hf_mount)

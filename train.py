@@ -201,16 +201,44 @@ class DistillationDataset(Dataset):
             raise ValueError("Necesitas data_path o dry_run_samples > 0")
 
     def _load_hf(self, data_path: str):
-        """Carga desde directorio HF o Parquet."""
+        """Carga desde directorio HF o Parquet.
+
+        Soporta:
+          - Directorio local con dataset_info.json (load_from_disk)
+          - Archivo .parquet individual
+          - Directorio local con shard_*.parquet
+          - Repo HF Hub con subdir byte_marginalized/ (formato streaming pipeline)
+          - Repo HF Hub estándar
+        """
         from datasets import load_from_disk, load_dataset
         p = Path(data_path)
         if p.is_dir() and (p / 'dataset_info.json').exists():
             self.dataset = load_from_disk(data_path)
         elif p.suffix == '.parquet':
             self.dataset = load_dataset('parquet', data_files=str(p), split='train')
+        elif p.is_dir():
+            # Directorio local con shards (byte_marginalized/ o similar)
+            shards = sorted(p.glob('shard_*.parquet'))
+            if not shards:
+                shards = sorted(p.glob('**/*.parquet'))
+            self.dataset = load_dataset(
+                'parquet', data_files=[str(s) for s in shards], split='train',
+            )
         else:
-            # Intentar como repo de HuggingFace Hub
-            self.dataset = load_dataset(data_path, split='train')
+            # Repo HF Hub — tiene byte_marginalized/shard_*.parquet
+            from huggingface_hub import list_repo_files
+            try:
+                files = [
+                    f"hf://datasets/{data_path}/{f}"
+                    for f in list_repo_files(data_path, repo_type='dataset')
+                    if f.startswith('byte_marginalized/') and f.endswith('.parquet')
+                ]
+                if files:
+                    self.dataset = load_dataset('parquet', data_files=files, split='train')
+                else:
+                    self.dataset = load_dataset(data_path, split='train')
+            except Exception:
+                self.dataset = load_dataset(data_path, split='train')
 
     def __len__(self) -> int:
         if self.mode == 'dry_run':
@@ -256,31 +284,30 @@ class DistillationDataset(Dataset):
         """
         item = self.dataset[idx]
 
-        raw_patches = item['patches']
-        if isinstance(raw_patches, str):
-            raw_patches = json.loads(raw_patches)
-        patches = torch.as_tensor(raw_patches, dtype=torch.long)
+        def _to_tensor(raw, dtype):
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            return torch.as_tensor(raw, dtype=dtype)
 
-        raw_targets = item['targets']
-        if isinstance(raw_targets, str):
-            raw_targets = json.loads(raw_targets)
-        targets = torch.as_tensor(raw_targets, dtype=torch.long)
+        patches = _to_tensor(item['patches'], torch.long)
+        targets = _to_tensor(item['targets'], torch.long)
+
+        # Dataset stores flat arrays: [seq_len*4] and [seq_len*256]
+        # Reshape to [seq_len, PATCH_SIZE] and [seq_len, VOCAB_SIZE]
+        seq_len = patches.numel() // PATCH_SIZE
+        patches = patches.view(seq_len, PATCH_SIZE)
+        targets = targets.view(seq_len, PATCH_SIZE)
 
         if 'teacher_probs' in item and item['teacher_probs'] is not None:
-            raw_tp = item['teacher_probs']
-            if isinstance(raw_tp, str):
-                raw_tp = json.loads(raw_tp)
-            teacher_probs = torch.as_tensor(raw_tp, dtype=torch.float32)
+            teacher_probs = _to_tensor(item['teacher_probs'], torch.float32)
+            teacher_probs = teacher_probs.view(seq_len, VOCAB_SIZE)
         else:
-            teacher_probs = torch.zeros(patches.shape[0], VOCAB_SIZE)
+            teacher_probs = torch.zeros(seq_len, VOCAB_SIZE)
 
         if 'teacher_mask' in item and item['teacher_mask'] is not None:
-            raw_tm = item['teacher_mask']
-            if isinstance(raw_tm, str):
-                raw_tm = json.loads(raw_tm)
-            teacher_mask = torch.as_tensor(raw_tm, dtype=torch.bool)
+            teacher_mask = _to_tensor(item['teacher_mask'], torch.bool)
         else:
-            teacher_mask = torch.zeros(patches.shape[0], dtype=torch.bool)
+            teacher_mask = torch.zeros(seq_len, dtype=torch.bool)
 
         return {
             'patches': patches,
@@ -402,7 +429,9 @@ def save_checkpoint(
         upload_to_hf: si True, sube el .pt al repo de HuggingFace
         hf_repo:      repo HF destino (default: Cukinator/cpu1-checkpoints)
     """
-    state = model.state_dict()
+    # Unwrap DataParallel si es necesario
+    model_to_save = model.module if hasattr(model, 'module') else model
+    state = model_to_save.state_dict()
     checkpoint = {
         'step': step,
         'model_state_dict': state,
@@ -460,9 +489,10 @@ def load_checkpoint(
 # =============================================================================
 
 def train(args: argparse.Namespace):
-    """Training loop principal (single T4)."""
+    """Training loop principal (multi-GPU con DataParallel si hay 2+ GPUs)."""
     # --- Setup dispositivo ---
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    n_gpus = torch.cuda.device_count() if device.type == 'cuda' else 0
 
     # --- Optimizaciones globales GPU ---
     if device.type == 'cuda':
@@ -471,7 +501,7 @@ def train(args: argparse.Namespace):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    print(f"Device: {device}")
+    print(f"Device: {device} ({n_gpus} GPU{'s' if n_gpus != 1 else ''})")
 
     # --- Modelo ---
     model = CPU1ModelV2({
@@ -480,6 +510,11 @@ def train(args: argparse.Namespace):
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parámetros: {n_params:,}")
+
+    # --- Multi-GPU ---
+    if n_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"[Multi-GPU] DataParallel on {n_gpus} GPUs")
 
     # --- Optimizer ---
     param_groups = build_param_groups(model)
@@ -507,9 +542,10 @@ def train(args: argparse.Namespace):
         )
 
     use_workers = args.num_workers > 0 and not args.dry_run
+    total_batch = args.batch_per_gpu * max(n_gpus, 1)
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_per_gpu,
+        batch_size=total_batch,
         shuffle=True,
         num_workers=args.num_workers if not args.dry_run else 0,
         pin_memory=(device.type == 'cuda'),  # DMA transfer directo sin copia extra
@@ -521,16 +557,18 @@ def train(args: argparse.Namespace):
     # --- Resume ---
     start_step = 0
     if args.resume_from:
-        start_step = load_checkpoint(args.resume_from, model, optimizer, scaler)
+        # Unwrap DataParallel para cargar state_dict sin prefix 'module.'
+        model_for_load = model.module if hasattr(model, 'module') else model
+        start_step = load_checkpoint(args.resume_from, model_for_load, optimizer, scaler)
         print(f"Resumiendo desde step {start_step}")
 
     # --- Config ---
     grad_accum = args.gradient_accumulation_steps
     total_steps = args.total_steps
-    effective_batch = args.batch_per_gpu * grad_accum
+    effective_batch = total_batch * grad_accum
 
     print(f"Batch efectivo: {effective_batch} "
-          f"({args.batch_per_gpu} × {grad_accum} accum)")
+          f"({args.batch_per_gpu}/gpu × {max(n_gpus, 1)} GPUs × {grad_accum} accum)")
     print(f"Steps: {start_step} → {total_steps}")
     print(f"Seq len: {args.seq_len} patches = {args.seq_len * PATCH_SIZE} bytes")
 
@@ -591,7 +629,7 @@ def train(args: argparse.Namespace):
         if should_log:
             elapsed = time.time() - log_timer
             steps_since_log = max(args.log_every, 1)
-            patches_per_sec = (args.batch_per_gpu * args.seq_len * grad_accum * steps_since_log) / max(elapsed, 1e-6)
+            patches_per_sec = (total_batch * args.seq_len * grad_accum * steps_since_log) / max(elapsed, 1e-6)
 
             parts = [
                 f"Step {step:6d}/{total_steps}",
@@ -734,6 +772,12 @@ def train_phase2(
         for p in model.embedding_aligner.parameters():
             p.requires_grad = False
 
+    # Multi-GPU
+    n_gpus = torch.cuda.device_count() if device.type == 'cuda' else 0
+    if n_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"[Phase2 Multi-GPU] DataParallel on {n_gpus} GPUs")
+
     # Loss de Fase 2: CE + elimination_regularization
     def phase2_loss(logits, targets, extra_losses):
         # CE puro sobre tokens que sobreviven
@@ -744,22 +788,26 @@ def train_phase2(
             ) for i in range(4)
         ) / 4
 
-        # Regularización del DeleteGate
+        # Regularización del DeleteGate (con DataParallel, escalares → dim>0)
         elim_loss = extra_losses.get('delete_gate', torch.tensor(0.0, device=device))
+        if elim_loss.dim() > 0:
+            elim_loss = elim_loss.mean()
 
         return ce + 0.1 * elim_loss
 
     # Optimizer
+    model_params = model.module if hasattr(model, 'module') else model
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        [p for p in model_params.parameters() if p.requires_grad],
         lr=lr, betas=(0.9, 0.95),
     )
 
     use_amp = device.type == 'cuda'
     scaler = torch.amp.GradScaler() if use_amp else None
 
+    total_batch = 4 * max(n_gpus, 1)
     dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=4, shuffle=True, drop_last=True,
+        dataset, batch_size=total_batch, shuffle=True, drop_last=True,
     )
 
     # Training loop
@@ -1046,9 +1094,15 @@ class BPEDataset(Dataset):
         return sample
 
 
+
 def load_ablation_dataset(config: dict, split: str = 'train',
-                          dry_run: bool = False):
-    """Load the correct dataset subset from HuggingFace Hub."""
+                          dry_run: bool = False,
+                          mount_path: Path | None = None):
+    """Load dataset from hf-mount (preferred) or HuggingFace Hub download.
+
+    Con mount_path: lee parquet files directamente del mount (lazy, sin cache).
+    Sin mount_path: descarga completa via load_dataset (usa ~5 GB de disco).
+    """
     if dry_run:
         return DryRunDataset(config)
 
@@ -1057,7 +1111,66 @@ def load_ablation_dataset(config: dict, split: str = 'train',
     repo = config['dataset_repo']
     tok = config['tokenization']
     subset = 'bpe_tokenized' if tok == 'bpe' else 'byte_marginalized'
-    ds = load_dataset(repo, subset, split=split)
+
+    from huggingface_hub import list_repo_files, hf_hub_download
+
+    # Cargar todos los shards del subset
+    if mount_path is not None:
+        parquet_dir = Path(mount_path) / subset
+        all_files = sorted(str(f) for f in parquet_dir.glob('shard_*.parquet'))
+        if not all_files:
+            raise FileNotFoundError(f"No shards in {parquet_dir}")
+        ds = load_dataset('parquet', data_files=all_files, split='train')
+        print(f"[mount] Loaded {len(ds)} rows from {len(all_files)} shards ({subset})")
+    else:
+        try:
+            repo_files = list(list_repo_files(repo, repo_type='dataset'))
+            hub_files = [
+                f"hf://datasets/{repo}/{f}"
+                for f in repo_files
+                if f.startswith(f'{subset}/') and f.endswith('.parquet')
+            ]
+            if not hub_files:
+                raise FileNotFoundError(f"No shards for {subset}/ in {repo}")
+            ds = load_dataset('parquet', data_files=hub_files, split='train')
+            print(f"[hub] Loaded {len(ds)} rows from {len(hub_files)} shards ({subset})")
+        except Exception as e:
+            print(f"[hub] Fallback to load_dataset: {e}")
+            ds = load_dataset(repo, subset, split=split)
+
+    # Aplicar split (train/val/test) desde split_info.json
+    if split != 'all':
+        split_info = None
+        # Buscar split_info.json local o en HF Hub
+        local_split = Path(mount_path) / subset / 'split_info.json' if mount_path else None
+        if local_split and local_split.exists():
+            import json as _json
+            with open(local_split) as f:
+                split_info = _json.load(f)
+        else:
+            try:
+                split_path = hf_hub_download(
+                    repo_id=repo, filename=f'{subset}/split_info.json', repo_type='dataset',
+                )
+                import json as _json
+                with open(split_path) as f:
+                    split_info = _json.load(f)
+            except Exception:
+                pass  # sin split_info: usar todo para train, nada para val
+
+        if split_info and split in split_info:
+            indices = split_info[split]
+            # Filtrar índices que existen en el dataset
+            indices = [i for i in indices if i < len(ds)]
+            ds = ds.select(indices)
+            print(f"[split] {split}: {len(ds)} sequences")
+        elif split == 'train':
+            pass  # sin split_info: todo es train
+        else:
+            # val/test sin split_info: tomar último 5%
+            n = max(1, len(ds) // 20)
+            ds = ds.select(range(len(ds) - n, len(ds)))
+            print(f"[split] {split} (fallback last 5%): {len(ds)} sequences")
 
     if tok in ('byte', 'byte_dynamic'):
         return ByteLevelDataset(ds, config)
@@ -1289,8 +1402,10 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
     """Save ablation checkpoint locally and optionally to HuggingFace Hub."""
     path = f"checkpoint_{run_name}_step{step}.pt"
 
+    # Unwrap DataParallel si es necesario
+    model_to_save = model.module if hasattr(model, 'module') else model
     torch.save({
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': model_to_save.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'metrics': metrics,
         'step': step,
@@ -1323,7 +1438,8 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
 def train_run(run_name: str, dry_run: bool = False,
               total_steps_override: int | None = None,
               phase: int = 1,
-              phase1_ckpt: str | None = None) -> dict:
+              phase1_ckpt: str | None = None,
+              use_hf_mount: bool = False) -> dict:
     """Train one ablation run. Returns final metrics."""
     config = get_run_config(run_name)
     config['_current_phase'] = phase
@@ -1333,8 +1449,9 @@ def train_run(run_name: str, dry_run: bool = False,
 
     assert config['seed'] == BASE_CONFIG['seed'], "Seed mismatch"
 
-    # Device setup (single T4)
-    if torch.cuda.is_available() and not dry_run:
+    # Device setup (multi-GPU si disponible)
+    n_gpus = torch.cuda.device_count() if torch.cuda.is_available() and not dry_run else 0
+    if n_gpus > 0:
         torch.cuda.set_device(0)
 
     torch.manual_seed(config['seed'])
@@ -1350,7 +1467,7 @@ def train_run(run_name: str, dry_run: bool = False,
     print(f"\n{'=' * 60}")
     print(f"Run: {run_name}")
     print(f"Description: {config['description']}")
-    print(f"Device: {device}")
+    print(f"Device: {device} ({n_gpus} GPU{'s' if n_gpus != 1 else ''})")
     print(f"{'=' * 60}\n")
 
     # Build model — activar gradient checkpointing para ahorrar VRAM en T4
@@ -1372,15 +1489,31 @@ def train_run(run_name: str, dry_run: bool = False,
                 p.requires_grad = False
         print(f"[Phase 2] DeleteGate active, EmbAligner frozen")
 
-    # Dataset
-    train_ds = load_ablation_dataset(config, split='train', dry_run=dry_run)
+    # Multi-GPU: wrap con DataParallel (despues de cargar checkpoint)
+    if n_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"[Multi-GPU] DataParallel on {n_gpus} GPUs: "
+              f"{[torch.cuda.get_device_name(i) for i in range(n_gpus)]}")
+
+    # Dataset — usar hf-mount si disponible (lazy load, ahorra disco en Kaggle)
+    mount_path = None
+    if use_hf_mount and not dry_run:
+        try:
+            from hf_mount import mount_bucket
+            mount_path = mount_bucket(config['dataset_repo'])
+        except Exception as e:
+            print(f"[hf-mount] Mount failed, falling back to download: {e}")
+
+    train_ds = load_ablation_dataset(config, split='train', dry_run=dry_run,
+                                      mount_path=mount_path)
     val_ds = load_ablation_dataset(config, split='val' if not dry_run else 'train',
-                                    dry_run=dry_run)
+                                    dry_run=dry_run, mount_path=mount_path)
 
     n_workers = 0 if dry_run else 4  # 4 workers: paralelismo de datos para saturar GPU
+    total_batch = config['batch_per_gpu'] * max(n_gpus, 1)
     train_loader = DataLoader(
         train_ds,
-        batch_size=config['batch_per_gpu'],
+        batch_size=total_batch,
         shuffle=True,
         num_workers=n_workers,
         pin_memory=(device.type == 'cuda'),  # DMA transfer GPU sin copia extra
@@ -1421,7 +1554,8 @@ def train_run(run_name: str, dry_run: bool = False,
 
     # torch.compile: fusiona kernels, reduce overhead de lanzamiento CUDA
     # En T4 con modelos ~50M params, ganancia tipica 10-20% throughput.
-    if device.type == 'cuda' and not dry_run:
+    # No compatible con DataParallel — skip si multi-GPU.
+    if device.type == 'cuda' and not dry_run and n_gpus <= 1:
         try:
             model = torch.compile(model, mode="reduce-overhead")
             print("[Opt] torch.compile enabled for training")
@@ -1484,10 +1618,13 @@ def train_run(run_name: str, dry_run: bool = False,
                 loss = compute_loss(logits, targets, t_probs, t_mask, config,
                                     teacher_ids=t_ids)
                 # Add extra losses (runs 12-15)
+                # Con DataParallel, escalares se concatenan en dim 0 → tomar mean
                 if 'delete_gate' in extra_losses:
-                    loss = loss + 0.1 * extra_losses['delete_gate']
+                    dg = extra_losses['delete_gate']
+                    loss = loss + 0.1 * (dg.mean() if dg.dim() > 0 else dg)
                 if 'emb_align' in extra_losses and extra_losses['emb_align'] is not None:
-                    loss = loss + config.get('lambda_align', 0.3) * extra_losses['emb_align']
+                    ea = extra_losses['emb_align']
+                    loss = loss + config.get('lambda_align', 0.3) * (ea.mean() if ea.dim() > 0 else ea)
                 loss = loss / accum_steps
 
             if use_amp:
@@ -1533,8 +1670,9 @@ def train_run(run_name: str, dry_run: bool = False,
                     save_ablation_checkpoint(model, optimizer, run_name, {},
                                              config, optim_step)
 
-    # Final evaluation
-    val_metrics = evaluate_run(model, val_ds, config, device)
+    # Final evaluation (unwrap DataParallel)
+    model_eval = model.module if hasattr(model, 'module') else model
+    val_metrics = evaluate_run(model_eval, val_ds, config, device)
 
     if not dry_run:
         save_ablation_checkpoint(model, optimizer, run_name, val_metrics,
@@ -1545,6 +1683,11 @@ def train_run(run_name: str, dry_run: bool = False,
     with open(metrics_path, 'w') as f:
         json.dump(val_metrics, f, indent=2)
     print(f"\n[Done] Metrics saved to {metrics_path}")
+
+    # Cleanup hf-mount
+    if mount_path is not None:
+        from hf_mount import unmount
+        unmount(mount_path)
 
     return val_metrics
 
@@ -1575,6 +1718,8 @@ if __name__ == "__main__":
                             help="Training phase (1=distillation, 2=delete gate)")
         parser.add_argument('--phase1_ckpt', type=str, default=None,
                             help="Path to Phase 1 checkpoint (required for --phase 2)")
+        parser.add_argument('--hf-mount', action='store_true',
+                            help="Use hf-mount for lazy dataset loading (saves disk on Kaggle)")
         args = parser.parse_args()
 
         if args.phase == 2 and not args.phase1_ckpt:
@@ -1583,7 +1728,8 @@ if __name__ == "__main__":
         metrics = train_run(args.run, dry_run=args.dry_run,
                             total_steps_override=args.total_steps,
                             phase=args.phase,
-                            phase1_ckpt=args.phase1_ckpt)
+                            phase1_ckpt=args.phase1_ckpt,
+                            use_hf_mount=args.hf_mount)
         print(f"\nFinished: {args.run}")
         print(json.dumps(metrics, indent=2))
 
