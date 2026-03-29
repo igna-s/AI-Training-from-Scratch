@@ -166,9 +166,11 @@ python create_dataset.py --logprobs-dir ./logprobs --output-dir ./dataset
 ```
 
 Teacher (Qwen-7B in 4-bit NF4) runs **once**. Produces:
-- `byte_marginalized/` — patches, targets, teacher_probs, teacher_mask
+- `byte_marginalized/` — patches, targets, teacher_probs, teacher_mask, teacher_hidden
 - `bpe_tokenized/` — input_ids, labels, teacher_probs_bpe, teacher_mask_bpe
 - Uploaded to `Cukinator/cpu1-ablation-dataset` on HuggingFace Hub
+
+**Why not use existing distillation datasets?** We evaluated public teacher-logit datasets ([arcee-ai/LLama-405B-Logits](https://huggingface.co/datasets/arcee-ai/LLama-405B-Logits), [hbfreed/Dolci-Instruct-RL-Completions](https://huggingface.co/datasets/hbfreed/Dolci-Instruct-RL-Completions), [eyad-silx/Base-logits](https://huggingface.co/datasets/eyad-silx/Base-logits), among others). None are suitable because: (1) all contain instruction/math/code data, not general web text needed for pretraining ablations; (2) none include intermediate hidden states required by the EmbeddingAligner (runs 13, 15); (3) none provide byte-level marginalized probabilities — our model operates at byte level, requiring BPE→byte probability conversion that must be computed from the raw teacher logprobs.
 
 #### 2. Train Ablation Runs
 
@@ -287,10 +289,21 @@ output = engine.generate(b"Buenos dias", max_bytes=200)
 
 ## Evaluation Suite
 
-21 test files across 6 categories (16 run automatically, 5 require manual invocation). Run with:
+21 tests across 6 categories. Tests that need extra models or dataset are marked N/A if not provided.
 
 ```bash
-python eval/run_all_tests.py --model models/distilgpt2
+# Basico (13 tests con solo el modelo)
+python eval/run_all_tests.py --model checkpoints/run_10.pt
+
+# Con dataset (adds tests 11, 14, 17, 18, 19)
+python eval/run_all_tests.py --model checkpoints/run_10.pt --dataset path/
+
+# Completo (all 21 tests)
+python eval/run_all_tests.py --model checkpoints/run_10.pt --dataset path/ \
+    --model-transformer checkpoints/run_01.pt \
+    --model-no-fp checkpoints/run_11.pt \
+    --model-50m checkpoints/run_10.pt \
+    --model-170m checkpoints/cpu1_170m.pt
 ```
 
 | Category | Tests |
@@ -299,10 +312,8 @@ python eval/run_all_tests.py --model models/distilgpt2
 | CPU speed | 06 throughput, 07 latency, 08 jitter, 09 context scaling, 10 RAM |
 | Quality | 11 perplexity, 12 generation, 13 UTF-8 validity |
 | Training | 14 convergence |
-| Ablation | 15 FPResidual*, 16 MLGRU vs Transformer*, 17 teacher coverage, 18 teacher entropy |
-| Full | 19 benchmark*, 20 scaling*, 21 MLGRU state / KV cache |
-
-\* Run manually (not included in `run_all_tests.py`).
+| Ablation | 15 FPResidual, 16 MLGRU vs Transformer, 17 teacher coverage, 18 teacher entropy |
+| Full | 19 benchmark, 20 scaling, 21 MLGRU state / KV cache |
 
 **Baseline (distilgpt2, 82M FP32, local CPU):**
 

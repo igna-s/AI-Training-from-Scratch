@@ -654,7 +654,7 @@ class AblationModel(nn.Module):
         if self.use_emb_align:
             self.embedding_aligner = EmbeddingAligner(
                 student_dim=d_model,
-                teacher_dim=config.get('teacher_dim', 5120),
+                teacher_dim=config.get('teacher_dim', 128),
             )
 
     def forward(
@@ -722,6 +722,7 @@ class AblationModel(nn.Module):
                     )
                     extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
 
+        h_pre_norm = h  # guardar para EmbeddingAligner antes del norm
         h = self.norm(h)
 
         if self.tokenization in ('byte', 'byte_dynamic'):
@@ -733,7 +734,7 @@ class AblationModel(nn.Module):
         if (self.use_emb_align and training_phase == 1
                 and teacher_hidden is not None and teacher_mask is not None):
             extra_losses['emb_align'] = self.embedding_aligner.alignment_loss(
-                h, teacher_hidden, teacher_mask,
+                h_pre_norm, teacher_hidden, teacher_mask,
             )
 
         return logits, new_states, extra_losses

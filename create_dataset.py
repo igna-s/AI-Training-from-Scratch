@@ -16,11 +16,13 @@ Usage:
 
 import argparse
 import enum
+import gc
 import json
 import math
 import os
 import shutil
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -972,8 +974,9 @@ SEQ_LEN_TOKENS = 5000
 MAX_EXTRACTION_TOKENS = 2048  # T4 SDPA usa O(seq²) → 4096 OOM con batch≥2; 2048 usa 0.9 GB vs 3.5 GB
 TEACHER_HIDDEN_DIM = 3584   # Qwen2.5-7B hidden size
 ALIGN_DIM = 128             # Project teacher hidden 3584→128 (Johnson-Lindenstrauss)
+SEQS_PER_SHARD = 200        # Sequences per parquet shard
 SEED = 42
-BATCH_SIZE_TEACHER = 4
+BATCH_SIZE_TEACHER = 2  # T4 15GB: model ~4GB + activations ~3GB/doc → 2 docs safe
 
 # Lazy-initialized random orthogonal projection matrix
 _PROJECTION_MATRIX = None
@@ -1011,6 +1014,10 @@ def load_teacher(model_name: str = TEACHER_MODEL, device: str = "cuda:0"):
         device_map={"": device},
     )
     model.eval()
+    # Cache tokenizer locally so BPE ProcessPoolExecutor workers don't hit network
+    local_cache = Path("/tmp/_bpe_tokenizer_cache")
+    if not local_cache.exists():
+        tokenizer.save_pretrained(str(local_cache))
     print(f"[Teacher] Ready on {device}. Vocab size: {tokenizer.vocab_size}")
     return model, tokenizer
 
@@ -1293,8 +1300,13 @@ def extract_logprobs_and_hidden_batch(
     top_idx_all = torch.cat(all_top_idx, dim=1)   # [B, S_pad, K]
     top_lp_all  = torch.cat(all_top_lp,  dim=1)   # [B, S_pad, K]
 
+    # Liberar tensores GPU que ya no se necesitan
+    del last_normed, all_top_idx, all_top_lp
+    del captured['mid'], captured['last']
+
     input_ids_cpu = input_ids.cpu()
     attn_mask_cpu = attn_mask.cpu()
+    del input_ids, attn_mask
 
     # ── Build one result dict per sample ──────────────────────────────────
     results = []
@@ -1396,14 +1408,55 @@ def run_logprob_extraction(
     else:
         _run_extraction_single_gpu(corpus_texts, output_path, start_idx)
 
+    # Liberar teacher models de GPU después de la extracción
+    gc.collect()
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            with torch.cuda.device(i):
+                torch.cuda.empty_cache()
+        vram_free = [torch.cuda.mem_get_info(i)[0] / (1024**3) for i in range(torch.cuda.device_count())]
+        print(f"[Extraction] VRAM freed. Available: {['%.1fG' % v for v in vram_free]}")
+
     print(f"[Extraction] Complete: {output_path}")
 
 
-def _run_extraction_single_gpu(corpus_texts, output_path, start_idx, batch_size: int = 2):
-    """Single-GPU batched extraction (batch_size docs per forward pass)."""
+def _extract_batch_with_oom_retry(model, tokenizer, batch_texts, gpu_tag="GPU 0"):
+    """Try extraction, halve batch on OOM until batch_size=1."""
     import traceback
+    sub_batches = [batch_texts]
+    while sub_batches:
+        texts = sub_batches.pop(0)
+        try:
+            return extract_logprobs_and_hidden_batch(
+                model, tokenizer, texts,
+                top_k=TOP_K_LOGPROBS, seq_len=MAX_EXTRACTION_TOKENS,
+            )
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            gc.collect()
+            if len(texts) > 1:
+                mid = len(texts) // 2
+                print(f"\n  [{gpu_tag}] OOM with {len(texts)} docs, splitting to {mid}+{len(texts)-mid}")
+                r1 = _extract_batch_with_oom_retry(model, tokenizer, texts[:mid], gpu_tag)
+                r2 = _extract_batch_with_oom_retry(model, tokenizer, texts[mid:], gpu_tag)
+                return (r1 or []) + (r2 or [])
+            else:
+                print(f"\n  [{gpu_tag}] OOM on single doc, skipping")
+                traceback.print_exc()
+                return []
+        except Exception:
+            print(f"\n  [{gpu_tag}] ERROR:")
+            traceback.print_exc()
+            torch.cuda.empty_cache()
+            return []
+    return []
+
+
+def _run_extraction_single_gpu(corpus_texts, output_path, start_idx, batch_size: int = BATCH_SIZE_TEACHER):
+    """Single-GPU batched extraction (batch_size docs per forward pass)."""
     model, tokenizer = load_teacher()
     batch_results = []
+    _FLUSH_EVERY = 50
 
     valid_indices = [i for i in range(start_idx, len(corpus_texts))
                      if corpus_texts[i].strip()]
@@ -1413,16 +1466,7 @@ def _run_extraction_single_gpu(corpus_texts, output_path, start_idx, batch_size:
         batch_indices = valid_indices[batch_start:batch_start + batch_size]
         batch_texts   = [corpus_texts[i] for i in batch_indices]
 
-        try:
-            batch_out = extract_logprobs_and_hidden_batch(
-                model, tokenizer, batch_texts,
-                top_k=TOP_K_LOGPROBS, seq_len=MAX_EXTRACTION_TOKENS,
-            )
-        except Exception:
-            print(f"\n[GPU 0] ERROR en batch docs {batch_indices[0]}-{batch_indices[-1]}:")
-            traceback.print_exc()
-            torch.cuda.empty_cache()
-            continue
+        batch_out = _extract_batch_with_oom_retry(model, tokenizer, batch_texts)
 
         for i, result in zip(batch_indices, batch_out):
             batch_results.append({
@@ -1433,13 +1477,12 @@ def _run_extraction_single_gpu(corpus_texts, output_path, start_idx, batch_size:
                 'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
                 'teacher_dim':    result['teacher_dim'],
             })
+        del batch_out
 
-        torch.cuda.empty_cache()
-
-        if len(batch_results) >= 100:
+        if len(batch_results) >= _FLUSH_EVERY:
             _append_to_parquet(batch_results, output_path)
             batch_results = []
-            print(f"  Saved through doc {batch_indices[-1]}")
+            gc.collect()
 
     if batch_results:
         _append_to_parquet(batch_results, output_path)
@@ -1468,8 +1511,9 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus):
         models.append((m, tok))
     print("[Extraction] All models loaded. Starting parallel extraction...")
 
-    def worker(gpu_id, doc_indices, model, tokenizer, batch_size: int = 2):
-        import traceback
+    _FLUSH_EVERY = 50  # flush to parquet every N docs to limit RAM (~500MB vs ~7GB)
+
+    def worker(gpu_id, doc_indices, model, tokenizer, batch_size: int = BATCH_SIZE_TEACHER):
         batch_results = []
 
         valid_indices = [i for i in doc_indices if corpus_texts[i].strip()]
@@ -1479,16 +1523,8 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus):
             batch_indices = valid_indices[batch_start:batch_start + batch_size]
             batch_texts   = [corpus_texts[i] for i in batch_indices]
 
-            try:
-                batch_out = extract_logprobs_and_hidden_batch(
-                    model, tokenizer, batch_texts,
-                    top_k=TOP_K_LOGPROBS, seq_len=MAX_EXTRACTION_TOKENS,
-                )
-            except Exception:
-                print(f"\n[GPU {gpu_id}] ERROR en batch docs {batch_indices[0]}-{batch_indices[-1]}:")
-                traceback.print_exc()
-                torch.cuda.empty_cache()
-                continue
+            batch_out = _extract_batch_with_oom_retry(
+                model, tokenizer, batch_texts, gpu_tag=f"GPU {gpu_id}")
 
             for i, result in zip(batch_indices, batch_out):
                 batch_results.append({
@@ -1499,17 +1535,23 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus):
                     'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
                     'teacher_dim':    result['teacher_dim'],
                 })
+            del batch_out
 
-            torch.cuda.empty_cache()
-
-            if len(batch_results) >= 50:
+            # Flush every N docs to keep RAM bounded
+            if len(batch_results) >= _FLUSH_EVERY:
                 with lock:
                     _append_to_parquet(batch_results, output_path)
                 batch_results = []
+                gc.collect()
 
+        # Save remaining
         if batch_results:
             with lock:
                 _append_to_parquet(batch_results, output_path)
+            del batch_results
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"  [GPU {gpu_id}] Extraction done", flush=True)
 
     threads = []
     for gpu_id in range(n_gpus):
@@ -1618,7 +1660,7 @@ def build_byte_level_dataset(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logprobs_table = pq.read_table(logprobs_parquet)
-    rows = logprobs_table.to_pylist()
+    n_total_rows = len(logprobs_table)
 
     # Autodetectar workers si no se especifica
     if n_workers <= 0:
@@ -1642,18 +1684,29 @@ def build_byte_level_dataset(
         teacher_dim = 0
     stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
 
-    # Descomposición de datos: cada worker procesa un documento independiente
-    print(f"[Byte dataset] Marginalizing with {n_workers} workers...")
-    if n_workers > 1 and len(rows) > 10:
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            results = list(tqdm(
-                executor.map(_marginalize_one_row, rows, chunksize=max(1, len(rows) // (n_workers * 4))),
-                total=len(rows), desc="Marginalizing BPE→byte (parallel)",
-            ))
-    else:
-        results = [_marginalize_one_row(r) for r in tqdm(rows, desc="Marginalizing BPE→byte")]
+    # Process in batches of 50 rows to limit RAM (each row ~10MB in pylist form)
+    _MARGIN_BATCH = 50
+    print(f"[Byte dataset] Marginalizing {n_total_rows} docs in batches of {_MARGIN_BATCH}...")
+    results = []
+    for batch_start in range(0, n_total_rows, _MARGIN_BATCH):
+        batch_end = min(batch_start + _MARGIN_BATCH, n_total_rows)
+        rows = logprobs_table.slice(batch_start, batch_end - batch_start).to_pylist()
+        if n_workers > 1 and len(rows) > 10:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                batch_results = list(executor.map(
+                    _marginalize_one_row, rows,
+                    chunksize=max(1, len(rows) // (n_workers * 4)),
+                ))
+        else:
+            batch_results = [_marginalize_one_row(r) for r in rows]
+        results.extend(batch_results)
+        del rows, batch_results
+    del logprobs_table
 
     # Aglomerar resultados y empaquetar en secuencias
+    # Collect records per shard, write in batch (avoids O(n²) read-concat-write)
+    shard_records: dict[int, list[dict]] = {}
+
     for result in results:
         all_patches.extend(result['patches'])
         all_targets.extend(result['targets'])
@@ -1667,13 +1720,15 @@ def build_byte_level_dataset(
             all_teacher_hidden.extend(result['teacher_hidden'])
 
         while len(all_patches) >= seq_len:
+            seq_idx = seq_offset + stats['n_sequences']
             hidden_slice = all_teacher_hidden[:seq_len] if has_hidden else None
-            _save_byte_sequence(
+            record = _make_byte_record(
                 all_patches[:seq_len], all_targets[:seq_len],
                 all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
-                output_dir, seq_offset + stats['n_sequences'],
                 teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
             )
+            shard = seq_idx // SEQS_PER_SHARD
+            shard_records.setdefault(shard, []).append(record)
             all_patches = all_patches[seq_len:]
             all_targets = all_targets[seq_len:]
             all_teacher_probs = all_teacher_probs[seq_len:]
@@ -1681,6 +1736,11 @@ def build_byte_level_dataset(
             if has_hidden:
                 all_teacher_hidden = all_teacher_hidden[seq_len:]
             stats['n_sequences'] += 1
+
+    # Batch write all records per shard
+    for shard, records in shard_records.items():
+        shard_path = output_dir / f"shard_{shard:04d}.parquet"
+        _write_byte_shard(records, shard_path)
 
     coverage = stats['n_with_teacher'] / max(stats['n_patches_total'], 1) * 100
     stats['coverage_pct'] = coverage
@@ -1697,38 +1757,43 @@ def build_byte_level_dataset(
     return stats, next_carry
 
 
-def _save_byte_sequence(patches, targets, teacher_probs, teacher_mask,
-                        output_dir: Path, seq_idx: int,
-                        teacher_hidden=None, teacher_dim: int = 0) -> None:
-    """Save one byte-level sequence as a single Parquet row (flat arrays)."""
-    # Store the entire sequence (seq_len patches) as ONE row with flat arrays.
-    # Shapes: patches/targets → [seq_len*4], teacher_probs → [seq_len*256],
-    # teacher_mask → [seq_len]. The Dataset wrapper reshapes on load.
-    # Optional: teacher_hidden → [seq_len*teacher_dim] float32
-    flat_patches = [b for p in patches for b in p]
-    flat_targets = [b for t in targets for b in t]
-    flat_probs = [v for row in teacher_probs for v in row]
-
-    columns = {
-        'patches':       pa.array([flat_patches], type=pa.list_(pa.uint8())),
-        'targets':       pa.array([flat_targets], type=pa.list_(pa.uint8())),
-        'teacher_probs': pa.array([flat_probs],   type=pa.list_(pa.float32())),
-        'teacher_mask':  pa.array([teacher_mask], type=pa.list_(pa.bool_())),
+def _make_byte_record(patches, targets, teacher_probs, teacher_mask,
+                      teacher_hidden=None, teacher_dim: int = 0) -> dict:
+    """Build a flat record dict for one byte-level sequence."""
+    record = {
+        'patches':       [b for p in patches for b in p],
+        'targets':       [b for t in targets for b in t],
+        'teacher_probs': [v for row in teacher_probs for v in row],
+        'teacher_mask':  list(teacher_mask),
     }
     if teacher_hidden is not None:
-        flat_hidden = [v for row in teacher_hidden for v in row]
+        record['teacher_hidden'] = [v for row in teacher_hidden for v in row]
+        record['teacher_dim'] = teacher_dim
+    return record
+
+
+def _write_byte_shard(records: list[dict], shard_path: Path) -> None:
+    """Write multiple byte-level records to a shard parquet in one shot."""
+    if not records:
+        return
+    columns = {
+        'patches':       pa.array([r['patches'] for r in records], type=pa.list_(pa.uint8())),
+        'targets':       pa.array([r['targets'] for r in records], type=pa.list_(pa.uint8())),
+        'teacher_probs': pa.array([r['teacher_probs'] for r in records], type=pa.list_(pa.float32())),
+        'teacher_mask':  pa.array([r['teacher_mask'] for r in records], type=pa.list_(pa.bool_())),
+    }
+    if 'teacher_hidden' in records[0]:
         columns['teacher_hidden'] = pa.array(
-            [flat_hidden], type=pa.list_(pa.float32()),
+            [r['teacher_hidden'] for r in records], type=pa.list_(pa.float32()),
         )
-        columns['teacher_dim'] = pa.array([teacher_dim], type=pa.int32())
+        columns['teacher_dim'] = pa.array(
+            [r['teacher_dim'] for r in records], type=pa.int32(),
+        )
     table = pa.table(columns)
-    shard = seq_idx // 1000
-    shard_path = output_dir / f"shard_{shard:04d}.parquet"
     if shard_path.exists():
         existing = pq.read_table(str(shard_path))
-        pq.write_table(pa.concat_tables([existing, table]), str(shard_path))
-    else:
-        pq.write_table(table, str(shard_path))
+        table = pa.concat_tables([existing, table])
+    pq.write_table(table, str(shard_path))
 
 
 # ============================================================
@@ -1747,9 +1812,14 @@ def _tokenize_bpe_row(args: tuple) -> dict:
     row, tokenizer_name, seq_len_max, top_k = args
 
     # Lazy import para workers (cada worker importa una vez)
+    # Use local cache path if available to avoid network timeouts
     from transformers import AutoTokenizer
     if not hasattr(_tokenize_bpe_row, '_tokenizer'):
-        _tokenize_bpe_row._tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        local_cache = Path("/tmp/_bpe_tokenizer_cache")
+        if local_cache.exists():
+            _tokenize_bpe_row._tokenizer = AutoTokenizer.from_pretrained(str(local_cache))
+        else:
+            _tokenize_bpe_row._tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     tokenizer = _tokenize_bpe_row._tokenizer
 
     text_bytes = bytes(row['text_bytes'])
@@ -1806,10 +1876,7 @@ def build_bpe_dataset(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logprobs_table = pq.read_table(logprobs_parquet)
-    rows = logprobs_table.to_pylist()
-
-    if n_workers <= 0:
-        n_workers = max(1, (os.cpu_count() or 4) - 1)
+    n_total_rows = len(logprobs_table)
 
     stats = {'n_sequences': 0, 'n_tokens_total': 0}
     if carry_state is not None:
@@ -1823,43 +1890,70 @@ def build_bpe_dataset(
         buffer_top_ids = []
         buffer_mask = []
 
-    # Descomposición de datos: cada worker procesa un documento independiente
-    print(f"[BPE dataset] Tokenizing with {n_workers} workers...")
-    work_args = [(row, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for row in rows]
+    # In-process tokenization in batches of 50 to limit RAM.
+    global _BPE_TOKENIZER_CACHE
+    if '_BPE_TOKENIZER_CACHE' not in globals() or _BPE_TOKENIZER_CACHE is None:
+        from transformers import AutoTokenizer
+        _BPE_TOKENIZER_CACHE = AutoTokenizer.from_pretrained(TEACHER_MODEL)
+    _bpe_tok = _BPE_TOKENIZER_CACHE
 
-    if n_workers > 1 and len(rows) > 10:
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            results = list(tqdm(
-                executor.map(_tokenize_bpe_row, work_args,
-                             chunksize=max(1, len(rows) // (n_workers * 4))),
-                total=len(rows), desc="Building BPE dataset (parallel)",
-            ))
-    else:
-        results = [_tokenize_bpe_row(a) for a in tqdm(work_args, desc="Building BPE dataset")]
+    _BPE_BATCH = 50
+    print(f"[BPE dataset] Tokenizing {n_total_rows} docs in-process...")
 
     # Aglomerar resultados y empaquetar en secuencias
-    for result in results:
-        buffer_ids.extend(result['ids'])
-        buffer_probs.extend(result['probs'])
-        buffer_top_ids.extend(result['top_ids'])
-        buffer_mask.extend(result['mask'])
-        stats['n_tokens_total'] += len(result['ids'])
+    shard_records: dict[int, list[dict]] = {}
+
+    for batch_start in range(0, n_total_rows, _BPE_BATCH):
+        batch_end = min(batch_start + _BPE_BATCH, n_total_rows)
+        rows = logprobs_table.slice(batch_start, batch_end - batch_start).to_pylist()
+
+        for row in rows:
+            text_bytes = bytes(row['text_bytes'])
+            positions = json.loads(row['positions'])
+            text = text_bytes.decode('utf-8', errors='replace')
+            enc = _bpe_tok(text, truncation=True, max_length=seq_len * 2)
+            ids = enc['input_ids']
+
+            for token_id, pos_data in zip(ids, positions[:len(ids)]):
+                top_toks = pos_data.get('top_tokens', [])
+                probs = [0.0] * TOP_K_LOGPROBS
+                top_ids_k = [0] * TOP_K_LOGPROBS
+                has_teacher = len(top_toks) > 0
+                if has_teacher:
+                    for k_idx, item in enumerate(top_toks[:TOP_K_LOGPROBS]):
+                        probs[k_idx] = math.exp(item['logprob'])
+                        top_ids_k[k_idx] = item.get('token_id', 0)
+                buffer_ids.append(token_id)
+                buffer_probs.append(probs)
+                buffer_top_ids.append(top_ids_k)
+                buffer_mask.append(has_teacher)
+            stats['n_tokens_total'] += len(ids)
+
+        del rows
 
         while len(buffer_ids) >= seq_len + 1:
-            _save_bpe_sequence(
+            seq_idx = seq_offset + stats['n_sequences']
+            record = _make_bpe_record(
                 buffer_ids[:seq_len],
                 buffer_ids[1:seq_len + 1],
                 buffer_probs[:seq_len],
                 buffer_top_ids[:seq_len],
                 buffer_mask[:seq_len],
-                output_dir,
-                seq_offset + stats['n_sequences'],
             )
+            shard = seq_idx // SEQS_PER_SHARD
+            shard_records.setdefault(shard, []).append(record)
             buffer_ids = buffer_ids[seq_len:]
             buffer_probs = buffer_probs[seq_len:]
             buffer_top_ids = buffer_top_ids[seq_len:]
             buffer_mask = buffer_mask[seq_len:]
             stats['n_sequences'] += 1
+
+    del logprobs_table
+
+    # Batch write all records per shard
+    for shard, records in shard_records.items():
+        shard_path = output_dir / f"shard_{shard:04d}.parquet"
+        _write_bpe_shard(records, shard_path)
 
     print(f"[BPE dataset] {stats['n_sequences']} sequences (chunk), total offset {seq_offset + stats['n_sequences']}")
     next_carry = {
@@ -1869,30 +1963,33 @@ def build_bpe_dataset(
     return stats, next_carry
 
 
-def _save_bpe_sequence(input_ids, labels, teacher_probs, teacher_ids_top,
-                       teacher_mask, output_dir: Path, seq_idx: int) -> None:
-    """Save one BPE sequence as a single Parquet row (flat arrays).
+def _make_bpe_record(input_ids, labels, teacher_probs, teacher_ids_top,
+                     teacher_mask) -> dict:
+    """Build a flat record dict for one BPE sequence."""
+    return {
+        'input_ids':  input_ids,
+        'labels':     labels,
+        'teacher_probs_bpe': [v for row in teacher_probs for v in row],
+        'teacher_ids_bpe':   [v for row in teacher_ids_top for v in row],
+        'teacher_mask_bpe':  list(teacher_mask),
+    }
 
-    teacher_probs and teacher_ids_top are stored flat ([seq_len * TOP_K])
-    so the Dataset wrapper can reshape them to [seq_len, TOP_K] on load.
-    """
-    flat_probs = [v for row in teacher_probs for v in row]
-    flat_ids = [v for row in teacher_ids_top for v in row]
 
+def _write_bpe_shard(records: list[dict], shard_path: Path) -> None:
+    """Write multiple BPE records to a shard parquet in one shot."""
+    if not records:
+        return
     table = pa.table({
-        'input_ids':        pa.array([input_ids],  type=pa.list_(pa.int32())),
-        'labels':           pa.array([labels],     type=pa.list_(pa.int32())),
-        'teacher_probs_bpe': pa.array([flat_probs], type=pa.list_(pa.float32())),
-        'teacher_ids_bpe':  pa.array([flat_ids],   type=pa.list_(pa.int32())),
-        'teacher_mask_bpe': pa.array([teacher_mask], type=pa.list_(pa.bool_())),
+        'input_ids':         pa.array([r['input_ids'] for r in records], type=pa.list_(pa.int32())),
+        'labels':            pa.array([r['labels'] for r in records], type=pa.list_(pa.int32())),
+        'teacher_probs_bpe': pa.array([r['teacher_probs_bpe'] for r in records], type=pa.list_(pa.float32())),
+        'teacher_ids_bpe':   pa.array([r['teacher_ids_bpe'] for r in records], type=pa.list_(pa.int32())),
+        'teacher_mask_bpe':  pa.array([r['teacher_mask_bpe'] for r in records], type=pa.list_(pa.bool_())),
     })
-    shard = seq_idx // 1000
-    shard_path = output_dir / f"shard_{shard:04d}.parquet"
     if shard_path.exists():
         existing = pq.read_table(str(shard_path))
-        pq.write_table(pa.concat_tables([existing, table]), str(shard_path))
-    else:
-        pq.write_table(table, str(shard_path))
+        table = pa.concat_tables([existing, table])
+    pq.write_table(table, str(shard_path))
 
 
 # ============================================================
@@ -1911,12 +2008,10 @@ def _save_stream_checkpoint(api, repo_id: str, chunk_idx: int,
     }
     # Metadata JSON
     buf = io.BytesIO(json.dumps(checkpoint).encode())
-    api.upload_file(path_or_fileobj=buf, path_in_repo='stream_checkpoint.json',
-                    repo_id=repo_id, repo_type='dataset')
+    _hf_upload_with_retry(api, buf, 'stream_checkpoint.json', repo_id)
     # Carry states (pickle)
     carry_buf = io.BytesIO(pickle.dumps({'byte': byte_carry, 'bpe': bpe_carry}))
-    api.upload_file(path_or_fileobj=carry_buf, path_in_repo='stream_carry.pkl',
-                    repo_id=repo_id, repo_type='dataset')
+    _hf_upload_with_retry(api, carry_buf, 'stream_carry.pkl', repo_id)
     print(f"  [checkpoint] Chunk {chunk_idx} saved to HF Hub")
 
 
@@ -1962,25 +2057,54 @@ def _save_split_info(n_sequences: int, output_dir: Path) -> None:
         json.dump(split, f)
 
 
+def _hf_upload_with_retry(api, path_or_fileobj, path_in_repo, repo_id, max_retries=3):
+    """Upload to HF Hub with retry on timeout/network errors."""
+    for attempt in range(max_retries):
+        try:
+            api.upload_file(
+                path_or_fileobj=path_or_fileobj,
+                path_in_repo=path_in_repo,
+                repo_id=repo_id,
+                repo_type="dataset",
+            )
+            return
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 5 * (attempt + 1)
+                print(f"  [hub] Upload failed ({e}), retry in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"  [hub] Upload failed after {max_retries} attempts: {e}")
+                raise
+
+
 def _upload_sealed_shards(output_dir: Path, api, repo_id: str,
                           repo_subdir: str, total_seqs: int) -> None:
     """Upload and delete shards that are complete (won't receive more sequences).
 
-    A shard N is sealed when total_seqs > (N+1)*1000, meaning all 1000
-    of its sequences have been written.
+    A shard N is sealed when total_seqs > (N+1)*SEQS_PER_SHARD.
     """
-    max_sealed = total_seqs // 1000  # shards 0..max_sealed-1 are complete
+    max_sealed = total_seqs // SEQS_PER_SHARD  # shards 0..max_sealed-1 are complete
     for shard_idx in range(max_sealed):
         shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
         if shard_path.exists():
-            api.upload_file(
-                path_or_fileobj=str(shard_path),
-                path_in_repo=f"{repo_subdir}/shard_{shard_idx:04d}.parquet",
-                repo_id=repo_id,
-                repo_type="dataset",
-            )
+            _hf_upload_with_retry(api, str(shard_path),
+                                  f"{repo_subdir}/shard_{shard_idx:04d}.parquet", repo_id)
             shard_path.unlink()
             print(f"  [hub] Uploaded + deleted {repo_subdir}/shard_{shard_idx:04d}.parquet")
+
+
+def _upload_all_shards(output_dir: Path, api, repo_id: str, repo_subdir: str) -> int:
+    """Upload ALL shards (sealed + incomplete). Returns count uploaded."""
+    count = 0
+    for shard_path in sorted(output_dir.glob("shard_*.parquet")):
+        _hf_upload_with_retry(api, str(shard_path),
+                              f"{repo_subdir}/{shard_path.name}", repo_id)
+        shard_path.unlink()
+        count += 1
+    if count:
+        print(f"  [hub] Uploaded {count} shards from {repo_subdir}/", flush=True)
+    return count
 
 
 def upload_dataset_to_hub(local_dir: str = str(OUTPUT_DIR)) -> None:
@@ -2008,7 +2132,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                        skip_extraction: bool = False,
                        use_hf_mount: bool = False,
                        stream_to_hub: bool = False,
-                       chunk_size: int = 500) -> None:
+                       chunk_size: int = 1000, **_kwargs) -> None:
     """
     Complete dataset construction pipeline.
 
@@ -2028,6 +2152,11 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
     global OUTPUT_DIR
     from datasets import load_dataset
 
+    # chunk_size=500: ~250 docs/GPU, ~63 batches at batch_size=4.
+    # RAM for 500-doc logprobs: ~1-2GB. Safe on Kaggle's 13GB.
+    chunk_size = min(chunk_size, 500)
+    print(f"  [config] chunk_size = {chunk_size}")
+
     # Si hf-mount esta habilitado, montar bucket y escribir directo ahi
     mount_path = None
     if use_hf_mount:
@@ -2045,15 +2174,18 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
         print("STEP 1: Downloading FineWeb corpus")
         print(f"{'=' * 60}")
 
+        DATASET_SEED = 42
         fw = load_dataset(corpus_name, name="sample-10BT", split="train",
                           streaming=True)
+        # Shuffle con seed fijo para reproducibilidad
+        fw = fw.shuffle(seed=DATASET_SEED, buffer_size=10_000)
         texts = []
         for i, doc in enumerate(fw):
             if i >= n_docs:
                 break
             texts.append(doc['text'])
 
-        print(f"  Corpus: {len(texts):,} documents")
+        print(f"  Corpus: {len(texts):,} documents (seed={DATASET_SEED})")
 
         # Save corpus sample for reference
         corpus_path = OUTPUT_DIR / "corpus_texts.json"
@@ -2109,6 +2241,10 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 print(f"  [resume] Saltando chunks 0-{resume_from_chunk - 1}, "
                       f"byte_seqs={byte_seq_offset}, bpe_seqs={bpe_seq_offset}")
 
+            _pipeline_t0 = time.time()
+            _next_forced_upload_min = 30  # first forced upload at 30 min
+            _checkpoint_every = 5        # save checkpoint every N chunks
+
             for chunk_start in range(0, len(texts), chunk_size):
                 chunk_end = min(chunk_start + chunk_size, len(texts))
                 chunk_texts = texts[chunk_start:chunk_end]
@@ -2157,31 +2293,39 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 _upload_sealed_shards(bpe_dir, api, DATASET_REPO,
                                       "bpe_tokenized", bpe_seq_offset)
 
-                # Delete temp logprobs chunk
+                # Periodic forced upload of ALL shards (including incomplete)
+                elapsed_min = (time.time() - _pipeline_t0) / 60
+                if elapsed_min >= _next_forced_upload_min:
+                    print(f"\n  [FORCED UPLOAD @ {elapsed_min:.0f}min] Uploading all shards...")
+                    _upload_all_shards(byte_dir, api, DATASET_REPO, "byte_marginalized")
+                    _upload_all_shards(bpe_dir, api, DATASET_REPO, "bpe_tokenized")
+                    _next_forced_upload_min = elapsed_min + 30
+
+                # Delete temp logprobs chunk + free memory
                 tmp_parquet.unlink(missing_ok=True)
+                del chunk_texts
+                gc.collect()
+                if torch.cuda.is_available():
+                    for _gi in range(torch.cuda.device_count()):
+                        with torch.cuda.device(_gi):
+                            torch.cuda.empty_cache()
                 print(f"  [Chunk {chunk_idx+1}] Done. Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs")
 
-                # Guardar checkpoint
-                _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
-                                        byte_seq_offset, bpe_seq_offset,
-                                        byte_carry, bpe_carry)
+                # Guardar checkpoint cada N chunks (no en cada uno)
+                if (chunk_idx + 1) % _checkpoint_every == 0:
+                    _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
+                                            byte_seq_offset, bpe_seq_offset,
+                                            byte_carry, bpe_carry)
+
+            # Final checkpoint before uploading remaining shards
+            _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
+                                    byte_seq_offset, bpe_seq_offset,
+                                    byte_carry, bpe_carry)
 
             # Upload any remaining (incomplete) shards
             print("\n  Uploading remaining shards...")
-            for shard_path in sorted(byte_dir.glob("shard_*.parquet")):
-                api.upload_file(
-                    path_or_fileobj=str(shard_path),
-                    path_in_repo=f"byte_marginalized/{shard_path.name}",
-                    repo_id=DATASET_REPO, repo_type="dataset",
-                )
-                shard_path.unlink()
-            for shard_path in sorted(bpe_dir.glob("shard_*.parquet")):
-                api.upload_file(
-                    path_or_fileobj=str(shard_path),
-                    path_in_repo=f"bpe_tokenized/{shard_path.name}",
-                    repo_id=DATASET_REPO, repo_type="dataset",
-                )
-                shard_path.unlink()
+            _upload_all_shards(byte_dir, api, DATASET_REPO, "byte_marginalized")
+            _upload_all_shards(bpe_dir, api, DATASET_REPO, "bpe_tokenized")
 
             # Save split info and upload
             _save_split_info(byte_seq_offset, byte_dir)

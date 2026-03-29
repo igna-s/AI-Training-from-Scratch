@@ -99,12 +99,30 @@ print("\n" + "=" * 60)
 print("PASO 1: Crear dataset -> HF Bucket (hf-mount)")
 print("=" * 60)
 
+# Verificar que se cargó la versión correcta del create_dataset
+import create_dataset as _cd
+_cd_path = getattr(_cd, '__file__', 'unknown')
+_cd_mtime = os.path.getmtime(_cd_path) if os.path.exists(_cd_path) else 0
+from datetime import datetime
+print(f"  create_dataset.py loaded from: {_cd_path}")
+print(f"  create_dataset.py mtime: {datetime.fromtimestamp(_cd_mtime)}")
+print(f"  has gc import: {hasattr(_cd, 'gc')}")
+
+# Monkey-patch para log de cada save en el multi-GPU worker
+_orig_append = _cd._append_to_parquet
+_save_counter = [0]
+def _logging_append(records, path):
+    _save_counter[0] += 1
+    print(f"\n  >>> SAVE #{_save_counter[0]}: {len(records)} docs -> {path}", flush=True)
+    return _orig_append(records, path)
+_cd._append_to_parquet = _logging_append
+
 from create_dataset import build_full_dataset
 
 build_full_dataset(
     n_docs=850_000,   # 850k docs × 600 tok/doc avg ≈ 100k training seqs of 5000 tok (500M distilled tokens)
     stream_to_hub=True,
-    chunk_size=5_000,
+    chunk_size=500,
 )
 
 print("\n" + "=" * 60)

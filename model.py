@@ -1031,6 +1031,8 @@ class CPU1ModelV2WithGates(nn.Module):
         hidden_states: list | None = None,
         training_phase: int = 1,           # 1 = con distilación, 2 = con delete gate
         target_elimination: float = 0.0,
+        teacher_hidden: Tensor | None = None,  # [B, S, teacher_dim] for EmbAligner
+        teacher_mask: Tensor | None = None,    # [B, S] bool
     ) -> tuple:
         """
         Forward pass con soporte para ambas fases de training.
@@ -1084,12 +1086,15 @@ class CPU1ModelV2WithGates(nn.Module):
                     )
                     extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
 
+        x_pre_norm = x  # guardar para EmbeddingAligner antes del norm
         x = self.norm(x)
         logits = tuple(head(x) for head in self.byte_heads)
 
-        # EmbeddingAlignment loss placeholder (solo Fase 1 si está habilitado)
-        if self.use_emb_align and training_phase == 1:
-            extra_losses['emb_align'] = None  # poblado externamente
+        # EmbeddingAlignment loss (solo Fase 1 si está habilitado y hay teacher_hidden)
+        if self.use_emb_align and training_phase == 1 and teacher_hidden is not None:
+            extra_losses['emb_align'] = self.embedding_aligner.alignment_loss(
+                x_pre_norm, teacher_hidden, teacher_mask,
+            )
 
         return logits, new_states, extra_losses
 

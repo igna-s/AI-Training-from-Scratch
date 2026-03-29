@@ -10,6 +10,7 @@ Two modes:
 """
 
 import os
+import gc
 import math
 import json
 import time
@@ -83,7 +84,7 @@ def distillation_loss(
         reduction='none',
     ).reshape_as(targets_0)  # [B, S]
 
-    if teacher_probs is not None and teacher_mask.any():
+    if teacher_probs is not None and teacher_mask is not None and teacher_mask.any():
         # Softmax con temperatura sobre logits del student: log(softmax(logits/T))
         student_log_probs_T = F.log_softmax(logits_0 / temperature, dim=-1)
 
@@ -993,7 +994,7 @@ class DryRunDataset(Dataset):
                 sample['teacher_probs'] = torch.zeros(self.seq_len, 256)
                 sample['teacher_mask'] = torch.zeros(self.seq_len, dtype=torch.bool)
             if self.config.get('use_embedding_alignment'):
-                teacher_dim = self.config.get('teacher_dim', 5120)
+                teacher_dim = self.config.get('teacher_dim', 128)
                 sample['teacher_hidden'] = torch.randn(self.seq_len, teacher_dim)
         else:
             vocab = self.config.get('bpe_vocab_size', 152064)
@@ -1022,6 +1023,7 @@ class ByteLevelDataset(Dataset):
 
     def __init__(self, hf_dataset, config: dict):
         self.ds = hf_dataset
+        self.config = config
         self.seq_len = config['seq_len']
         self.patch_size = config.get('patch_size', 4)
         self.has_teacher = config['training_signal'] in ('distillation', 'distillation_then_ce')
@@ -1044,7 +1046,7 @@ class ByteLevelDataset(Dataset):
                 row['teacher_mask'], dtype=torch.bool
             )
         if 'teacher_hidden' in row and row['teacher_hidden'] is not None:
-            teacher_dim = row.get('teacher_dim', 0)
+            teacher_dim = self.config.get('teacher_dim', 128)
             if teacher_dim > 0:
                 sample['teacher_hidden'] = (
                     torch.tensor(row['teacher_hidden'], dtype=torch.float32)
@@ -1428,6 +1430,16 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
         except Exception as e:
             print(f"[Checkpoint] Hub upload failed: {e}")
 
+    # Disk cleanup: borrar checkpoints anteriores del mismo run (solo mantener el ultimo)
+    import glob as _glob
+    for old in _glob.glob(f"checkpoint_{run_name}_step*.pt"):
+        if old != path:
+            try:
+                os.remove(old)
+                print(f"[Checkpoint] Removed old: {old}")
+            except OSError:
+                pass
+
     return path
 
 
@@ -1633,6 +1645,12 @@ def train_run(run_name: str, dry_run: bool = False,
                 loss.backward()
 
             losses.append(loss.item() * accum_steps)
+            del logits, result, extra_losses
+            if t_probs is not None:
+                del t_probs, t_mask
+            if t_hidden is not None:
+                del t_hidden
+            del loss
             micro_step += 1
 
             # Optimizer step at accumulation boundary
@@ -1658,15 +1676,26 @@ def train_run(run_name: str, dry_run: bool = False,
                 if optim_step % 500 == 0:
                     avg_loss = sum(losses[-100:]) / min(100, len(losses))
                     elapsed = time.time() - t_start
-                    print(f"Step {optim_step:5d}/{total_steps} | "
-                          f"Loss: {avg_loss:.4f} | "
-                          f"LR: {get_lr_from_config(optim_step, config):.2e} | "
-                          f"Time: {elapsed:.0f}s")
+                    if device.type == 'cuda':
+                        vram_mb = torch.cuda.memory_allocated() / (1024**2)
+                        vram_res_mb = torch.cuda.memory_reserved() / (1024**2)
+                        print(f"Step {optim_step:5d}/{total_steps} | "
+                              f"Loss: {avg_loss:.4f} | "
+                              f"LR: {get_lr_from_config(optim_step, config):.2e} | "
+                              f"VRAM: {vram_mb:.0f}/{vram_res_mb:.0f} MB | "
+                              f"Time: {elapsed:.0f}s")
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                    else:
+                        print(f"Step {optim_step:5d}/{total_steps} | "
+                              f"Loss: {avg_loss:.4f} | "
+                              f"LR: {get_lr_from_config(optim_step, config):.2e} | "
+                              f"Time: {elapsed:.0f}s")
 
-                # Save periodic checkpoint
-                if (optim_step > 0
-                        and optim_step % config['save_every_steps'] == 0
-                        and not dry_run):
+                # Save periodic checkpoint (first at step 10 to verify upload, then every save_every_steps)
+                save_interval = config['save_every_steps']
+                should_save = (optim_step == 10) or (optim_step > 0 and optim_step % save_interval == 0)
+                if should_save and not dry_run:
                     save_ablation_checkpoint(model, optimizer, run_name, {},
                                              config, optim_step)
 
