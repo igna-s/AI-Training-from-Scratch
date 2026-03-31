@@ -976,7 +976,73 @@ TEACHER_HIDDEN_DIM = 3584   # Qwen2.5-7B hidden size
 ALIGN_DIM = 128             # Project teacher hidden 3584→128 (Johnson-Lindenstrauss)
 SEQS_PER_SHARD = 200        # Sequences per parquet shard
 SEED = 42
-BATCH_SIZE_TEACHER = 2  # T4 15GB: model ~4GB + activations ~3GB/doc → 2 docs safe
+BATCH_SIZE_TEACHER = 2   # T4 15GB: model ~4GB + activations ~3GB/doc → 2 docs safe
+BATCH_SIZE_TEACHER_L4 = 14   # L4 24GB: FP8 model ~7GB + KV@4096 ~3.8GB + logits ~2.5GB
+                              # = ~14GB peak → ~4GB headroom; bucket batching keeps avg low
+MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching cuts avg)
+
+
+def detect_gpu_profile() -> dict:
+    """Detect GPU and return optimal extraction config.
+
+    Profiles:
+        L4  (24GB, Ada Lovelace): FP8 W8A8 dynamic, batch 14, seq 4096, bucket sorted
+        T4  (15GB, Turing):       4-bit NF4,        batch 2,  seq 2048
+        other:                    fallback based on VRAM
+
+    Returns dict with keys: name, vram_gb, batch_size, max_tokens, fp8, dtype
+    """
+    if not torch.cuda.is_available():
+        return {
+            'name': 'cpu', 'vram_gb': 0,
+            'batch_size': 1, 'max_tokens': MAX_EXTRACTION_TOKENS,
+            'fp8': False, 'dtype': torch.float32,
+        }
+
+    props = torch.cuda.get_device_properties(0)
+    name = props.name.lower()
+    vram_gb = props.total_memory / (1024 ** 3)
+
+    if 'l4' in name or (vram_gb >= 22 and vram_gb < 28):
+        # L4: Ada Lovelace, FP8 W8A8 via torch._scaled_mm, 24 GB GDDR6, 4 CPU cores
+        # logit_chunk_size=512: 14×512×3584 BF16 = ~49 MB/chunk
+        return {
+            'name': props.name, 'vram_gb': vram_gb,
+            'batch_size': BATCH_SIZE_TEACHER_L4,
+            'max_tokens': MAX_EXTRACTION_TOKENS_L4,
+            'fp8': True, 'dtype': torch.bfloat16,
+            'logit_chunk_size': 512,
+            'cpu_workers': 4,
+        }
+    elif 't4' in name or (vram_gb >= 13 and vram_gb < 18):
+        return {
+            'name': props.name, 'vram_gb': vram_gb,
+            'batch_size': BATCH_SIZE_TEACHER,
+            'max_tokens': MAX_EXTRACTION_TOKENS,
+            'fp8': False, 'dtype': torch.float16,
+            'logit_chunk_size': 256,
+            'cpu_workers': 2,
+        }
+    elif 'a100' in name or 'h100' in name:
+        return {
+            'name': props.name, 'vram_gb': vram_gb,
+            'batch_size': 16, 'max_tokens': 4096,
+            'fp8': False, 'dtype': torch.bfloat16,
+            'logit_chunk_size': 512,
+            'cpu_workers': 4,
+        }
+    else:
+        batch = max(1, int(vram_gb / 8))
+        dtype = torch.bfloat16 if vram_gb >= 20 else torch.float16
+        cpu_w = min(4, max(1, os.cpu_count() or 2))
+        return {
+            'name': props.name, 'vram_gb': vram_gb,
+            'batch_size': batch, 'max_tokens': MAX_EXTRACTION_TOKENS,
+            'fp8': False, 'dtype': dtype,
+            'logit_chunk_size': 256,
+            'cpu_workers': cpu_w,
+        }
+
 
 # Lazy-initialized random orthogonal projection matrix
 _PROJECTION_MATRIX = None
@@ -996,24 +1062,91 @@ def _get_projection_matrix(teacher_dim: int, align_dim: int = ALIGN_DIM):
 # STEP 1: Extract teacher logprobs
 # ============================================================
 
-def load_teacher(model_name: str = TEACHER_MODEL, device: str = "cuda:0"):
-    """Load Qwen-7B in 4-bit NF4 (~4GB VRAM)."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+def _load_teacher_fp8(model_name: str, device: str, dtype=torch.bfloat16):
+    """Load teacher in BF16 then apply FP8 dynamic-activation quantization via torchao.
 
-    print(f"[Teacher] Loading {model_name} in 4-bit NF4 on {device}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
+    Uses Float8DynamicActivationFloat8WeightConfig (W8A8 FP8):
+      - Weights AND activations in FP8 E4M3 during matmuls
+      - Activations quantized dynamically per-token at runtime
+      - Fires L4 Ada Lovelace FP8 tensor cores on every linear layer (attention + MLP)
+      - Weights ~7 GB; activations quantized on-the-fly (no extra VRAM)
+      - Requires torchao >= 0.4 and PyTorch >= 2.5 with CUDA 12.x
+
+    Fallback chain:
+      torchao W8A8  →  torchao W8A16 (weight-only, no tensor cores)  →  plain BF16
+    """
+    from transformers import AutoModelForCausalLM
+
+    print(f"[Teacher] Loading {model_name} in BF16 on {device} for FP8 quantization...")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        quantization_config=bnb_config,
+        torch_dtype=dtype,
         device_map={"": device},
     )
+
+    try:
+        # Validate runtime prerequisites for FP8 tensor core path
+        if torch.version.cuda and tuple(int(x) for x in torch.version.cuda.split('.')) < (12, 0):
+            print(f"[Teacher] WARNING: CUDA {torch.version.cuda} < 12.0 — "
+                  "FP8 tensor cores require CUDA 12.x. Falling back to BF16.")
+            model.eval()
+            return model
+        from torchao.quantization import quantize_, Float8DynamicActivationFloat8WeightConfig
+        print("[Teacher] Applying FP8 W8A8 dynamic quantization (torchao) ...")
+        quantize_(model, Float8DynamicActivationFloat8WeightConfig())
+        print("[Teacher] FP8 W8A8 applied — L4 Ada FP8 tensor cores active on all linears. "
+              "Weights ~7 GB, activations quantized per-token at runtime.")
+    except (ImportError, AttributeError):
+        # Float8DynamicActivationFloat8WeightConfig requires torchao >= 0.4
+        try:
+            from torchao.quantization import quantize_, Float8WeightOnlyConfig
+            print("[Teacher] torchao < 0.4 detected — falling back to FP8 W8A16 "
+                  "(weight-only, NO tensor cores, memory savings only). "
+                  "Upgrade with: pip install -U torchao")
+            quantize_(model, Float8WeightOnlyConfig())
+        except ImportError:
+            print("[Teacher] torchao not found — running BF16 (~14 GB). "
+                  "Install: pip install torchao")
+
     model.eval()
+    return model
+
+
+def load_teacher(model_name: str = TEACHER_MODEL, device: str = "cuda:0",
+                 profile: dict = None):
+    """Load Qwen-7B with the optimal quantization for the detected GPU.
+
+    - T4  (15 GB): 4-bit NF4 (~4 GB VRAM) — original Kaggle path
+    - L4  (24 GB): BF16 + FP8 weights via torchao (~7 GB VRAM, batch×4 throughput)
+    - CPU:         4-bit NF4 via bitsandbytes CPU path
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    if profile is None:
+        profile = detect_gpu_profile()
+
+    print(f"[Teacher] GPU: {profile['name']}  ({profile['vram_gb']:.1f} GB VRAM)")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    if profile['fp8'] and device != 'cpu':
+        model = _load_teacher_fp8(model_name, device, profile['dtype'])
+    else:
+        # Original 4-bit NF4 path (T4 / CPU / unknown GPU)
+        compute_dtype = profile.get('dtype', torch.float16)
+        print(f"[Teacher] Loading {model_name} in 4-bit NF4 on {device}...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_config,
+            device_map={"": device},
+        )
+        model.eval()
+
     # Cache tokenizer locally so BPE ProcessPoolExecutor workers don't hit network
     local_cache = Path("/tmp/_bpe_tokenizer_cache")
     if not local_cache.exists():
@@ -1276,13 +1409,20 @@ def extract_logprobs_and_hidden_batch(
 
     B, S_pad = input_ids.shape
 
-    # ── Project mid-layer hidden → ALIGN_DIM (on CPU to save VRAM) ────────
+    # ── Project mid-layer hidden → ALIGN_DIM (on GPU to avoid CPU bottleneck) ─
+    # Projection on GPU: BF16 matmul [B,S,3584]×[3584,128] → ~14 MB result.
+    # Old path moved 800 MB to CPU for a float32 matmul; this is 50× less data
+    # and fires BF16 tensor cores instead of CPU SIMD.
     proj = _get_projection_matrix(model.config.hidden_size)
-    mid_proj = (captured['mid'].float().cpu() @ proj).half()  # [B, S_pad, ALIGN_DIM]
+    proj_gpu = proj.to(device=captured['mid'].device, dtype=captured['mid'].dtype)
+    with torch.no_grad():
+        mid_proj = (captured['mid'] @ proj_gpu).half().cpu()  # [B, S_pad, ALIGN_DIM]
+    del proj_gpu, captured['mid']
 
     # ── Chunked logit computation from last-layer hidden + final norm ─────
     with torch.no_grad():
         last_normed = model.model.norm(captured['last'])   # [B, S_pad, D]
+    del captured['last']
 
     all_top_idx: list = []
     all_top_lp:  list = []
@@ -1293,16 +1433,17 @@ def extract_logprobs_and_hidden_batch(
             logits = model.lm_head(chunk).float()             # [B, C, V]
             log_p  = torch.log_softmax(logits, dim=-1)
             top_lp, top_idx = torch.topk(log_p, k=top_k, dim=-1)
+            del logits, log_p
+            # Sync GPU before D2H transfer to avoid race condition
+            if chunk.is_cuda:
+                torch.cuda.synchronize()
             all_top_idx.append(top_idx.cpu())
             all_top_lp.append(top_lp.cpu())
-            del logits, log_p
 
     top_idx_all = torch.cat(all_top_idx, dim=1)   # [B, S_pad, K]
     top_lp_all  = torch.cat(all_top_lp,  dim=1)   # [B, S_pad, K]
 
-    # Liberar tensores GPU que ya no se necesitan
     del last_normed, all_top_idx, all_top_lp
-    del captured['mid'], captured['last']
 
     input_ids_cpu = input_ids.cpu()
     attn_mask_cpu = attn_mask.cpu()
@@ -1349,7 +1490,7 @@ def extract_logprobs_and_hidden_batch(
 
 
 def _append_to_parquet(records: list[dict], path: Path) -> None:
-    """Append records to a Parquet file."""
+    """Append records to a Parquet file (legacy, used by monkey-patch)."""
     columns = {
         'doc_id':     pa.array([r['doc_id'] for r in records], type=pa.int32()),
         'text_bytes': pa.array([r['text_bytes'] for r in records]),
@@ -1373,15 +1514,53 @@ def _append_to_parquet(records: list[dict], path: Path) -> None:
         pq.write_table(table, str(path))
 
 
+def _write_parquet_part(records: list[dict], part_path: Path) -> None:
+    """Write records to a NEW parquet part file — O(1), no read-merge.
+
+    Used by extraction workers instead of _append_to_parquet to avoid
+    O(n²) read-concat-write and to eliminate lock contention between GPUs.
+    """
+    columns = {
+        'doc_id':     pa.array([r['doc_id'] for r in records], type=pa.int32()),
+        'text_bytes': pa.array([r['text_bytes'] for r in records]),
+        'positions':  pa.array([r['positions'] for r in records], type=pa.string()),
+        'n_tokens':   pa.array([r['n_tokens'] for r in records], type=pa.int32()),
+    }
+    if records and 'teacher_hidden' in records[0]:
+        columns['teacher_hidden'] = pa.array(
+            [r['teacher_hidden'] for r in records],
+            type=pa.list_(pa.float32()),
+        )
+        columns['teacher_dim'] = pa.array(
+            [r['teacher_dim'] for r in records], type=pa.int32(),
+        )
+    pq.write_table(pa.table(columns), str(part_path))
+
+
+def _merge_parquet_parts(output_path: Path) -> None:
+    """Merge all _partNNNN.parquet files into a single output parquet."""
+    parts = sorted(output_path.parent.glob(f"{output_path.stem}_part*.parquet"))
+    if not parts:
+        return
+    tables = [pq.read_table(str(p)) for p in parts]
+    combined = pa.concat_tables(tables)
+    pq.write_table(combined, str(output_path))
+    for p in parts:
+        p.unlink()
+    print(f"  [merge] {len(parts)} parts → {output_path.name} ({len(combined)} docs)")
+
+
 def run_logprob_extraction(
     corpus_texts: list[str],
     output_path: str,
     resume: bool = True,
+    preloaded_models: list = None,
 ) -> None:
     """Extract logprobs + projected hidden states for entire corpus.
 
-    Uses all available GPUs in parallel (one Qwen-7B teacher per GPU).
-    Each T4 holds one 4-bit NF4 model (~4GB VRAM), so 2×T4 = 2× throughput.
+    GPU configs:
+      Kaggle  2×T4 (15 GB each): 4-bit NF4, batch 2 per GPU, 2× parallel throughput
+      Lightning AI 1×L4 (24 GB): FP8 W8A8 via torchao, batch 8, Ada FP8 tensor cores
 
     Always extracts teacher hidden states (projected 5120→ALIGN_DIM)
     for EmbeddingAligner (runs 13, 15).
@@ -1399,28 +1578,44 @@ def run_logprob_extraction(
         print("[Extraction] All docs already extracted")
         return
 
+    profile = detect_gpu_profile()
+    batch_size       = profile['batch_size']
+    seq_len          = profile['max_tokens']
+    logit_chunk_size = profile.get('logit_chunk_size', 256)
+    print(f"[Extraction] Profile: {profile['name']}  "
+          f"batch={batch_size}  seq={seq_len}  "
+          f"logit_chunk={logit_chunk_size}  fp8={profile['fp8']}")
+
     n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
     if n_gpus >= 2:
         print(f"[Extraction] Using {n_gpus} GPUs in parallel "
               f"({', '.join(torch.cuda.get_device_name(i) for i in range(n_gpus))})")
-        _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus)
+        _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
+                                  preloaded_models, batch_size=batch_size,
+                                  seq_len=seq_len, logit_chunk_size=logit_chunk_size)
     else:
-        _run_extraction_single_gpu(corpus_texts, output_path, start_idx)
+        _run_extraction_single_gpu(corpus_texts, output_path, start_idx,
+                                   batch_size=batch_size, seq_len=seq_len,
+                                   logit_chunk_size=logit_chunk_size,
+                                   preloaded_models=preloaded_models)
 
-    # Liberar teacher models de GPU después de la extracción
-    gc.collect()
-    if torch.cuda.is_available():
-        for i in range(torch.cuda.device_count()):
-            with torch.cuda.device(i):
-                torch.cuda.empty_cache()
-        vram_free = [torch.cuda.mem_get_info(i)[0] / (1024**3) for i in range(torch.cuda.device_count())]
-        print(f"[Extraction] VRAM freed. Available: {['%.1fG' % v for v in vram_free]}")
+    # Only free VRAM if models were loaded locally (not pre-loaded for pipeline)
+    if preloaded_models is None:
+        gc.collect()
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+            vram_free = [torch.cuda.mem_get_info(i)[0] / (1024**3) for i in range(torch.cuda.device_count())]
+            print(f"[Extraction] VRAM freed. Available: {['%.1fG' % v for v in vram_free]}")
 
     print(f"[Extraction] Complete: {output_path}")
 
 
-def _extract_batch_with_oom_retry(model, tokenizer, batch_texts, gpu_tag="GPU 0"):
+def _extract_batch_with_oom_retry(model, tokenizer, batch_texts, gpu_tag="GPU 0",
+                                   seq_len: int = MAX_EXTRACTION_TOKENS,
+                                   logit_chunk_size: int = 256):
     """Try extraction, halve batch on OOM until batch_size=1."""
     import traceback
     sub_batches = [batch_texts]
@@ -1429,7 +1624,8 @@ def _extract_batch_with_oom_retry(model, tokenizer, batch_texts, gpu_tag="GPU 0"
         try:
             return extract_logprobs_and_hidden_batch(
                 model, tokenizer, texts,
-                top_k=TOP_K_LOGPROBS, seq_len=MAX_EXTRACTION_TOKENS,
+                top_k=TOP_K_LOGPROBS, seq_len=seq_len,
+                logit_chunk_size=logit_chunk_size,
             )
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
@@ -1437,8 +1633,10 @@ def _extract_batch_with_oom_retry(model, tokenizer, batch_texts, gpu_tag="GPU 0"
             if len(texts) > 1:
                 mid = len(texts) // 2
                 print(f"\n  [{gpu_tag}] OOM with {len(texts)} docs, splitting to {mid}+{len(texts)-mid}")
-                r1 = _extract_batch_with_oom_retry(model, tokenizer, texts[:mid], gpu_tag)
-                r2 = _extract_batch_with_oom_retry(model, tokenizer, texts[mid:], gpu_tag)
+                r1 = _extract_batch_with_oom_retry(model, tokenizer, texts[:mid], gpu_tag,
+                                                    seq_len, logit_chunk_size)
+                r2 = _extract_batch_with_oom_retry(model, tokenizer, texts[mid:], gpu_tag,
+                                                    seq_len, logit_chunk_size)
                 return (r1 or []) + (r2 or [])
             else:
                 print(f"\n  [{gpu_tag}] OOM on single doc, skipping")
@@ -1452,79 +1650,179 @@ def _extract_batch_with_oom_retry(model, tokenizer, batch_texts, gpu_tag="GPU 0"
     return []
 
 
-def _run_extraction_single_gpu(corpus_texts, output_path, start_idx, batch_size: int = BATCH_SIZE_TEACHER):
-    """Single-GPU batched extraction (batch_size docs per forward pass)."""
-    model, tokenizer = load_teacher()
-    batch_results = []
-    _FLUSH_EVERY = 50
+def _run_extraction_single_gpu(corpus_texts, output_path, start_idx,
+                                batch_size: int = BATCH_SIZE_TEACHER,
+                                seq_len: int = MAX_EXTRACTION_TOKENS,
+                                logit_chunk_size: int = 256,
+                                preloaded_models=None):
+    """Single-GPU extraction with bucket batching and adaptive OOM recovery.
+
+    Bucket batching:
+        Docs sorted by estimated token length so each batch has similar-length docs.
+        Average FineWeb doc is ~613 bytes ≈ 175 tokens → most batches pad to ~200
+        instead of the max 2048+, cutting attention compute by ~10×.
+
+    Adaptive OOM:
+        On CUDA OOM the effective batch size is permanently halved and extraction
+        resumes from the exact position that failed.  It never stops.
+
+    VRAM hygiene:
+        empty_cache + gc after every flush to keep VRAM stable and avoid
+        fragmentation accumulating over thousands of batches.
+    """
+    if preloaded_models:
+        model, tokenizer = preloaded_models[0]
+    else:
+        model, tokenizer = load_teacher(profile=detect_gpu_profile())
+
+    batch_results  = []
+    _FLUSH_EVERY   = 50
+    _part_counter  = [0]
+    _eff_batch     = [batch_size]   # mutable: permanently reduced on OOM
+    output_path    = Path(output_path)
 
     valid_indices = [i for i in range(start_idx, len(corpus_texts))
                      if corpus_texts[i].strip()]
 
-    for batch_start in tqdm(range(0, len(valid_indices), batch_size),
-                            desc="Extracting logprobs"):
-        batch_indices = valid_indices[batch_start:batch_start + batch_size]
-        batch_texts   = [corpus_texts[i] for i in batch_indices]
+    # ── Bucket sort: group docs by estimated token length to minimise padding ──
+    # Qwen2.5 BPE: ~3.5 bytes/token for English.  +1 to avoid zero for empty.
+    def _est_tok(idx):
+        return min(len(corpus_texts[idx].encode('utf-8')) // 3 + 1, seq_len)
 
-        batch_out = _extract_batch_with_oom_retry(model, tokenizer, batch_texts)
+    sorted_indices = sorted(valid_indices, key=_est_tok)
+    n_valid        = len(sorted_indices)
 
-        for i, result in zip(batch_indices, batch_out):
-            batch_results.append({
-                'doc_id':         i,
-                'text_bytes':     result['text_bytes'],
-                'positions':      json.dumps(result['positions']),
-                'n_tokens':       result['n_tokens'],
-                'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
-                'teacher_dim':    result['teacher_dim'],
-            })
-        del batch_out
+    pbar = tqdm(total=n_valid, desc="Extracting logprobs", unit="doc")
 
-        if len(batch_results) >= _FLUSH_EVERY:
-            _append_to_parquet(batch_results, output_path)
-            batch_results = []
+    i = 0  # pointer into sorted_indices — only advances on success
+    while i < n_valid:
+        n              = _eff_batch[0]
+        batch_indices  = sorted_indices[i:i + n]
+        batch_texts    = [corpus_texts[j] for j in batch_indices]
+
+        # Cap seq_len to the actual max in this bucket + 128 token margin.
+        # Avoids allocating a 4096-length KV cache for a batch of 150-token docs.
+        bucket_max_tok = max(_est_tok(j) for j in batch_indices)
+        bucket_seq_len = min(seq_len, bucket_max_tok + 128)
+
+        try:
+            batch_out = extract_logprobs_and_hidden_batch(
+                model, tokenizer, batch_texts,
+                top_k=TOP_K_LOGPROBS,
+                seq_len=bucket_seq_len,
+                logit_chunk_size=logit_chunk_size,
+            )
+
+            for j, result in zip(batch_indices, batch_out):
+                batch_results.append({
+                    'doc_id':         j,
+                    'text_bytes':     result['text_bytes'],
+                    'positions':      json.dumps(result['positions']),
+                    'n_tokens':       result['n_tokens'],
+                    'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
+                    'teacher_dim':    result['teacher_dim'],
+                })
+            del batch_out
+
+            i += len(batch_indices)
+            pbar.update(len(batch_indices))
+
+            if len(batch_results) >= _FLUSH_EVERY:
+                part_path = (output_path.parent
+                             / f"{output_path.stem}_part{_part_counter[0]:04d}.parquet")
+                _part_counter[0] += 1
+                _write_parquet_part(batch_results, part_path)
+                batch_results = []
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
             gc.collect()
+            new_n = max(1, _eff_batch[0] // 2)
+            pbar.write(f"[OOM] batch {_eff_batch[0]} → {new_n} (permanent). "
+                       f"Resuming from doc {i}/{n_valid}")
+            _eff_batch[0] = new_n
+            # i is NOT advanced — retries the same position with a smaller batch
+
+        except Exception:
+            import traceback
+            pbar.write(f"[ERROR] skipping batch at {i}")
+            traceback.print_exc()
+            torch.cuda.empty_cache()
+            i += len(batch_indices)
+            pbar.update(len(batch_indices))
+
+    pbar.close()
 
     if batch_results:
-        _append_to_parquet(batch_results, output_path)
+        part_path = (output_path.parent
+                     / f"{output_path.stem}_part{_part_counter[0]:04d}.parquet")
+        _write_parquet_part(batch_results, part_path)
+
+    _merge_parquet_parts(output_path)
 
 
-def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus):
-    """Multi-GPU extraction: one Qwen-7B teacher per GPU, docs split evenly.
+def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
+                              preloaded_models=None, batch_size: int = BATCH_SIZE_TEACHER,
+                              seq_len: int = MAX_EXTRACTION_TOKENS,
+                              logit_chunk_size: int = 256):
+    """Multi-GPU extraction with work-stealing and lock-free part-file writes.
 
-    Usa threading porque las operaciones CUDA liberan el GIL,
-    permitiendo que ambas GPUs computen en paralelo.
-    Lock para escritura thread-safe al parquet compartido.
+    Work-stealing: both GPUs pull from a shared queue instead of static
+    partitioning. If one GPU gets slow docs, the other steals remaining work.
+    Part files: each flush writes a new file (O(1), no lock for I/O).
+    Parts are merged into one parquet at the end.
     """
+    from queue import Queue as _Q, Empty as _Empty
+
     output_path = Path(output_path)
-    lock = threading.Lock()
+    lock = threading.Lock()  # only for part counter (microseconds)
 
-    remaining_indices = list(range(start_idx, len(corpus_texts)))
-    # Interleave para balancear carga (docs largos/cortos distribuidos)
-    gpu_indices = [remaining_indices[i::n_gpus] for i in range(n_gpus)]
+    if preloaded_models is not None:
+        models = preloaded_models
+        print(f"[Extraction] Reusing {len(models)} pre-loaded models")
+    else:
+        print("[Extraction] Loading models sequentially...")
+        profile = detect_gpu_profile()
+        models = []
+        for gpu_id in range(n_gpus):
+            m, tok = load_teacher(device=f"cuda:{gpu_id}", profile=profile)
+            torch.cuda.empty_cache()
+            models.append((m, tok))
+        print("[Extraction] All models loaded.")
 
-    # Cargar modelos SECUENCIALMENTE para evitar OOM por carga paralela en GPU 0
-    print("[Extraction] Loading models sequentially...")
-    models = []
-    for gpu_id in range(n_gpus):
-        m, tok = load_teacher(device=f"cuda:{gpu_id}")
-        torch.cuda.empty_cache()
-        models.append((m, tok))
-    print("[Extraction] All models loaded. Starting parallel extraction...")
+    # Work-stealing queue: all valid doc indices in one shared queue
+    _work_q = _Q()
+    valid_indices = [i for i in range(start_idx, len(corpus_texts))
+                     if corpus_texts[i].strip()]
+    for i in valid_indices:
+        _work_q.put(i)
+    total_docs = len(valid_indices)
+    print(f"[Extraction] {total_docs} docs → work-stealing queue, {n_gpus} GPUs")
 
-    _FLUSH_EVERY = 50  # flush to parquet every N docs to limit RAM (~500MB vs ~7GB)
+    _FLUSH_EVERY = 50
+    _part_counter = [0]
 
-    def worker(gpu_id, doc_indices, model, tokenizer, batch_size: int = BATCH_SIZE_TEACHER):
+    def worker(gpu_id, model, tokenizer):
         batch_results = []
+        processed = 0
 
-        valid_indices = [i for i in doc_indices if corpus_texts[i].strip()]
+        while True:
+            # Pull next batch from shared queue (work-stealing)
+            batch_indices = []
+            for _ in range(batch_size):
+                try:
+                    batch_indices.append(_work_q.get_nowait())
+                except _Empty:
+                    break
+            if not batch_indices:
+                break
 
-        for batch_start in tqdm(range(0, len(valid_indices), batch_size),
-                                desc=f"GPU {gpu_id}", position=gpu_id):
-            batch_indices = valid_indices[batch_start:batch_start + batch_size]
-            batch_texts   = [corpus_texts[i] for i in batch_indices]
-
+            batch_texts = [corpus_texts[i] for i in batch_indices]
             batch_out = _extract_batch_with_oom_retry(
-                model, tokenizer, batch_texts, gpu_tag=f"GPU {gpu_id}")
+                model, tokenizer, batch_texts, gpu_tag=f"GPU {gpu_id}",
+                seq_len=seq_len, logit_chunk_size=logit_chunk_size)
 
             for i, result in zip(batch_indices, batch_out):
                 batch_results.append({
@@ -1536,32 +1834,42 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus):
                     'teacher_dim':    result['teacher_dim'],
                 })
             del batch_out
+            processed += len(batch_indices)
 
-            # Flush every N docs to keep RAM bounded
+            # Flush to part file (O(1) write, no read-merge, minimal lock)
             if len(batch_results) >= _FLUSH_EVERY:
                 with lock:
-                    _append_to_parquet(batch_results, output_path)
+                    pidx = _part_counter[0]; _part_counter[0] += 1
+                part_path = output_path.parent / f"{output_path.stem}_part{pidx:04d}.parquet"
+                _write_parquet_part(batch_results, part_path)
                 batch_results = []
                 gc.collect()
+                pct = min(100, int((total_docs - _work_q.qsize()) / total_docs * 100))
+                print(f"  [GPU {gpu_id}] {processed} docs done ({pct}%)", flush=True)
 
-        # Save remaining
+        # Flush remaining
         if batch_results:
             with lock:
-                _append_to_parquet(batch_results, output_path)
+                pidx = _part_counter[0]; _part_counter[0] += 1
+            part_path = output_path.parent / f"{output_path.stem}_part{pidx:04d}.parquet"
+            _write_parquet_part(batch_results, part_path)
             del batch_results
         gc.collect()
         torch.cuda.empty_cache()
-        print(f"  [GPU {gpu_id}] Extraction done", flush=True)
+        print(f"  [GPU {gpu_id}] Done — {processed} docs total", flush=True)
 
     threads = []
     for gpu_id in range(n_gpus):
         model, tokenizer = models[gpu_id]
-        t = threading.Thread(target=worker, args=(gpu_id, gpu_indices[gpu_id], model, tokenizer))
+        t = threading.Thread(target=worker, args=(gpu_id, model, tokenizer))
         threads.append(t)
         t.start()
 
     for t in threads:
         t.join()
+
+    # Merge all part files into single parquet
+    _merge_parquet_parts(output_path)
 
 
 # ============================================================
@@ -1573,9 +1881,19 @@ def _marginalize_one_row(row: dict) -> dict:
     text_bytes = bytes(row['text_bytes'])
     positions = json.loads(row['positions'])
 
+    # Teacher hidden alignment (for EmbeddingAligner, runs 13/15)
+    has_hidden = 'teacher_hidden' in row and row['teacher_hidden'] is not None
+    teacher_dim = row.get('teacher_dim', 0) if has_hidden else 0
+    if has_hidden:
+        hidden_flat = row['teacher_hidden']
+
+    # Autoregressive: pos[i] predicts what comes at positions[i+1]['byte_offset'].
+    # Store predictions at the *next* token's byte offset so patch boundary lookup is correct.
     byte_to_teacher = {}
-    for pos in positions:
-        byte_off = pos['byte_offset']
+    byte_offset_to_pos = {}
+    for idx, pos in enumerate(positions):
+        if idx + 1 >= len(positions):
+            break
         top_toks = pos['top_tokens']
         byte_probs = {}
         for item in top_toks:
@@ -1584,19 +1902,14 @@ def _marginalize_one_row(row: dict) -> dict:
             first_byte = item['bytes'][0]
             prob = math.exp(item['logprob'])
             byte_probs[first_byte] = byte_probs.get(first_byte, 0.0) + prob
+        if not byte_probs:
+            continue
         total = sum(byte_probs.values())
-        if total > 0:
-            byte_probs = {k: v / total for k, v in byte_probs.items()}
-        byte_to_teacher[byte_off] = byte_probs
-
-    # Teacher hidden alignment (for EmbeddingAligner, runs 13/15)
-    has_hidden = 'teacher_hidden' in row and row['teacher_hidden'] is not None
-    teacher_dim = row.get('teacher_dim', 0) if has_hidden else 0
-    byte_offset_to_pos = {}
-    if has_hidden:
-        for pos_idx, pos in enumerate(positions):
-            byte_offset_to_pos[pos['byte_offset']] = pos_idx
-        hidden_flat = row['teacher_hidden']
+        byte_probs = {k: v / total for k, v in byte_probs.items()}
+        next_byte_off = positions[idx + 1]['byte_offset']
+        byte_to_teacher[next_byte_off] = byte_probs
+        if has_hidden:
+            byte_offset_to_pos[next_byte_off] = idx
 
     n_patches = len(text_bytes) // PATCH_SIZE
     patches, targets, teacher_probs, teacher_mask = [], [], [], []
@@ -2194,10 +2507,16 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
         # Step 2: Extract logprobs (the slow part)
         n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        _gpu_profile = detect_gpu_profile()
         print(f"\n{'=' * 60}")
         print("STEP 2: Extracting teacher logprobs (Qwen-7B)")
+        print(f"  GPU: {_gpu_profile['name']}  ({_gpu_profile['vram_gb']:.1f} GB)  "
+              f"fp8={_gpu_profile['fp8']}  batch={_gpu_profile['batch_size']}  "
+              f"seq={_gpu_profile['max_tokens']}")
         if n_gpus >= 2:
             print(f"  {n_gpus} GPUs detectadas → extraccion en paralelo (~3-5 hours)")
+        elif _gpu_profile['fp8']:
+            print("  L4 detected → FP8 quantization, batch 8, ~2-3 hours")
         else:
             print("  (~6-10 hours on single T4, supports resume)")
         print(f"{'=' * 60}")
@@ -2245,77 +2564,165 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _next_forced_upload_min = 30  # first forced upload at 30 min
             _checkpoint_every = 5        # save checkpoint every N chunks
 
-            for chunk_start in range(0, len(texts), chunk_size):
-                chunk_end = min(chunk_start + chunk_size, len(texts))
-                chunk_texts = texts[chunk_start:chunk_end]
-                chunk_idx = chunk_start // chunk_size
+            # ---- Load teacher models ONCE (persist across all chunks) ----
+            _preloaded_models = []
+            for _gid in range(max(n_gpus, 1)):
+                _dev = f"cuda:{_gid}" if n_gpus > 0 else "cpu"
+                _m, _tok = load_teacher(device=_dev, profile=_gpu_profile)
+                torch.cuda.empty_cache()
+                _preloaded_models.append((_m, _tok))
+            print(f"[Pipeline] {len(_preloaded_models)} teacher(s) loaded "
+                  f"(persistent — no reload per chunk)")
+
+            # ---- Pipeline: GPU producer → queue → CPU consumer ----
+            # Queue depth 2: GPU can run 1 chunk ahead of the CPU consumer,
+            # so GPU never idles waiting for byte/BPE processing to finish.
+            # Each queued chunk is ~1-2 GB RAM (logprobs parquet); 2 slots = safe.
+            from queue import Queue as _Queue
+
+            _cpu_workers   = _gpu_profile.get('cpu_workers', 2)
+            _pipeline_q    = _Queue(maxsize=2)
+            _gpu_error = [None]
+
+            def _gpu_producer():
+                """Extract logprobs on GPU, push parquet paths to queue."""
+                try:
+                    for _cs in range(0, len(texts), chunk_size):
+                        _ce = min(_cs + chunk_size, len(texts))
+                        _ci = _cs // chunk_size
+                        if _ci < resume_from_chunk:
+                            continue
+                        _ctexts = texts[_cs:_ce]
+                        _tmp = Path(f'/tmp/logprobs_chunk_{_ci:04d}.parquet')
+                        print(f"\n  [GPU] Extracting chunk {_ci+1} "
+                              f"(docs {_cs}-{_ce-1})...", flush=True)
+                        run_logprob_extraction(
+                            _ctexts, str(_tmp), resume=False,
+                            preloaded_models=_preloaded_models)
+                        # Free activation/KV residue before queueing next chunk
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        _pipeline_q.put((_ci, _cs, _ce))
+                        del _ctexts
+                except Exception as _e:
+                    import traceback; traceback.print_exc()
+                    _gpu_error[0] = _e
+                finally:
+                    _pipeline_q.put(None)  # sentinel
+
+            _gpu_thread = threading.Thread(
+                target=_gpu_producer, name="gpu-producer", daemon=True)
+            _gpu_thread.start()
+
+            # chunk_idx init: needed by final checkpoint even if no chunks run
+            chunk_idx = max(0, resume_from_chunk - 1)
+            # Background upload thread (sealed shards run async while GPU extracts next)
+            _upload_thread = [None]
+
+            # CPU consumer: byte + BPE in parallel, then upload
+            while True:
+                _item = _pipeline_q.get()
+                if _item is None:
+                    break
+                chunk_idx, chunk_start, chunk_end = _item
+
+                # Wait for previous chunk's upload before writing new shards
+                if _upload_thread[0] is not None:
+                    _upload_thread[0].join()
+                    _upload_thread[0] = None
                 total_chunks += 1
 
-                if chunk_idx < resume_from_chunk:
-                    continue
-
                 print(f"\n{'=' * 60}")
-                print(f"CHUNK {chunk_idx+1}: docs {chunk_start}-{chunk_end-1} of {len(texts)}")
+                print(f"CHUNK {chunk_idx+1}: docs {chunk_start}-{chunk_end-1} "
+                      f"[CPU processing while GPU extracts next]")
                 print(f"{'=' * 60}")
 
-                # Extract logprobs for this chunk → temp file
                 tmp_parquet = Path(f'/tmp/logprobs_chunk_{chunk_idx:04d}.parquet')
-                run_logprob_extraction(chunk_texts, str(tmp_parquet), resume=False)
-
                 if not tmp_parquet.exists():
                     raise RuntimeError(
                         f"Extraction failed for chunk {chunk_idx}: "
-                        f"{tmp_parquet} was not created."
-                    )
+                        f"{tmp_parquet} was not created.")
 
-                # Byte-level dataset
-                print(f"\n  [Chunk {chunk_idx+1}] Building byte-level dataset...")
-                b_stats, byte_carry = build_byte_level_dataset(
-                    str(tmp_parquet), str(byte_dir),
-                    seq_offset=byte_seq_offset, carry_state=byte_carry,
-                )
+                # Run byte + BPE in parallel threads (both CPU-only, no VRAM)
+                _byte_res = [None]
+                _bpe_res = [None]
+                _cpu_errs = []
+
+                def _byte_worker(_bc=byte_carry, _bso=byte_seq_offset):
+                    try:
+                        _byte_res[0] = build_byte_level_dataset(
+                            str(tmp_parquet), str(byte_dir),
+                            seq_offset=_bso, carry_state=_bc,
+                            n_workers=_cpu_workers)
+                    except Exception as _e:
+                        _cpu_errs.append(("byte", _e))
+
+                def _bpe_worker(_pc=bpe_carry, _pso=bpe_seq_offset):
+                    try:
+                        _bpe_res[0] = build_bpe_dataset(
+                            str(tmp_parquet), str(bpe_dir),
+                            seq_offset=_pso, carry_state=_pc)
+                    except Exception as _e:
+                        _cpu_errs.append(("bpe", _e))
+
+                _bt = threading.Thread(target=_byte_worker, name="byte-proc")
+                _pt = threading.Thread(target=_bpe_worker, name="bpe-proc")
+                _bt.start(); _pt.start()
+                _bt.join();  _pt.join()
+
+                if _cpu_errs:
+                    for _n, _e in _cpu_errs:
+                        print(f"  [ERROR] {_n}: {_e}")
+                    raise _cpu_errs[0][1]
+
+                b_stats, byte_carry = _byte_res[0]
+                p_stats, bpe_carry = _bpe_res[0]
                 byte_seq_offset += b_stats['n_sequences']
+                bpe_seq_offset += p_stats['n_sequences']
                 total_byte_coverage += b_stats.get('coverage_pct', 0)
 
-                # Upload sealed byte shards
-                _upload_sealed_shards(byte_dir, api, DATASET_REPO,
-                                      "byte_marginalized", byte_seq_offset)
+                # Upload sealed shards in background (runs while GPU extracts next chunk)
+                def _do_sealed_upload(_bso=byte_seq_offset, _pso=bpe_seq_offset):
+                    _upload_sealed_shards(byte_dir, api, DATASET_REPO,
+                                          "byte_marginalized", _bso)
+                    _upload_sealed_shards(bpe_dir, api, DATASET_REPO,
+                                          "bpe_tokenized", _pso)
+                _upload_thread[0] = threading.Thread(
+                    target=_do_sealed_upload, daemon=True, name="upload")
+                _upload_thread[0].start()
 
-                # BPE dataset
-                print(f"  [Chunk {chunk_idx+1}] Building BPE dataset...")
-                p_stats, bpe_carry = build_bpe_dataset(
-                    str(tmp_parquet), str(bpe_dir),
-                    seq_offset=bpe_seq_offset, carry_state=bpe_carry,
-                )
-                bpe_seq_offset += p_stats['n_sequences']
-
-                # Upload sealed BPE shards
-                _upload_sealed_shards(bpe_dir, api, DATASET_REPO,
-                                      "bpe_tokenized", bpe_seq_offset)
-
-                # Periodic forced upload of ALL shards (including incomplete)
+                # Periodic forced upload (sync: needs all shards, wait for bg first)
                 elapsed_min = (time.time() - _pipeline_t0) / 60
                 if elapsed_min >= _next_forced_upload_min:
-                    print(f"\n  [FORCED UPLOAD @ {elapsed_min:.0f}min] Uploading all shards...")
-                    _upload_all_shards(byte_dir, api, DATASET_REPO, "byte_marginalized")
-                    _upload_all_shards(bpe_dir, api, DATASET_REPO, "bpe_tokenized")
+                    _upload_thread[0].join(); _upload_thread[0] = None
+                    print(f"\n  [FORCED UPLOAD @ {elapsed_min:.0f}min]")
+                    _upload_sealed_shards(byte_dir, api, DATASET_REPO, "byte_marginalized", byte_seq_offset)
+                    _upload_sealed_shards(bpe_dir, api, DATASET_REPO, "bpe_tokenized", bpe_seq_offset)
                     _next_forced_upload_min = elapsed_min + 30
 
-                # Delete temp logprobs chunk + free memory
+                # Cleanup temp logprobs (byte/BPE already consumed it)
                 tmp_parquet.unlink(missing_ok=True)
-                del chunk_texts
                 gc.collect()
                 if torch.cuda.is_available():
                     for _gi in range(torch.cuda.device_count()):
                         with torch.cuda.device(_gi):
                             torch.cuda.empty_cache()
-                print(f"  [Chunk {chunk_idx+1}] Done. Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs")
+                print(f"  [Chunk {chunk_idx+1}] Done. "
+                      f"Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs")
 
-                # Guardar checkpoint cada N chunks (no en cada uno)
+                # Guardar checkpoint cada N chunks
                 if (chunk_idx + 1) % _checkpoint_every == 0:
                     _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
                                             byte_seq_offset, bpe_seq_offset,
                                             byte_carry, bpe_carry)
+
+            _gpu_thread.join()
+            if _gpu_error[0]:
+                raise _gpu_error[0]
+
+            # Wait for last background upload to complete
+            if _upload_thread[0] is not None:
+                _upload_thread[0].join()
 
             # Final checkpoint before uploading remaining shards
             _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
@@ -2472,7 +2879,24 @@ if __name__ == "__main__":
         parser.add_argument('--hf-mount', action='store_true',
                             help="Write dataset directly to HF Bucket via hf-mount "
                                  "(no local copy, no upload step)")
+        parser.add_argument('--lightning-l4', action='store_true',
+                            help="Force L4 profile (Lightning AI 24GB L4): "
+                                 "BF16+FP8 quantization, batch 8, seq 4096")
         args = parser.parse_args()
+
+        if args.lightning_l4:
+            # Override detect_gpu_profile for the lifetime of this run
+            _l4_profile = {
+                'name': 'NVIDIA L4 (forced)', 'vram_gb': 24.0,
+                'batch_size': BATCH_SIZE_TEACHER_L4,
+                'max_tokens': MAX_EXTRACTION_TOKENS_L4,
+                'fp8': True, 'dtype': torch.bfloat16,
+                'logit_chunk_size': 512,
+                'cpu_workers': 4,
+            }
+            globals()['detect_gpu_profile'] = lambda: _l4_profile
+            print("[Config] --lightning-l4: L4 profile forced "
+                  f"(batch={BATCH_SIZE_TEACHER_L4}, seq={MAX_EXTRACTION_TOKENS_L4}, fp8=True)")
 
         if args.only_upload:
             upload_dataset_to_hub()

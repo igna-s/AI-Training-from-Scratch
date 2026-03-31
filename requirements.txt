@@ -21,6 +21,13 @@ bitsandbytes==0.49.2
 # Kaggle
 kaggle==2.0.0
 
+# Quantization / FP8 — needs >= 0.7.0 for Float8DynamicActivationFloat8WeightConfig
+# (0.1.0 does NOT have FP8 inference API — it would silently fall back to BF16)
+torchao>=0.7.0
+
+# Lightning AI
+lightning>=2.4.0
+
 # Utilities
 psutil==7.2.2
 tqdm==4.67.3
