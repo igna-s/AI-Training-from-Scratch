@@ -23,7 +23,7 @@ def test_ram_usage(model, n_tokens: int = 100):
 
     states = None
     dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
-    with torch.no_grad():
+    with torch.inference_mode():
         for _ in range(n_tokens):
             _, states = model(dummy, states)
 

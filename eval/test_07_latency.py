@@ -6,19 +6,34 @@ El p99 importa para experiencia de usuario (RAG interactivo).
 
 Metrica: ms por patch (p50, p95, p99)
 Criterio: p50 < 100ms, p99 < 500ms en CPU consumer
+
+Optimizacion multicore:
+  - torch.compile + inference_mode para minima latencia por token
+  - Modelo distribuido entre cores via ATen (OpenMP/MKL)
 """
 import time
 import torch
 
+try:
+    from helpers import optimize_model_for_inference
+except ImportError:
+    optimize_model_for_inference = lambda m: m
+
 
 def test_latency_distribution(model, n_tokens: int = 500):
-    model.eval()
+    model = optimize_model_for_inference(model)
     model.cpu()
     states = None
     dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
-    token_times = []
 
-    with torch.no_grad():
+    # Warmup (incluye compilacion de torch.compile)
+    with torch.inference_mode():
+        for _ in range(20):
+            _, states = model(dummy, states)
+
+    # Medir latencia por token
+    token_times = []
+    with torch.inference_mode():
         for _ in range(n_tokens):
             t0 = time.perf_counter()
             _, states = model(dummy, states)

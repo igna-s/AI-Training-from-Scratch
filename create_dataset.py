@@ -1044,8 +1044,9 @@ def detect_gpu_profile() -> dict:
         }
 
 
-# Lazy-initialized random orthogonal projection matrix
+# Lazy-initialized random orthogonal projection matrix (CPU) and per-device GPU cache
 _PROJECTION_MATRIX = None
+_PROJECTION_MATRIX_GPU: dict = {}  # device_str → GPU tensor, avoids re-transfer every batch
 
 def _get_projection_matrix(teacher_dim: int, align_dim: int = ALIGN_DIM):
     """Random orthogonal projection, seeded for reproducibility."""
@@ -1056,6 +1057,15 @@ def _get_projection_matrix(teacher_dim: int, align_dim: int = ALIGN_DIM):
         q, _ = np.linalg.qr(rand_mat)
         _PROJECTION_MATRIX = torch.from_numpy(q[:, :align_dim])
     return _PROJECTION_MATRIX
+
+
+def _get_projection_matrix_gpu(device, dtype):
+    """Return projection matrix cached on the given device+dtype. Transfers once per run."""
+    key = (str(device), dtype)
+    if key not in _PROJECTION_MATRIX_GPU:
+        cpu_proj = _get_projection_matrix(TEACHER_HIDDEN_DIM)
+        _PROJECTION_MATRIX_GPU[key] = cpu_proj.to(device=device, dtype=dtype)
+    return _PROJECTION_MATRIX_GPU[key]
 
 
 # ============================================================
@@ -1413,11 +1423,10 @@ def extract_logprobs_and_hidden_batch(
     # Projection on GPU: BF16 matmul [B,S,3584]×[3584,128] → ~14 MB result.
     # Old path moved 800 MB to CPU for a float32 matmul; this is 50× less data
     # and fires BF16 tensor cores instead of CPU SIMD.
-    proj = _get_projection_matrix(model.config.hidden_size)
-    proj_gpu = proj.to(device=captured['mid'].device, dtype=captured['mid'].dtype)
+    proj_gpu = _get_projection_matrix_gpu(captured['mid'].device, captured['mid'].dtype)
     with torch.no_grad():
-        mid_proj = (captured['mid'] @ proj_gpu).half().cpu()  # [B, S_pad, ALIGN_DIM]
-    del proj_gpu, captured['mid']
+        mid_proj = (captured['mid'] @ proj_gpu).cpu()  # [B, S_pad, ALIGN_DIM] — stays BF16
+    del captured['mid']
 
     # ── Chunked logit computation from last-layer hidden + final norm ─────
     with torch.no_grad():
@@ -1434,9 +1443,7 @@ def extract_logprobs_and_hidden_batch(
             log_p  = torch.log_softmax(logits, dim=-1)
             top_lp, top_idx = torch.topk(log_p, k=top_k, dim=-1)
             del logits, log_p
-            # Sync GPU before D2H transfer to avoid race condition
-            if chunk.is_cuda:
-                torch.cuda.synchronize()
+            # .cpu() implicitly synchronizes — no explicit sync needed
             all_top_idx.append(top_idx.cpu())
             all_top_lp.append(top_lp.cpu())
 
@@ -1560,7 +1567,7 @@ def run_logprob_extraction(
 
     GPU configs:
       Kaggle  2×T4 (15 GB each): 4-bit NF4, batch 2 per GPU, 2× parallel throughput
-      Lightning AI 1×L4 (24 GB): FP8 W8A8 via torchao, batch 8, Ada FP8 tensor cores
+      Lightning AI 1×L4 (24 GB): FP8 W8A8 via torchao, batch 14, Ada FP8 tensor cores
 
     Always extracts teacher hidden states (projected 5120→ALIGN_DIM)
     for EmbeddingAligner (runs 13, 15).
@@ -2445,7 +2452,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                        skip_extraction: bool = False,
                        use_hf_mount: bool = False,
                        stream_to_hub: bool = False,
-                       chunk_size: int = 1000, **_kwargs) -> None:
+                       chunk_size: int = 1000,
+                       gpu_profile_override: dict = None, **_kwargs) -> None:
     """
     Complete dataset construction pipeline.
 
@@ -2507,7 +2515,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
         # Step 2: Extract logprobs (the slow part)
         n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        _gpu_profile = detect_gpu_profile()
+        _gpu_profile = gpu_profile_override or detect_gpu_profile()
         print(f"\n{'=' * 60}")
         print("STEP 2: Extracting teacher logprobs (Qwen-7B)")
         print(f"  GPU: {_gpu_profile['name']}  ({_gpu_profile['vram_gb']:.1f} GB)  "
@@ -2516,7 +2524,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
         if n_gpus >= 2:
             print(f"  {n_gpus} GPUs detectadas → extraccion en paralelo (~3-5 hours)")
         elif _gpu_profile['fp8']:
-            print("  L4 detected → FP8 quantization, batch 8, ~2-3 hours")
+            print(f"  L4 detected → FP8 W8A8, batch {BATCH_SIZE_TEACHER_L4}, ~2-3 hours")
         else:
             print("  (~6-10 hours on single T4, supports resume)")
         print(f"{'=' * 60}")
@@ -2661,7 +2669,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                     try:
                         _bpe_res[0] = build_bpe_dataset(
                             str(tmp_parquet), str(bpe_dir),
-                            seq_offset=_pso, carry_state=_pc)
+                            seq_offset=_pso, carry_state=_pc,
+                            n_workers=_cpu_workers)
                     except Exception as _e:
                         _cpu_errs.append(("bpe", _e))
 
@@ -2881,12 +2890,12 @@ if __name__ == "__main__":
                                  "(no local copy, no upload step)")
         parser.add_argument('--lightning-l4', action='store_true',
                             help="Force L4 profile (Lightning AI 24GB L4): "
-                                 "BF16+FP8 quantization, batch 8, seq 4096")
+                                 f"FP8 W8A8 quantization, batch {BATCH_SIZE_TEACHER_L4}, seq {MAX_EXTRACTION_TOKENS_L4}")
         args = parser.parse_args()
 
+        _forced_profile = None
         if args.lightning_l4:
-            # Override detect_gpu_profile for the lifetime of this run
-            _l4_profile = {
+            _forced_profile = {
                 'name': 'NVIDIA L4 (forced)', 'vram_gb': 24.0,
                 'batch_size': BATCH_SIZE_TEACHER_L4,
                 'max_tokens': MAX_EXTRACTION_TOKENS_L4,
@@ -2894,7 +2903,6 @@ if __name__ == "__main__":
                 'logit_chunk_size': 512,
                 'cpu_workers': 4,
             }
-            globals()['detect_gpu_profile'] = lambda: _l4_profile
             print("[Config] --lightning-l4: L4 profile forced "
                   f"(batch={BATCH_SIZE_TEACHER_L4}, seq={MAX_EXTRACTION_TOKENS_L4}, fp8=True)")
 
@@ -2903,4 +2911,5 @@ if __name__ == "__main__":
         else:
             build_full_dataset(n_docs=args.n_docs,
                                skip_extraction=args.skip_extraction,
-                               use_hf_mount=args.hf_mount)
+                               use_hf_mount=args.hf_mount,
+                               gpu_profile_override=_forced_profile)

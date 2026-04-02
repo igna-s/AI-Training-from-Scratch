@@ -15,7 +15,7 @@ def test_determinism(model):
     patches = torch.randint(0, 256, (1, 64, 4), dtype=torch.uint8)
 
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         out1, states1 = model(patches, hidden_states=None)
         out2, states2 = model(patches, hidden_states=None)
 

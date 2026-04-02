@@ -6,7 +6,14 @@ Esta es la tabla mas importante del paper para justificar el diseno.
 
 Metrica: diferencia de perplexity y tokens/seg
 Criterio: reportar, no hay pass/fail — el resultado informa la decision
+
+Concurrencia: ThreadPoolExecutor para evaluar perplexity de ambos modelos
+en paralelo (2 workers, uno por modelo). La perplexity no mide timing
+asi que la contention de CPU es aceptable. El throughput se mide
+secuencialmente para precision.
 """
+from concurrent.futures import ThreadPoolExecutor
+
 from test_11_perplexity import test_perplexity
 from test_06_cpu_throughput import test_cpu_throughput
 
@@ -14,10 +21,21 @@ from test_06_cpu_throughput import test_cpu_throughput
 def test_fpresidual_ablation(model_with_fp, model_without_fp, test_dataset):
     results = {}
 
-    for name, m in [('con_fpresidual', model_with_fp),
-                    ('sin_fpresidual', model_without_fp)]:
-        ppl = test_perplexity(m, test_dataset)
-        tps = test_cpu_throughput(m)
+    # Perplexity en paralelo (2 workers, uno por modelo)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_fp = pool.submit(test_perplexity, model_with_fp, test_dataset)
+        future_nfp = pool.submit(test_perplexity, model_without_fp, test_dataset)
+        ppl_fp = future_fp.result()
+        ppl_nfp = future_nfp.result()
+
+    # Throughput secuencial (benchmark de timing preciso)
+    tps_fp = test_cpu_throughput(model_with_fp)
+    tps_nfp = test_cpu_throughput(model_without_fp)
+
+    for name, m, ppl, tps in [
+        ('con_fpresidual', model_with_fp, ppl_fp, tps_fp),
+        ('sin_fpresidual', model_without_fp, ppl_nfp, tps_nfp),
+    ]:
         ram = sum(p.numel() * 2 for p in m.parameters()) / 1e6
         results[name] = {'perplexity': ppl, 'tps': tps, 'ram_mb': ram}
 

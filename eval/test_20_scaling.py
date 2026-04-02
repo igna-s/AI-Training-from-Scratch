@@ -6,7 +6,13 @@ La perplexity debe bajar y el throughput debe mantenerse razonable.
 
 Metrica: PPL y TPS para ambos tamanos
 Criterio: PPL(170M) < PPL(50M), TPS(170M) > 5 patches/seg
+
+Concurrencia: ThreadPoolExecutor para evaluar perplexity de ambos modelos
+en paralelo (2 workers). El throughput se mide secuencialmente para
+precision en las mediciones de timing.
 """
+from concurrent.futures import ThreadPoolExecutor
+
 from test_11_perplexity import test_perplexity
 from test_06_cpu_throughput import test_cpu_throughput
 
@@ -14,8 +20,14 @@ from test_06_cpu_throughput import test_cpu_throughput
 def test_scaling(model_50m, model_170m, test_dataset):
     print("\n[Test 20] Scaling 50M -> 170M:")
 
-    ppl_50 = test_perplexity(model_50m, test_dataset)
-    ppl_170 = test_perplexity(model_170m, test_dataset)
+    # Perplexity en paralelo (no mide timing, contention es aceptable)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_50 = pool.submit(test_perplexity, model_50m, test_dataset)
+        future_170 = pool.submit(test_perplexity, model_170m, test_dataset)
+        ppl_50 = future_50.result()
+        ppl_170 = future_170.result()
+
+    # Throughput secuencial (benchmark de timing preciso)
     tps_50 = test_cpu_throughput(model_50m)
     tps_170 = test_cpu_throughput(model_170m)
 

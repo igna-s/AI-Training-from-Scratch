@@ -8,7 +8,11 @@ Baja entropia -> posiciones faciles -> poca ganancia de distilacion
 
 Metrica: entropia promedio de teacher_probs donde teacher_mask=True
 Criterio: entre 0.5 y 5.0 bits (rango informativo)
+
+Concurrencia: DataLoader con num_workers para carga de datos I/O en paralelo.
+Solapa la lectura del siguiente batch con el computo de entropia del actual.
 """
+import os
 import torch
 from torch.utils.data import DataLoader
 
@@ -16,7 +20,14 @@ from torch.utils.data import DataLoader
 def test_teacher_entropy(dataset, max_batches: int = 100):
     entropies = []
 
-    for i, batch in enumerate(DataLoader(dataset, batch_size=16)):
+    # DataLoader con workers paralelos para solapar I/O con compute
+    n_workers = max(0, min(2, (os.cpu_count() or 4) // 4))
+    loader_kwargs = {'batch_size': 16}
+    if n_workers > 0:
+        loader_kwargs['num_workers'] = n_workers
+        loader_kwargs['prefetch_factor'] = 2
+
+    for i, batch in enumerate(DataLoader(dataset, **loader_kwargs)):
         if i >= max_batches:
             break
         probs = batch['teacher_probs']  # [B, S, 256]

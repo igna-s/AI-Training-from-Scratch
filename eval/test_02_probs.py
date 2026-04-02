@@ -12,7 +12,7 @@ import torch
 def test_probability_distributions(model):
     model.eval()
     patches = torch.randint(0, 256, (1, 128, 4), dtype=torch.uint8)
-    with torch.no_grad():
+    with torch.inference_mode():
         logits, _ = model(patches)
     for i, head_logits in enumerate(logits):
         probs = torch.softmax(head_logits, dim=-1)

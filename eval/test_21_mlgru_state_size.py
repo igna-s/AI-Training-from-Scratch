@@ -14,7 +14,7 @@ def test_mlgru_state_size(model):
     model.eval()
 
     dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
-    with torch.no_grad():
+    with torch.inference_mode():
         _, states = model(dummy)
 
     state_bytes = sum(s.numel() * s.element_size() for s in states)

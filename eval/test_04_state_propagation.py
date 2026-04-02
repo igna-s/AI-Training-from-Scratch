@@ -16,13 +16,13 @@ def test_state_propagation(model):
 
     # Procesar completo
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         out_full, _ = model(full_seq)
 
     # Procesar en chunks de 32
     states = None
     chunk_outputs = []
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, 128, 32):
             chunk = full_seq[:, i:i+32, :]
             out_chunk, states = model(chunk, states)

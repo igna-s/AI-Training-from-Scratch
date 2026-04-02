@@ -9,20 +9,35 @@ Criterio: CV < 0.3 (30% de variacion es aceptable)
 
 Causa comun de jitter alto: allocaciones en el generate loop.
 Si falla este test: revisar pre-allocacion de buffers (prompt 06).
+
+Optimizacion multicore:
+  - torch.compile + inference_mode para minima varianza
+  - Modelo distribuido entre cores via ATen (OpenMP/MKL)
 """
 import time
 import statistics
 import torch
 
+try:
+    from helpers import optimize_model_for_inference
+except ImportError:
+    optimize_model_for_inference = lambda m: m
+
 
 def test_latency_jitter(model, n_tokens: int = 200):
-    model.eval()
+    model = optimize_model_for_inference(model)
     model.cpu()
     states = None
     dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
-    times = []
 
-    with torch.no_grad():
+    # Warmup (incluye compilacion de torch.compile)
+    with torch.inference_mode():
+        for _ in range(20):
+            _, states = model(dummy, states)
+
+    # Medir jitter
+    times = []
+    with torch.inference_mode():
         for _ in range(n_tokens):
             t0 = time.perf_counter()
             _, states = model(dummy, states)

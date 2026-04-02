@@ -7,7 +7,12 @@ senal del teacher para training util.
 Metrica: % de posiciones con teacher_mask=True
 Criterio: > 15% (si es menor, la distilacion no aporta)
           Rango tipico esperado: 20-35% para ingles
+
+Concurrencia: DataLoader con num_workers para carga de datos I/O en paralelo.
+El procesamiento por batch es trivial (sum de mask), asi que el cuello de
+botella es la lectura de datos que se solapa con el compute.
 """
+import os
 from torch.utils.data import DataLoader
 
 
@@ -15,7 +20,14 @@ def test_teacher_coverage(dataset):
     total = 0
     with_teacher = 0
 
-    for batch in DataLoader(dataset, batch_size=32):
+    # DataLoader con workers paralelos para solapar I/O
+    n_workers = max(0, min(2, (os.cpu_count() or 4) // 4))
+    loader_kwargs = {'batch_size': 32}
+    if n_workers > 0:
+        loader_kwargs['num_workers'] = n_workers
+        loader_kwargs['prefetch_factor'] = 2
+
+    for batch in DataLoader(dataset, **loader_kwargs):
         mask = batch['teacher_mask']  # [B, S] bool
         total += mask.numel()
         with_teacher += mask.sum().item()

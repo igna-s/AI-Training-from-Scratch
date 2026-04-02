@@ -6,26 +6,36 @@ Cuantifica el argumento central del paper: MLGRU > Transformer en CPU.
 
 Metrica: tokens/seg CPU, RAM de estado (KV cache vs MLGRU state)
 Criterio: MLGRU debe ser al menos 2x mas rapido en contextos largos
+
+Optimizacion multicore:
+  - torch.compile + inference_mode para ambos modelos
+  - Cada modelo usa todos los cores via ATen (OpenMP/MKL)
+  - Los benchmarks se ejecutan secuencialmente (uno a la vez)
+    para mediciones limpias sin contention
 """
 import time
 import torch
 
+try:
+    from helpers import optimize_model_for_inference
+except ImportError:
+    optimize_model_for_inference = lambda m: m
+
 
 def _measure_tps_after_prefill(model, ctx_len: int, n_tokens: int = 100):
     """Mide tokens/seg despues de un prefill de ctx_len patches."""
-    model.eval()
     model.cpu()
 
     if ctx_len > 0:
         ctx = torch.zeros(1, ctx_len, 4, dtype=torch.uint8)
-        with torch.no_grad():
+        with torch.inference_mode():
             _, states = model(ctx)
     else:
         states = None
 
     dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
     t0 = time.perf_counter()
-    with torch.no_grad():
+    with torch.inference_mode():
         for _ in range(n_tokens):
             _, states = model(dummy, states)
     return n_tokens / (time.perf_counter() - t0)
@@ -35,6 +45,18 @@ def test_mlgru_vs_transformer(transformer_model, mlgru_model,
                                ctx_lengths=None):
     if ctx_lengths is None:
         ctx_lengths = [0, 512, 2048]
+
+    # Optimizar ambos modelos (compilacion + fusion de kernels)
+    transformer_model = optimize_model_for_inference(transformer_model)
+    mlgru_model = optimize_model_for_inference(mlgru_model)
+
+    # Warmup de ambos modelos (trigger compilacion torch.compile)
+    dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
+    with torch.inference_mode():
+        _, st = transformer_model(dummy)
+        transformer_model(dummy, st)
+        _, st = mlgru_model(dummy)
+        mlgru_model(dummy, st)
 
     print("\n[Test 16] MLGRU vs Transformer en CPU:")
     print(f"{'Contexto':>10} {'Transformer':>12} {'MLGRU':>10} {'Speedup':>8}")

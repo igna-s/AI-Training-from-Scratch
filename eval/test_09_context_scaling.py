@@ -7,29 +7,51 @@ Un Transformer degradaria por el KV cache.
 
 Metrica: tokens/seg para prefill lengths [0, 512, 2048, 8192]
 Criterio: variacion < 20% entre el contexto corto y largo
+
+Concurrencia: Prefill de los 4 contextos en paralelo con ThreadPoolExecutor
+(la fase costosa de preparacion). El benchmark de generacion se ejecuta
+estrictamente secuencial para mediciones de timing precisas.
 """
+import os
 import time
 import torch
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def test_throughput_vs_context(model):
     model.eval()
     model.cpu()
-    results = {}
 
-    for ctx_len in [0, 512, 2048, 8192]:
-        # Hacer prefill con ctx_len patches
+    ctx_lengths = [0, 512, 2048, 8192]
+
+    # --- Fase 1: Prefill en paralelo (no es benchmark de timing) ---
+    def _prefill(ctx_len):
         if ctx_len > 0:
             ctx = torch.zeros(1, ctx_len, 4, dtype=torch.uint8)
-            with torch.no_grad():
+            with torch.inference_mode():
                 _, states = model(ctx)
-        else:
-            states = None
+            return states
+        return None
 
-        # Medir throughput de generacion
-        dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
+    logical = os.cpu_count() or 4
+    intra = torch.get_num_threads() or max(1, logical // 2)
+    n_workers = max(1, logical // intra)
+
+    prefilled = {}
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_prefill, c): c for c in ctx_lengths}
+        for future in as_completed(futures):
+            ctx = futures[future]
+            prefilled[ctx] = future.result()
+
+    # --- Fase 2: Benchmark secuencial (timing preciso, sin contention) ---
+    results = {}
+    dummy = torch.zeros(1, 1, 4, dtype=torch.uint8)
+
+    for ctx_len in ctx_lengths:
+        states = prefilled[ctx_len]
         t0 = time.perf_counter()
-        with torch.no_grad():
+        with torch.inference_mode():
             for _ in range(100):
                 _, states = model(dummy, states)
         tps = 100 / (time.perf_counter() - t0)

@@ -219,13 +219,34 @@ def benchmark_context_scaling(model, tokenizer, max_ctx=None):
 
 
 def _kv_cache_bytes(past_kv):
-    """Bytes totales del KV cache."""
-    total = 0
-    for layer_kv in past_kv:
-        for t in layer_kv:
-            if t is not None:
-                total += t.numel() * t.element_size()
-    return total
+    """Bytes totales del KV cache. Soporta caches estandar e hibridas."""
+    def _collect(obj, visited=None):
+        if visited is None:
+            visited = set()
+        oid = id(obj)
+        if oid in visited:
+            return 0
+        visited.add(oid)
+        if isinstance(obj, torch.Tensor):
+            return obj.numel() * obj.element_size()
+        total = 0
+        if isinstance(obj, (list, tuple)):
+            for item in obj:
+                total += _collect(item, visited)
+        elif hasattr(obj, '__dict__'):
+            for v in obj.__dict__.values():
+                total += _collect(v, visited)
+        return total
+
+    try:
+        total = 0
+        for layer_kv in past_kv:
+            for t in layer_kv:
+                if t is not None:
+                    total += t.numel() * t.element_size()
+        return total
+    except TypeError:
+        return _collect(past_kv)
 
 
 def _get_arch_info(model):
@@ -512,7 +533,7 @@ def write_markdown(path, model_name, n_params, hw, arch, correctness, tps,
         f"| 18 | Teacher entropy | {_r(t['18'])} | — | 0.5-5.0 bits |",
         f"| 19 | Benchmark completo | {_r(t['19'])} | — | reportar |",
         f"| 20 | Scaling 50M/170M | {_r(t['20'])} | — | PPL baja |",
-        f"| 21 | Estado/KV cache | {_r(t['21'])} | {kv_sorted[-1][1]:.2f} MB ({kv_sorted[-1][0]} tok) | < 1GB |",
+        f"| 21 | Estado/KV cache | {_r(t['21'])} | {f'{kv_sorted[-1][1]:.2f} MB ({kv_sorted[-1][0]} tok)' if kv_sorted else 'N/A'} | < 1GB |",
         "",
         "---",
         "",
@@ -656,6 +677,9 @@ def write_markdown(path, model_name, n_params, hw, arch, correctness, tps,
 
 
 def main():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     parser = argparse.ArgumentParser(
         description="Benchmark de modelo externo en CPU"
     )
@@ -677,6 +701,9 @@ def main():
     process = psutil.Process(os.getpid())
     hw = get_hardware_info()
 
+    # Detectar cores fisicos y configurar threads optimos
+    physical_cores = max(1, (os.cpu_count() or 2) // 2)  # sin HT
+
     # Cargar modelo
     print(f"Cargando {args.model}...")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -685,32 +712,55 @@ def main():
     model.cpu()
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Parametros: {n_params/1e6:.1f}M")
+    print(f"Parametros: {n_params/1e6:.1f}M  |  Cores fisicos: {physical_cores}")
 
     prompt = "The history of artificial intelligence began"
     input_ids = tokenizer.encode(prompt, return_tensors='pt')
 
     arch = _get_arch_info(model)
 
-    # Warmup
+    # Warmup con threads completos
+    torch.set_num_threads(physical_cores)
     print("Warmup...")
     with torch.no_grad():
         for _ in range(5):
             _ = model(input_ids)
 
-    # Benchmarks
-    print("[1/9] Correctitud (forward, probs, determinismo)...")
-    correctness = benchmark_correctness(model, tokenizer)
+    # -------------------------------------------------------------------------
+    # FASE 1 — Tests independientes de calidad/correctitud en paralelo (2 workers)
+    # Cada worker usa physical_cores//2 threads para no saturar la CPU.
+    # -------------------------------------------------------------------------
+    _p1_threads = max(1, physical_cores // 2)
+    print(f"\n[FASE 1] Correctitud + Perplexity en paralelo "
+          f"(2 workers x {_p1_threads} torch-threads)...")
+
+    def _run_correctness():
+        torch.set_num_threads(_p1_threads)
+        return benchmark_correctness(model, tokenizer)
+
+    def _run_perplexity():
+        torch.set_num_threads(_p1_threads)
+        return benchmark_perplexity(model, tokenizer)
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_cor = ex.submit(_run_correctness)
+        f_ppl = ex.submit(_run_perplexity)
+        correctness = f_cor.result()
+        ppl = f_ppl.result()
+
     for name, r in correctness.items():
-        print(f"  -> {name}: {'PASS' if r['pass'] else 'FAIL'}")
+        status = 'PASS' if r['pass'] is True else ('N/A' if r['pass'] is None else 'FAIL')
+        print(f"  [01-05] {name}: {status}")
+    print(f"  [11]    PPL={ppl['perplexity']:.2f} (loss={ppl['loss']:.4f})")
 
-    print("[2/9] Perplexity...")
-    ppl = benchmark_perplexity(model, tokenizer)
-    print(f"  -> PPL={ppl['perplexity']:.2f} (loss={ppl['loss']:.4f})")
+    # -------------------------------------------------------------------------
+    # FASE 2 — Tests de rendimiento secuenciales con todos los cores
+    # El timing necesita recursos exclusivos para ser preciso.
+    # -------------------------------------------------------------------------
+    torch.set_num_threads(physical_cores)
+    print(f"\n[FASE 2] Tests de rendimiento secuenciales ({physical_cores} torch-threads)...")
 
-    print("[3/9] Throughput...")
-    tps_median = benchmark_throughput(model, input_ids, args.n_tokens, args.n_runs)
-    # Run again to get all values for reporting
+    print("  [3/4] Throughput + Prefill...")
     tps_all = []
     for _ in range(args.n_runs):
         past_kv = None
@@ -733,39 +783,67 @@ def main():
         'n_tokens': args.n_tokens,
         'n_runs': args.n_runs,
     }
-    print(f"  -> {tps['median']:.1f} tok/seg (best={tps['best']:.1f}, worst={tps['worst']:.1f})")
+    print(f"    throughput mediana={tps['median']:.1f} tok/s "
+          f"(best={tps['best']:.1f}, worst={tps['worst']:.1f})")
 
-    print("[4/9] Prefill speed...")
     prefill = benchmark_prefill(model, tokenizer)
     for length, data in sorted(prefill.items()):
-        print(f"  -> len={length}: {data['ms']:.1f}ms ({data['tok_per_sec']:.0f} tok/seg)")
+        print(f"    prefill len={length}: {data['ms']:.1f}ms "
+              f"({data['tok_per_sec']:.0f} tok/s)")
 
-    print("[5/9] Latencia + jitter...")
+    print("  [5/6] Latencia + Scaling de contexto...")
     latency = benchmark_latency(model, input_ids)
-    print(f"  -> p50={latency['p50']:.2f}ms  p99={latency['p99']:.2f}ms  CV={latency['cv']:.3f}")
+    print(f"    p50={latency['p50']:.2f}ms  p99={latency['p99']:.2f}ms  "
+          f"CV={latency['cv']:.3f}")
 
-    print("[6/9] Scaling de contexto...")
     ctx = benchmark_context_scaling(model, tokenizer)
     for c, t in sorted(ctx.items()):
-        print(f"  -> ctx={c}: {t:.1f} tok/seg")
+        print(f"    ctx={c}: {t:.1f} tok/s")
 
-    print("[7/9] RAM...")
-    ram = benchmark_ram(model, process)
-    print(f"  -> modelo={ram['model_mb']:.1f}MB  proceso={ram['process_mb']:.0f}MB")
+    # -------------------------------------------------------------------------
+    # FASE 3 — RAM, KV cache, generacion y muestras en paralelo (3 workers)
+    # -------------------------------------------------------------------------
+    _p3_threads = max(1, physical_cores // 3)
+    print(f"\n[FASE 3] RAM + KV cache + Generacion en paralelo "
+          f"(3 workers x {_p3_threads} torch-threads)...")
 
-    print("[8/9] KV cache scaling...")
-    kv_cache = benchmark_kv_cache(model)
+    def _run_ram():
+        torch.set_num_threads(_p3_threads)
+        return benchmark_ram(model, process)
+
+    def _run_kv():
+        torch.set_num_threads(_p3_threads)
+        try:
+            return benchmark_kv_cache(model)
+        except Exception as e:
+            print(f"    KV cache N/A: {e}")
+            return {}
+
+    def _run_gen():
+        torch.set_num_threads(_p3_threads)
+        return benchmark_generation_quality(model, tokenizer)
+
+    def _run_sample():
+        torch.set_num_threads(_p3_threads)
+        return generate_sample(model, tokenizer)
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_ram = ex.submit(_run_ram)
+        f_kv = ex.submit(_run_kv)
+        f_gen = ex.submit(_run_gen)
+        f_sample = ex.submit(_run_sample)
+        ram = f_ram.result()
+        kv_cache = f_kv.result()
+        gen_quality = f_gen.result()
+        sample = f_sample.result()
+
+    print(f"  [10] modelo={ram['model_mb']:.1f}MB  proceso={ram['process_mb']:.0f}MB  "
+          f"delta={ram['ram_delta_mb']:.1f}MB")
     for n_tok, mb in sorted(kv_cache.items()):
-        print(f"  -> {n_tok} tokens: {mb:.2f}MB")
-
-    print("[9/9] Calidad de generacion...")
-    gen_quality = benchmark_generation_quality(model, tokenizer)
-    print(f"  -> printable={gen_quality['pct_printable']*100:.1f}%  "
-          f"repeticion={gen_quality['repeat_ratio']*100:.1f}%  "
+        print(f"  [21] {n_tok} tokens: {mb:.2f}MB")
+    print(f"  [12] printable={gen_quality['pct_printable']*100:.1f}%  "
+          f"rep={gen_quality['repeat_ratio']*100:.1f}%  "
           f"utf8={gen_quality['utf8_pct']*100:.1f}%")
-
-    print("Generando muestras...")
-    sample = generate_sample(model, tokenizer)
 
     # Nombre de archivo
     safe_name = re.sub(r'[/\\:*?"<>|]', '_', args.model.rstrip('/').split('/')[-1])

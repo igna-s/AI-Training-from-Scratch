@@ -24,14 +24,14 @@ def test_generation_quality(model, n_chars: int = 500):
     # Prefill
     patches = bytes_to_patches(prompt)
     states = None
-    with torch.no_grad():
+    with torch.inference_mode():
         _, states = model(patches, states)
 
     # Generar
     generated = []
     last_patch = patches[:, -1:, :]
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for _ in range(n_chars // 4):
             logits, states = model(last_patch, states)
             next_bytes = [logits[i][0, 0].argmax().item() for i in range(4)]

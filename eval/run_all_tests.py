@@ -9,10 +9,15 @@ Uso:
       --model-transformer checkpoints/run_01.pt \\
       --model-no-fp checkpoints/run_11.pt
 """
+import os
+import sys
+
+# Intel MKL/OpenMP: DEBE configurarse antes de importar torch
+os.environ.setdefault('KMP_AFFINITY', 'granularity=fine,compact,1,0')
+os.environ.setdefault('KMP_BLOCKTIME', '0')
+
 import argparse
 import json
-import sys
-import os
 import time
 import platform
 from pathlib import Path
