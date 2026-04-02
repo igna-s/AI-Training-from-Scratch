@@ -94,15 +94,73 @@ def get_dataloader_workers() -> int:
 _compile_cache = {}
 
 
+def _setup_msvc_env() -> bool:
+    """Configura INCLUDE/LIB/CXX para cl.exe en Windows si no estan seteados.
+
+    Busca VS Build Tools en D:\\Programas\\BuildTools y el Windows SDK en
+    C:\\Program Files (x86)\\Windows Kits\\10.  Solo actua si INCLUDE no
+    esta ya configurado (e.g. vcvarsall.bat ya fue llamado externamente).
+    Retorna True si el entorno quedo listo, False si no se encontraron los paths.
+    """
+    if not sys.platform.startswith('win'):
+        return False
+    if os.environ.get('INCLUDE'):
+        return True  # ya configurado
+
+    import glob as _glob
+
+    # Localizar MSVC
+    msvc_base = r'D:\Programas\BuildTools\VC\Tools\MSVC'
+    if not os.path.isdir(msvc_base):
+        return False
+    versions = sorted(os.listdir(msvc_base), reverse=True)
+    if not versions:
+        return False
+    msvc_root = os.path.join(msvc_base, versions[0])
+
+    # Localizar Windows SDK
+    sdk_include_base = r'C:\Program Files (x86)\Windows Kits\10\Include'
+    if not os.path.isdir(sdk_include_base):
+        return False
+    sdk_versions = sorted(os.listdir(sdk_include_base), reverse=True)
+    if not sdk_versions:
+        return False
+    sdk_ver = sdk_versions[0]
+    sdk_include = os.path.join(sdk_include_base, sdk_ver)
+    sdk_lib = os.path.join(r'C:\Program Files (x86)\Windows Kits\10\Lib', sdk_ver)
+
+    include = ';'.join([
+        os.path.join(msvc_root, 'include'),
+        os.path.join(sdk_include, 'ucrt'),
+        os.path.join(sdk_include, 'um'),
+        os.path.join(sdk_include, 'shared'),
+    ])
+    lib = ';'.join([
+        os.path.join(msvc_root, 'lib', 'x64'),
+        os.path.join(sdk_lib, 'ucrt', 'x64'),
+        os.path.join(sdk_lib, 'um', 'x64'),
+    ])
+    cl_exe = os.path.join(msvc_root, 'bin', 'Hostx64', 'x64', 'cl.exe')
+
+    if not os.path.isfile(cl_exe):
+        return False
+
+    os.environ['INCLUDE'] = include
+    os.environ['LIB'] = lib
+    os.environ.setdefault('CXX', cl_exe)
+    return True
+
+
 def optimize_model_for_inference(model):
     """Optimiza modelo para maximo throughput en CPU multicore.
 
-    - torch.compile: fusiona kernels, elimina overhead Python/autograd
+    - torch.compile con inductor + cl.exe: genera codigo AVX2/AVX-512
+      vectorizado y fusiona kernels (elimina overhead Python/autograd)
+    - Configura entorno MSVC automaticamente si no esta activado
     - Cachea compilacion por modelo (id) para evitar recompilar entre tests
-    - El modelo se distribuye entre todos los cores via ATen (OpenMP/MKL)
     - Compatible con inference_mode() para eliminar dispatch overhead
 
-    Fallback: retorna modelo original si torch.compile no esta disponible.
+    Fallback a eager si torch.compile no esta disponible o falla.
     """
     model_id = id(model)
     if model_id in _compile_cache:
@@ -113,8 +171,11 @@ def optimize_model_for_inference(model):
 
     if hasattr(torch, 'compile'):
         try:
+            _setup_msvc_env()
+            if hasattr(torch, '_dynamo'):
+                torch._dynamo.config.suppress_errors = True
             result = torch.compile(model)
-            print("[CPU opt] torch.compile activado")
+            print("[CPU opt] torch.compile activado (inductor + cl.exe)")
         except Exception as e:
             print(f"[CPU opt] torch.compile no disponible: {e}")
 
