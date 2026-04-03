@@ -2589,7 +2589,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             from queue import Queue as _Queue
 
             _cpu_workers   = _gpu_profile.get('cpu_workers', 2)
-            _pipeline_q    = _Queue(maxsize=15)
+            _pipeline_q    = _Queue(maxsize=100)
             _gpu_error = [None]
 
             def _gpu_producer():
