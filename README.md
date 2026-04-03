@@ -275,10 +275,20 @@ output = engine.generate(b"Buenos dias", max_bytes=200)
 │   ├── benchmark_external.py    # External model comparison
 │   ├── bpe_vs_bytebatch_benchmark.py
 │   ├── helpers.py
-│   └── test_01_forward.py … test_21_mlgru_state_size.py
+│   ├── test_01_forward.py … test_21_mlgru_state_size.py
+│   └── test_26_benchmark_llama_cpp.py  # llama-bench native benchmark
+│
+│  llama.cpp
+├── llamacpp/                # llama.cpp source + builds
+│   ├── build_optimized/     #   GCC + AVX2 + FMA + Ninja (-march=native -O3)
+│   └── build_ninja/         #   Previous Ninja build
+│
+│  Models (GGUF)
+├── models/
+│   ├── LFM2-350M-GGUF/      # LFM2-350M Q4_K_M (219 MB) — mlGRU architecture
+│   └── distilgpt2-GGUF/     # distilgpt2 Q4_K_M (60 MB) — transformer baseline
 │
 │  Results & Reference
-├── models/distilgpt2/    # Local distilgpt2 (82M) used as eval baseline
 ├── checkpoints/          # Training checkpoints
 ├── resultados/           # Benchmark reports (markdown) per model
 ├── papers/               # Reference PDFs
@@ -314,6 +324,7 @@ python eval/run_all_tests.py --model checkpoints/run_10.pt --dataset path/ \
 | Training | 14 convergence |
 | Ablation | 15 FPResidual, 16 MLGRU vs Transformer, 17 teacher coverage, 18 teacher entropy |
 | Full | 19 benchmark, 20 scaling, 21 MLGRU state / KV cache |
+| llama.cpp | 26 native benchmark (llama-bench, 900 prefill / 100 decode) |
 
 **Baseline (distilgpt2, 82M FP32, local CPU):**
 
@@ -326,6 +337,80 @@ python eval/run_all_tests.py --model checkpoints/run_10.pt --dataset path/ \
 | UTF-8 valid | 100% |
 
 Full report: [`resultados/distilgpt2.md`](resultados/distilgpt2.md)
+
+---
+
+## llama.cpp Optimization Analysis — LFM2-350M on i7-8750H
+
+Systematic optimization and benchmarking of the LFM2-350M model running via llama.cpp on consumer CPU hardware (Intel i7-8750H, 6C/12T, Coffee Lake).
+
+### Build Optimization
+
+The llama.cpp project was compiled from source with full CPU optimization:
+
+```
+cmake -G Ninja -B build_optimized \
+  -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+  -DCMAKE_C_FLAGS="-march=native -O3" \
+  -DCMAKE_CXX_FLAGS="-march=native -O3" \
+  -DGGML_NATIVE=ON
+```
+
+Verified via `CMakeCache.txt`: `-march=native` activates **AVX2 + FMA** on this CPU (Coffee Lake does **not** support AVX-512). Build completed successfully (272/272 targets).
+
+### Runtime Configurations Tested
+
+| Config | Threads | mmap | flash-attn | KV cache | Priority | Batch |
+|---|---|---|---|---|---|---|
+| ULTRA | 1 | OFF | ON | q8_0 | REALTIME | 2048 |
+| OPTIMAL | 1 | OFF | OFF | q8_0 | HIGH | 2048 |
+| BASELINE | 1 | default | OFF | f16 | default | default |
+
+Methodology: 900 tokens prefill + 100 tokens decode × 3 repetitions (matching [LiquidAI's official benchmark](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF)).
+
+### Benchmark Results
+
+| Model | Quant | Decode (tok/s) | Config | Notes |
+|---|---|---|---|---|
+| **distilgpt2 (82M)** | Q4_K_M | **141.7** | ULTRA | Transformer — parallelizable |
+| **LFM2-350M** | Q4_K_M | **~41** | ULTRA | mlGRU — sequential decode |
+
+### Comparison vs Official Benchmarks
+
+| Device | Inference | Framework | Prefill | Decode | Bandwidth |
+|---|---|---|---|---|---|
+| AMD Ryzen AI Max 395+ | CPU | llama.cpp (Q4) | 2,900 | 313 | ~128 GB/s |
+| Apple M5 Max | GPU | Mirai (bf16) | 44,800 | 564 | ~546 GB/s |
+| Apple M1 Max | GPU | Mirai (bf16) | 10,400 | 328 | ~200 GB/s |
+| Apple A18 Pro | GPU | Mirai (bf16) | 1,953 | 73 | ~75 GB/s |
+| Raspberry Pi5 | CPU | Cactus (int8) | 200 | 30 | ~8 GB/s |
+| **i7-8750H (this repo)** | **CPU** | **llama.cpp (Q4)** | **—** | **~41** | **~38 GB/s** |
+
+### Root Cause Analysis
+
+Two hardware/architecture bottlenecks limit decode throughput:
+
+**1. mlGRU sequential dependency.** The LFM2 architecture uses mlGRU (MatMul-free GRU) for token mixing. Each decode step depends on the hidden state from the previous step — this is inherently sequential and cannot be parallelized. By contrast, transformer models (like distilgpt2) with KV-cache allow parallel computation within each decode step. This architectural difference explains the **3.6× gap** between distilgpt2 (141.7 tok/s) and LFM2-350M (~41 tok/s) despite LFM2 being only 2.7× larger.
+
+**2. Memory bandwidth ceiling.** Decode throughput is memory-bandwidth-bound (streaming weights from RAM each token). This system has **mismatched DIMMs** (2667 MHz + 2400 MHz), forcing the memory controller to operate at the slower speed with potential additional timing penalties. Theoretical peak: ~38.4 GB/s. The AMD Ryzen AI Max 395+ has ~128 GB/s (DDR5) — a **3.4× advantage** in raw bandwidth, compounded by AVX-512 (2× SIMD width) and superior Zen5 IPC.
+
+**Why do Apple chips achieve 300+ tok/s?** They run on **GPU** (Metal) with **Mirai** framework using **bf16** weights — not llama.cpp on CPU. The M5 Max has ~546 GB/s bandwidth (14× more than this system). The sequential nature of mlGRU remains, but each sequential step executes in microseconds instead of milliseconds due to the massive bandwidth advantage.
+
+### Key Finding
+
+> The build_optimized and previous build_ninja builds already had `-march=native` active — **AVX2 was never missing**. The performance ceiling is imposed by the mlGRU architecture and memory bandwidth, not by compiler flags or runtime configuration.
+
+### Paths to 100+ tok/s
+
+| Strategy | Expected Impact | Effort |
+|---|---|---|
+| **Upgrade to LFM2.5-350M** | ~2× faster decode (hybrid arch, less sequential) | Download new GGUF |
+| Re-quantize to Q4_0 | +5–15% (simpler kernel, less compute overhead) | Run `llama-quantize` |
+| Use llamafile | +10–30% prefill, marginal decode gain (tinyBLAS kernels) | Download binary |
+| Match RAM DIMMs (2×2667) | +10% bandwidth (eliminate timing penalty) | Hardware upgrade |
+| **All combined** | **~100–140 tok/s estimate** | — |
+
+For this project's CPU-1 model (fully ternary MLGRU), the bottleneck analysis confirms the architecture choice is sound for the target use case: streaming generation on CPU with minimal memory footprint (28 KB recurrent state vs 80 MB KV cache). The tradeoff is lower peak tok/s compared to transformer architectures, compensated by constant-memory inference regardless of context length.
 
 ---
 

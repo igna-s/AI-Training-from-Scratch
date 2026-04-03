@@ -54,3 +54,8 @@ Thumbs.db
 # Project-specific
 Prompts/
 prompts/
+
+# Large Files & External Repos
+models/
+llamacpp/
+

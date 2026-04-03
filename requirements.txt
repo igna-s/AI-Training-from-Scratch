@@ -28,6 +28,10 @@ torchao>=0.7.0
 # Lightning AI
 lightning>=2.4.0
 
+# llama.cpp Python bindings (CPU inference, compilado con AVX2 para Coffee Lake+)
+# Instalar con: pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu-avx2
+llama-cpp-python==0.3.19
+
 # Utilities
 psutil==7.2.2
 tqdm==4.67.3

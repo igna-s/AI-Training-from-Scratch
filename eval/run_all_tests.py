@@ -60,6 +60,13 @@ from test_19_full_benchmark import test_full_benchmark
 from test_20_scaling import test_scaling
 from test_21_mlgru_state_size import test_mlgru_state_size
 
+# Tests 22-26: benchmarks adicionales
+from test_22_eval_cpu_raw import test_eval_cpu_raw
+from test_23_bpe_vs_bytebatch import test_bpe_vs_bytebatch
+from test_24_benchmark_external_hf import test_benchmark_external_hf
+from test_25_benchmark_external_optimized import test_benchmark_external_optimized
+from test_26_benchmark_llama_cpp import test_benchmark_llama_cpp
+
 
 # =============================================================================
 # Descripciones y criterios para la tabla
@@ -87,6 +94,11 @@ TEST_INFO = {
     '19': ('Benchmark completo',      'reportar'),
     '20': ('Scaling 50M/170M',        'PPL baja'),
     '21': ('Estado/KV cache',         '< 1GB'),
+    '22': ('CPU raw (ternary frozen)', '> 50 patches/s'),
+    '23': ('BPE vs ByteBatch4',        'ByteBatch4 >=100x'),
+    '24': ('Benchmark externo HF',     'reportar'),
+    '25': ('Benchmark externo optim',  'speedup >= 1.2x'),
+    '26': ('Benchmark llama.cpp GGUF', '> 30 tok/s'),
 }
 
 
@@ -155,7 +167,8 @@ def run_all(model_path: str, config: dict | None = None,
             model_transformer_path: str | None = None,
             model_no_fp_path: str | None = None,
             model_50m_path: str | None = None,
-            model_170m_path: str | None = None) -> dict:
+            model_170m_path: str | None = None,
+            external_model_path: str | None = None) -> dict:
     model = load_model(model_path, config)
 
     # Cargar dataset si esta disponible
@@ -243,6 +256,14 @@ def run_all(model_path: str, config: dict | None = None,
             ('20_scaling', lambda: test_scaling(model_50m, model_170m, test_ds)),
         )
 
+    # Tests 22-26: benchmarks adicionales
+    TESTS.append(('22_cpu_raw',    lambda: test_eval_cpu_raw(model)))
+    TESTS.append(('23_bpe_bb',     lambda: test_bpe_vs_bytebatch()))
+    TESTS.append(('26_llama_cpp',  lambda: test_benchmark_llama_cpp()))
+    if external_model_path:
+        TESTS.append(('24_ext_hf',   lambda: test_benchmark_external_hf(external_model_path)))
+        TESTS.append(('25_ext_opt',  lambda: test_benchmark_external_optimized(external_model_path)))
+
     # Ordenar por numero de test
     TESTS.sort(key=lambda t: int(t[0].split('_')[0]))
 
@@ -296,8 +317,9 @@ def run_all(model_path: str, config: dict | None = None,
     # =========================================================================
     # Tabla de resultados
     # =========================================================================
+    n_total = len(TEST_INFO)
     print(f"\n{'='*60}")
-    print(f"  {passed} PASS / {failed} FAIL / {skipped} N/A (de 21 tests)")
+    print(f"  {passed} PASS / {failed} FAIL / {skipped} N/A (de {n_total} tests)")
     print(f"{'='*60}")
     print_table(results)
 
@@ -345,7 +367,7 @@ def _save_markdown_report(model_path: str, results: dict,
         '',
         '## Resumen',
         '',
-        f'**{passed} PASS / {failed} FAIL / {skipped} N/A** (de 21 tests)',
+        f'**{passed} PASS / {failed} FAIL / {skipped} N/A** (de {len(TEST_INFO)} tests)',
         '',
         '| # | Test | Resultado | Valor | Criterio |',
         '|---|---|---|---|---|',
@@ -393,6 +415,8 @@ if __name__ == "__main__":
                         help='Checkpoint 50M para test 20 (scaling)')
     parser.add_argument('--model-170m', default=None,
                         help='Checkpoint 170M para test 20 (scaling)')
+    parser.add_argument('--external-model', default=None,
+                        help='Path a modelo HuggingFace externo para tests 24-25 (opcional)')
     args = parser.parse_args()
 
     config = None
@@ -406,4 +430,5 @@ if __name__ == "__main__":
         model_no_fp_path=args.model_no_fp,
         model_50m_path=args.model_50m,
         model_170m_path=args.model_170m,
+        external_model_path=args.external_model,
     )
