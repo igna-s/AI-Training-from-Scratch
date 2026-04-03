@@ -1183,6 +1183,7 @@ def extract_logprobs_single(
     enc = tokenizer(
         text, return_tensors='pt',
         truncation=True, max_length=seq_len,
+        return_offsets_mapping=True,
     )
     input_ids = enc['input_ids'].to(model.device)
 
@@ -1193,18 +1194,13 @@ def extract_logprobs_single(
     top_logprobs, top_indices = torch.topk(log_probs, k=top_k, dim=-1)
 
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
-    byte_offset = 0
-    positions = []
+    offsets = enc['offset_mapping'][0].tolist()
 
     for pos_idx, (token_id, token_str) in enumerate(
         zip(input_ids[0].tolist(), tokens)
     ):
-        try:
-            token_byte_seq = tokenizer.convert_tokens_to_string(
-                [token_str]
-            ).encode('utf-8')
-        except Exception:
-            token_byte_seq = b'\x00'
+        start_char, end_char = offsets[pos_idx]
+        byte_offset = len(text[:start_char].encode('utf-8'))
 
         pos_top = []
         for k_idx in range(top_k):
@@ -1231,7 +1227,6 @@ def extract_logprobs_single(
             'byte_offset': byte_offset,
             'top_tokens': pos_top,
         })
-        byte_offset += len(token_byte_seq)
 
     return {
         'text_bytes': list(text.encode('utf-8')),
@@ -1263,6 +1258,7 @@ def extract_logprobs_and_hidden(
     enc = tokenizer(
         text, return_tensors='pt',
         truncation=True, max_length=seq_len,
+        return_offsets_mapping=True,
     )
     input_ids = enc['input_ids'].to(model.device)
 
@@ -1286,18 +1282,13 @@ def extract_logprobs_and_hidden(
     top_logprobs, top_indices = torch.topk(log_probs, k=top_k, dim=-1)
 
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
-    byte_offset = 0
-    positions = []
+    offsets = enc['offset_mapping'][0].tolist()
 
     for pos_idx, (token_id, token_str) in enumerate(
         zip(input_ids[0].tolist(), tokens)
     ):
-        try:
-            token_byte_seq = tokenizer.convert_tokens_to_string(
-                [token_str]
-            ).encode('utf-8')
-        except Exception:
-            token_byte_seq = b'\x00'
+        start_char, end_char = offsets[pos_idx]
+        byte_offset = len(text[:start_char].encode('utf-8'))
 
         pos_top = []
         for k_idx in range(top_k):
@@ -1324,7 +1315,6 @@ def extract_logprobs_and_hidden(
             'byte_offset': byte_offset,
             'top_tokens': pos_top,
         })
-        byte_offset += len(token_byte_seq)
 
     return {
         'text_bytes': list(text.encode('utf-8')),
@@ -1405,9 +1395,11 @@ def extract_logprobs_and_hidden_batch(
             padding=True,
             truncation=True,
             max_length=seq_len,
+            return_offsets_mapping=True,
         )
         input_ids = enc['input_ids'].to(model.device)        # [B, S_pad]
         attn_mask = enc['attention_mask'].to(model.device)   # [B, S_pad]
+        offset_mapping_cpu = enc['offset_mapping']
 
         with torch.no_grad():
             # Forward populates captured via hooks; we discard the output logits
@@ -1461,11 +1453,12 @@ def extract_logprobs_and_hidden_batch(
     for b in range(B):
         actual_len  = int(attn_mask_cpu[b].sum().item())
         ids         = input_ids_cpu[b, :actual_len].tolist()
+        offsets     = offset_mapping_cpu[b].tolist()
 
-        byte_offset = 0
         positions   = []
         for pos_idx, token_id in enumerate(ids):
-            token_bytes_seq = bytes_cache.get(token_id, b'\x00')
+            start_char, end_char = offsets[pos_idx]
+            byte_offset = len(texts[b][:start_char].encode('utf-8'))
 
             pos_top = []
             for k_idx in range(top_k):
@@ -1482,7 +1475,6 @@ def extract_logprobs_and_hidden_batch(
                 'byte_offset': byte_offset,
                 'top_tokens':  pos_top,
             })
-            byte_offset += len(token_bytes_seq)
 
         hidden_proj = mid_proj[b, :actual_len, :]   # [L, ALIGN_DIM]
         results.append({
