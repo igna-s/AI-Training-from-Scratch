@@ -972,13 +972,13 @@ PATCH_SIZE = 4
 SEQ_LEN_PATCHES = 5000
 SEQ_LEN_TOKENS = 5000
 MAX_EXTRACTION_TOKENS = 2048  # T4 SDPA usa O(seq²) → 4096 OOM con batch≥2; 2048 usa 0.9 GB vs 3.5 GB
-TEACHER_HIDDEN_DIM = 2048   # Qwen2.5-3B hidden size
-ALIGN_DIM = 128             # Project teacher hidden 3584→128 (Johnson-Lindenstrauss)
+TEACHER_HIDDEN_DIM = 2048   # Qwen2.5-3B hidden size (2048); -7B seria 3584
+ALIGN_DIM = 128             # Project teacher hidden 2048→128 (Johnson-Lindenstrauss)
 SEQS_PER_SHARD = 50         # Align with 500-doc chunks to upload immediately
 SEED = 42
-BATCH_SIZE_TEACHER = 8   # T4 15GB: 3GB model + (~1.2GB/doc * 8) = ~12.6GB -> Targets ~11GB-12GB VRAM occupied.
-BATCH_SIZE_TEACHER_L4 = 14   # L4 24GB: FP8 model ~7GB + KV@4096 ~3.8GB + logits ~2.5GB
-                              # = ~14GB peak → ~4GB headroom; bucket batching keeps avg low
+BATCH_SIZE_TEACHER = 8   # T4 15GB post use_cache=False: 3GB model + attn~3.8GB + hidden~0.5GB + logits(chunk256)~1.2GB ≈ 8.5GB safe
+BATCH_SIZE_TEACHER_L4 = 14   # L4 24GB: FP8 model ~7GB + attn@4096 ~3.8GB + logits(chunk256 batch14)≈1.8GB
+                              # = ~12.6GB peak → ~11GB headroom; bucket batching keeps avg low
 MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching cuts avg)
 
 
@@ -1015,12 +1015,18 @@ def detect_gpu_profile() -> dict:
             'cpu_workers': 4,
         }
     elif 't4' in name or (vram_gb >= 13 and vram_gb < 18):
+        # T4: 15GB. With use_cache=False:
+        #   NF4 model: ~3 GB
+        #   Attention [B,H,S,S] FP16: 8×28×2048²×2B = ~3.8 GB
+        #   Hidden hooks (2 layers): 8×2048×2048×2B ×2 = ~0.5 GB
+        #   logit chunk [8,256,151643] FP32: 8×256×151643×4B = ~1.2 GB
+        #   Total peak: ~8.5 GB → 6.5 GB headroom on 15 GB
         return {
             'name': props.name, 'vram_gb': vram_gb,
             'batch_size': BATCH_SIZE_TEACHER,
             'max_tokens': MAX_EXTRACTION_TOKENS,
             'fp8': False, 'dtype': torch.float16,
-            'logit_chunk_size': 1024,
+            'logit_chunk_size': 256,  # 1024 caused OOM: 8×1024×151643×4B = 4.7 GB per chunk
             'cpu_workers': 2,
         }
     elif 'a100' in name or 'h100' in name:
@@ -1375,15 +1381,18 @@ def extract_logprobs_and_hidden_batch(
     mid_idx     = hidden_layer if hidden_layer >= 0 else n_layers // 2
 
     # ── Register hooks to capture mid-layer and last-layer hidden states ──
+    # IMPORTANT: .clone() is required — without it the detached tensor still
+    # holds a reference to the full forward-pass memory (activations, KV cache)
+    # preventing CUDA from freeing those buffers after the forward call.
     captured: dict = {}
 
     def _mid_hook(module, inp, out):
         h = out[0] if isinstance(out, tuple) else out
-        captured['mid'] = h.detach()      # [B, S, D]
+        captured['mid'] = h.detach().clone()   # [B, S, D] — own allocation, no lingering refs
 
     def _last_hook(module, inp, out):
         h = out[0] if isinstance(out, tuple) else out
-        captured['last'] = h.detach()     # [B, S, D]
+        captured['last'] = h.detach().clone()  # [B, S, D] — own allocation, no lingering refs
 
     hook_mid  = model.model.layers[mid_idx].register_forward_hook(_mid_hook)
     hook_last = model.model.layers[-1].register_forward_hook(_last_hook)
@@ -1402,8 +1411,10 @@ def extract_logprobs_and_hidden_batch(
         offset_mapping_cpu = enc['offset_mapping']
 
         with torch.no_grad():
-            # Forward populates captured via hooks; we discard the output logits
-            model(input_ids, attention_mask=attn_mask)
+            # use_cache=False prevents the model from retaining the KV cache in VRAM
+            # after the forward pass. Without this, Qwen2.5-3B at batch=8, seq=2048
+            # allocates ~3-4 GB of KV cache that is never freed until the next call.
+            model(input_ids, attention_mask=attn_mask, use_cache=False)
 
     finally:
         hook_mid.remove()
@@ -1419,11 +1430,14 @@ def extract_logprobs_and_hidden_batch(
     with torch.no_grad():
         mid_proj = (captured['mid'] @ proj_gpu).cpu()  # [B, S_pad, ALIGN_DIM] — stays BF16
     del captured['mid']
+    torch.cuda.empty_cache()  # free mid-layer GPU buffer before logit computation
 
     # ── Chunked logit computation from last-layer hidden + final norm ─────
+    # Apply norm on GPU then immediately move to CPU to free VRAM before chunked logits.
     with torch.no_grad():
         last_normed = model.model.norm(captured['last'])   # [B, S_pad, D]
     del captured['last']
+    torch.cuda.empty_cache()  # free last-layer raw buffer before lm_head chunks
 
     all_top_idx: list = []
     all_top_lp:  list = []
@@ -1955,6 +1969,7 @@ def build_byte_level_dataset(
     n_workers: int = 0,
     seq_offset: int = 0,
     carry_state: dict = None,
+    shard_offset: int = 0,
 ) -> tuple:
     """
     Convert BPE logprobs to byte-level distributions.
@@ -2046,7 +2061,7 @@ def build_byte_level_dataset(
                         all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
                         teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
                     )
-                    shard = seq_idx // SEQS_PER_SHARD
+                    shard = shard_offset + seq_idx // SEQS_PER_SHARD
                     shard_records.setdefault(shard, []).append(record)
                     all_patches = all_patches[seq_len:]
                     all_targets = all_targets[seq_len:]
@@ -2195,6 +2210,7 @@ def build_bpe_dataset(
     seq_offset: int = 0,
     carry_state: dict = None,
     executor=None,             # optional persistent ProcessPoolExecutor
+    shard_offset: int = 0,
 ) -> tuple:
     """
     Build BPE dataset from the same teacher logprobs.
@@ -2281,7 +2297,7 @@ def build_bpe_dataset(
                     buffer_top_ids[:seq_len],
                     buffer_mask[:seq_len],
                 )
-                shard = seq_idx // SEQS_PER_SHARD
+                shard = shard_offset + seq_idx // SEQS_PER_SHARD
                 shard_records.setdefault(shard, []).append(record)
                 buffer_ids = buffer_ids[seq_len:]
                 buffer_probs = buffer_probs[seq_len:]
@@ -2348,13 +2364,15 @@ def _write_bpe_shard(records: list[dict], shard_path: Path) -> None:
 
 def _save_stream_checkpoint(api, repo_id: str, chunk_idx: int,
                             byte_seq_offset: int, bpe_seq_offset: int,
-                            byte_carry: dict, bpe_carry: dict) -> None:
+                            byte_carry: dict, bpe_carry: dict,
+                            shard_offset: int = 0) -> None:
     """Guarda checkpoint en HF Hub para poder retomar si se corta la sesion."""
     import pickle, io
     checkpoint = {
         'last_completed_chunk': chunk_idx,
         'byte_seq_offset': byte_seq_offset,
         'bpe_seq_offset': bpe_seq_offset,
+        'shard_offset': shard_offset,  # persisted so resume regenerates correct shard names
     }
     # Metadata JSON
     buf = io.BytesIO(json.dumps(checkpoint).encode())
@@ -2483,7 +2501,9 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                        use_hf_mount: bool = False,
                        stream_to_hub: bool = False,
                        chunk_size: int = 1000,
-                       gpu_profile_override: dict = None, **_kwargs) -> None:
+                       gpu_profile_override: dict = None,
+                       shard_offset: int = 0,
+                       **_kwargs) -> None:
     """
     Complete dataset construction pipeline.
 
@@ -2573,6 +2593,10 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 resume_from_chunk = ckpt['last_completed_chunk'] + 1
                 byte_seq_offset = ckpt['byte_seq_offset']
                 bpe_seq_offset = ckpt['bpe_seq_offset']
+                # Restore shard_offset from checkpoint (overrides CLI arg if checkpoint exists)
+                if 'shard_offset' in ckpt:
+                    shard_offset = ckpt['shard_offset']
+                    print(f"  [resume] shard_offset={shard_offset} (from checkpoint)")
                 byte_carry = carry['byte']
                 bpe_carry = carry['bpe']
                 print(f"  [resume] Saltando chunks 0-{resume_from_chunk - 1}, "
@@ -2670,8 +2694,9 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         run_logprob_extraction(
                             _ctexts, str(_tmp), resume=False,
                             preloaded_models=_preloaded_models)
-                        gc.collect()
-                        torch.cuda.empty_cache()
+                        # NOTE: do NOT gc.collect/empty_cache here — it stalls GPU startup
+                        # for the next chunk (~200-500ms idle). The extraction workers
+                        # already call empty_cache after each batch flush.
                         _pipeline_q.put((_ci, _cs, _ce))
                         del _ctexts
                 except Exception as _e:
@@ -2688,16 +2713,18 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _upload_thread = [None]
 
             # CPU consumer: byte + BPE in parallel threads, then upload ALL shards
+            # Design: upload runs in background so CPU processing starts immediately
+            # after each chunk, keeping GPU busy without waiting for HF network I/O.
             while True:
                 _item = _pipeline_q.get()
                 if _item is None:
                     break
                 chunk_idx, chunk_start, chunk_end = _item
 
-                # Wait for previous upload before writing new shards
-                if _upload_thread[0] is not None:
-                    _upload_thread[0].join()
-                    _upload_thread[0] = None
+                # Do NOT join the upload thread here — let it run concurrently with
+                # CPU (byte+BPE) processing and the next GPU extraction. The upload
+                # thread only touches its own shard files; no conflict with CPU writers
+                # which always write to NEW shard indices not yet being uploaded.
                 total_chunks += 1
 
                 print(f"\n{'=' * 60}")
@@ -2725,7 +2752,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         _byte_res[0] = build_byte_level_dataset(
                             str(tmp_parquet), str(byte_dir),
                             seq_offset=_bso, carry_state=_bc,
-                            n_workers=_cpu_workers)
+                            n_workers=_cpu_workers,
+                            shard_offset=shard_offset)
                     except Exception as _e:
                         _cpu_errs.append(("byte", _e))
 
@@ -2735,7 +2763,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                             str(tmp_parquet), str(bpe_dir),
                             seq_offset=_pso, carry_state=_pc,
                             n_workers=_cpu_workers,
-                            executor=_pool)
+                            executor=_pool,
+                            shard_offset=shard_offset)
                     except Exception as _e:
                         _cpu_errs.append(("bpe", _e))
 
@@ -2781,17 +2810,25 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                       f"Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs")
 
                 # Checkpoint every N chunks
+                # IMPORTANT: wait for the upload thread FIRST — checkpoint must only
+                # record chunks whose shards are already on HF. If we checkpoint
+                # before upload finishes, a crash leaves the carry state pointing to
+                # sequences whose shards never actually reached HF.
                 if (chunk_idx + 1) % _checkpoint_every == 0:
+                    if _upload_thread[0] is not None:
+                        _upload_thread[0].join()   # wait for this chunk's shards to land on HF
+                        _upload_thread[0] = None
                     _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
                                             byte_seq_offset, bpe_seq_offset,
-                                            byte_carry, bpe_carry)
+                                            byte_carry, bpe_carry,
+                                            shard_offset=shard_offset)
 
             _gpu_thread.join()
             _bpe_pool.shutdown(wait=False)
             if _gpu_error[0]:
                 raise _gpu_error[0]
 
-            # Wait for last background upload to complete
+            # Wait for last background upload to complete before final checkpoint
             if _upload_thread[0] is not None:
                 _upload_thread[0].join()
 
@@ -2950,6 +2987,12 @@ if __name__ == "__main__":
         parser.add_argument('--hf-mount', action='store_true',
                             help="Write dataset directly to HF Bucket via hf-mount "
                                  "(no local copy, no upload step)")
+        parser.add_argument('--stream-to-hub', action='store_true',
+                            help="Stream dataset directly to HF Hub chunk-by-chunk "
+                                 "(enables checkpointing, required for long runs on Kaggle)")
+        parser.add_argument('--shard-offset', type=int, default=0,
+                            help="Shard index offset — use 1 if series 0000 is already "
+                                 "on HF Hub (shard_0001.parquet, shard_0002.parquet, ...)")
         parser.add_argument('--lightning-l4', action='store_true',
                             help="Force L4 profile (Lightning AI 24GB L4): "
                                  f"FP8 W8A8 quantization, batch {BATCH_SIZE_TEACHER_L4}, seq {MAX_EXTRACTION_TOKENS_L4}")
@@ -2974,4 +3017,6 @@ if __name__ == "__main__":
             build_full_dataset(n_docs=args.n_docs,
                                skip_extraction=args.skip_extraction,
                                use_hf_mount=args.hf_mount,
-                               gpu_profile_override=_forced_profile)
+                               stream_to_hub=args.stream_to_hub,
+                               gpu_profile_override=_forced_profile,
+                               shard_offset=args.shard_offset)
