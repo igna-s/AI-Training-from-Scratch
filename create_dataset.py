@@ -2467,7 +2467,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
     # chunk_size=500: ~250 docs/GPU, ~63 batches at batch_size=4.
     # RAM for 500-doc logprobs: ~1-2GB. Safe on Kaggle's 13GB.
-    chunk_size = min(chunk_size, 500)
+    # User requested 2500 chunk size for optimal throughput
     print(f"  [config] chunk_size = {chunk_size}")
 
     # Si hf-mount esta habilitado, montar bucket y escribir directo ahi
