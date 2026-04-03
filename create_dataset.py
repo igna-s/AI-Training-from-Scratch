@@ -2179,6 +2179,7 @@ def build_bpe_dataset(
     n_workers: int = 0,
     seq_offset: int = 0,
     carry_state: dict = None,
+    executor=None,             # optional persistent ProcessPoolExecutor
 ) -> tuple:
     """
     Build BPE dataset from the same teacher logprobs.
@@ -2229,11 +2230,15 @@ def build_bpe_dataset(
         args_list = [(r, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for r in rows]
 
         if n_workers > 1 and len(rows) > 10:
-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
-                batch_results = list(executor.map(
+            _exec = executor if executor is not None else ProcessPoolExecutor(max_workers=n_workers)
+            try:
+                batch_results = list(_exec.map(
                     _tokenize_bpe_row, args_list,
                     chunksize=max(1, len(rows) // (n_workers * 4)),
                 ))
+            finally:
+                if executor is None:
+                    _exec.shutdown(wait=False)
         else:
             batch_results = [_tokenize_bpe_row(a) for a in args_list]
 
@@ -2495,24 +2500,6 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
         print("STEP 1: Downloading FineWeb corpus")
         print(f"{'=' * 60}")
 
-        DATASET_SEED = 42
-        fw = load_dataset(corpus_name, name="sample-10BT", split="train",
-                          streaming=True)
-        # Shuffle con seed fijo para reproducibilidad
-        fw = fw.shuffle(seed=DATASET_SEED, buffer_size=10_000)
-        texts = []
-        for i, doc in enumerate(fw):
-            if i >= n_docs:
-                break
-            texts.append(doc['text'])
-
-        print(f"  Corpus: {len(texts):,} documents (seed={DATASET_SEED})")
-
-        # Save corpus sample for reference
-        corpus_path = OUTPUT_DIR / "corpus_texts.json"
-        with open(corpus_path, 'w') as f:
-            json.dump(texts[:1000], f)
-
         # Step 2: Extract logprobs (the slow part)
         n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
         _gpu_profile = gpu_profile_override or detect_gpu_profile()
@@ -2531,8 +2518,6 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
         if stream_to_hub:
             # === STREAMING MODE ===
-            # Procesar en chunks: extract → byte/BPE → upload shards → delete local.
-            # Evita acumular el parquet de logprobs completo en disco.
             from huggingface_hub import HfApi
             hf_token = os.environ.get('HF_TOKEN')
             print(f"  [hub] HF_TOKEN: {'set (' + str(len(hf_token)) + ' chars)' if hf_token else 'NOT SET / EMPTY'}")
@@ -2569,16 +2554,61 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                       f"byte_seqs={byte_seq_offset}, bpe_seqs={bpe_seq_offset}")
 
             _pipeline_t0 = time.time()
-            _next_forced_upload_min = 30  # first forced upload at 30 min
-            _checkpoint_every = 5        # save checkpoint every N chunks
+            _checkpoint_every = 5
 
-            # ---- Load teacher models ONCE (persist across all chunks) ----
+            # ---- 1. Load corpus + teacher model CONCURRENTLY ----
+            # One thread downloads FineWeb, another preloads Qwen to VRAM.
+            # Both complete before the main loop starts.
+            n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            _gpu_profile = gpu_profile_override or detect_gpu_profile()
+
             _preloaded_models = []
-            for _gid in range(max(n_gpus, 1)):
-                _dev = f"cuda:{_gid}" if n_gpus > 0 else "cpu"
-                _m, _tok = load_teacher(device=_dev, profile=_gpu_profile)
-                torch.cuda.empty_cache()
-                _preloaded_models.append((_m, _tok))
+            _corpus_texts = []
+            _load_errors = []
+
+            def _load_corpus():
+                try:
+                    from datasets import load_dataset as _lds
+                    _fw = _lds(corpus_name, name="sample-10BT", split="train", streaming=True)
+                    _fw = _fw.shuffle(seed=42, buffer_size=10_000)
+                    for _i, _doc in enumerate(_fw):
+                        if _i >= n_docs:
+                            break
+                        _corpus_texts.append(_doc['text'])
+                    print(f"  [corpus] {len(_corpus_texts):,} docs loaded", flush=True)
+                except Exception as _e:
+                    _load_errors.append(("corpus", _e))
+
+            def _load_models():
+                try:
+                    for _gid in range(max(n_gpus, 1)):
+                        _dev = f"cuda:{_gid}" if n_gpus > 0 else "cpu"
+                        _m, _tok = load_teacher(device=_dev, profile=_gpu_profile)
+                        torch.cuda.empty_cache()
+                        _preloaded_models.append((_m, _tok))
+                    print(f"  [models] {len(_preloaded_models)} teacher(s) loaded", flush=True)
+                except Exception as _e:
+                    _load_errors.append(("models", _e))
+
+            print("\n[Pipeline] Loading corpus + teacher models in parallel...")
+            _t_corpus = threading.Thread(target=_load_corpus, name="corpus-loader", daemon=True)
+            _t_models = threading.Thread(target=_load_models, name="model-loader", daemon=True)
+            _t_corpus.start(); _t_models.start()
+            _t_corpus.join();  _t_models.join()
+
+            if _load_errors:
+                for _n, _e in _load_errors:
+                    print(f"  [ERROR] {_n}: {_e}")
+                raise _load_errors[0][1]
+
+            texts = _corpus_texts
+            print(f"[Pipeline] {len(texts):,} docs + {len(_preloaded_models)} models ready.")
+
+            # Save corpus sample (non-blocking, tiny)
+            corpus_path = OUTPUT_DIR / "corpus_texts.json"
+            with open(corpus_path, 'w') as f:
+                json.dump(texts[:1000], f)
+
             print(f"[Pipeline] {len(_preloaded_models)} teacher(s) loaded "
                   f"(persistent — no reload per chunk)")
 
@@ -2588,12 +2618,16 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             # Each queued chunk is ~1-2 GB RAM (logprobs parquet); 2 slots = safe.
             from queue import Queue as _Queue
 
-            _cpu_workers   = _gpu_profile.get('cpu_workers', 2)
+            _cpu_workers = max(1, (os.cpu_count() or 4) - 1)
             _pipeline_q    = _Queue(maxsize=100)
             _gpu_error = [None]
 
+            # ---- Persistent BPE worker pool (avoids recreating pool per batch) ----
+            # Workers keep tokenizer cached in memory across all batches.
+            _bpe_pool = ProcessPoolExecutor(max_workers=_cpu_workers)
+
             def _gpu_producer():
-                """Extract logprobs on GPU, push parquet paths to queue."""
+                """Extract logprobs on GPU, push chunk indices to queue."""
                 try:
                     for _cs in range(0, len(texts), chunk_size):
                         _ce = min(_cs + chunk_size, len(texts))
@@ -2607,7 +2641,6 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         run_logprob_extraction(
                             _ctexts, str(_tmp), resume=False,
                             preloaded_models=_preloaded_models)
-                        # Free activation/KV residue before queueing next chunk
                         gc.collect()
                         torch.cuda.empty_cache()
                         _pipeline_q.put((_ci, _cs, _ce))
@@ -2622,19 +2655,17 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 target=_gpu_producer, name="gpu-producer", daemon=True)
             _gpu_thread.start()
 
-            # chunk_idx init: needed by final checkpoint even if no chunks run
             chunk_idx = max(0, resume_from_chunk - 1)
-            # Background upload thread (sealed shards run async while GPU extracts next)
             _upload_thread = [None]
 
-            # CPU consumer: byte + BPE in parallel, then upload
+            # CPU consumer: byte + BPE in parallel threads, then upload ALL shards
             while True:
                 _item = _pipeline_q.get()
                 if _item is None:
                     break
                 chunk_idx, chunk_start, chunk_end = _item
 
-                # Wait for previous chunk's upload before writing new shards
+                # Wait for previous upload before writing new shards
                 if _upload_thread[0] is not None:
                     _upload_thread[0].join()
                     _upload_thread[0] = None
@@ -2652,6 +2683,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         f"{tmp_parquet} was not created.")
 
                 # Run byte + BPE in parallel threads (both CPU-only, no VRAM)
+                # BPE uses the persistent pool (workers already warm with tokenizer cached)
                 _byte_res = [None]
                 _bpe_res = [None]
                 _cpu_errs = []
@@ -2665,12 +2697,13 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                     except Exception as _e:
                         _cpu_errs.append(("byte", _e))
 
-                def _bpe_worker(_pc=bpe_carry, _pso=bpe_seq_offset):
+                def _bpe_worker(_pc=bpe_carry, _pso=bpe_seq_offset, _pool=_bpe_pool):
                     try:
                         _bpe_res[0] = build_bpe_dataset(
                             str(tmp_parquet), str(bpe_dir),
                             seq_offset=_pso, carry_state=_pc,
-                            n_workers=_cpu_workers)
+                            n_workers=_cpu_workers,
+                            executor=_pool)
                     except Exception as _e:
                         _cpu_errs.append(("bpe", _e))
 
@@ -2690,29 +2723,22 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 bpe_seq_offset += p_stats['n_sequences']
                 total_byte_coverage += b_stats.get('coverage_pct', 0)
 
-                # Upload sealed shards in background (runs while GPU extracts next chunk)
-                def _do_sealed_upload(_bso=byte_seq_offset, _pso=bpe_seq_offset, _tp=str(tmp_parquet), _ci=chunk_idx):
-                    _upload_sealed_shards(byte_dir, api, DATASET_REPO,
-                                          "byte_marginalized", _bso)
-                    _upload_sealed_shards(bpe_dir, api, DATASET_REPO,
-                                          "bpe_tokenized", _pso)
+                # Upload ALL local shards in background (every chunk = every 500 docs)
+                # This keeps disk usage near-zero and is the "checkpoint" for safety.
+                def _do_full_upload(_tp=str(tmp_parquet), _ci=chunk_idx):
+                    _upload_all_shards(byte_dir, api, DATASET_REPO, "byte_marginalized")
+                    _upload_all_shards(bpe_dir, api, DATASET_REPO, "bpe_tokenized")
                     try:
-                        _hf_upload_with_retry(api, _tp, f"logprobs_raw/logprobs_chunk_{_ci:04d}.parquet", DATASET_REPO)
+                        _hf_upload_with_retry(api, _tp,
+                            f"logprobs_raw/logprobs_chunk_{_ci:04d}.parquet", DATASET_REPO)
                         Path(_tp).unlink(missing_ok=True)
                     except Exception as _e:
-                        print(f"  [ERROR] Parquet upload failed: {_e}")
-                _upload_thread[0] = threading.Thread(
-                    target=_do_sealed_upload, daemon=True, name="upload")
-                _upload_thread[0].start()
+                        print(f"  [WARN] Raw parquet upload failed: {_e}")
+                        Path(_tp).unlink(missing_ok=True)
 
-                # Periodic forced upload (sync: needs all shards, wait for bg first)
-                elapsed_min = (time.time() - _pipeline_t0) / 60
-                if elapsed_min >= _next_forced_upload_min:
-                    _upload_thread[0].join(); _upload_thread[0] = None
-                    print(f"\n  [FORCED UPLOAD @ {elapsed_min:.0f}min]")
-                    _upload_sealed_shards(byte_dir, api, DATASET_REPO, "byte_marginalized", byte_seq_offset)
-                    _upload_sealed_shards(bpe_dir, api, DATASET_REPO, "bpe_tokenized", bpe_seq_offset)
-                    _next_forced_upload_min = elapsed_min + 30
+                _upload_thread[0] = threading.Thread(
+                    target=_do_full_upload, daemon=True, name="upload")
+                _upload_thread[0].start()
 
                 gc.collect()
                 if torch.cuda.is_available():
@@ -2722,13 +2748,14 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 print(f"  [Chunk {chunk_idx+1}] Done. "
                       f"Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs")
 
-                # Guardar checkpoint cada N chunks
+                # Checkpoint every N chunks
                 if (chunk_idx + 1) % _checkpoint_every == 0:
                     _save_stream_checkpoint(api, DATASET_REPO, chunk_idx,
                                             byte_seq_offset, bpe_seq_offset,
                                             byte_carry, bpe_carry)
 
             _gpu_thread.join()
+            _bpe_pool.shutdown(wait=False)
             if _gpu_error[0]:
                 raise _gpu_error[0]
 
