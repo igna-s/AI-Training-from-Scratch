@@ -1,5 +1,10 @@
 """
-CPU-1: Motor de inferencia CPU-optimizado.
+Motor de inferencia CPU-optimizado — Multi-arquitectura.
+
+Soporta cualquier modelo registrado en model.py o ablation.py:
+  - CPU1ModelV2 (byte + MLGRU + ternary)
+  - AblationModel (configurable: byte/BPE, MLGRU/Transformer, FP16/ternary)
+  - Futuros modelos que sigan la misma interfaz
 
 Dos estrategias de inferencia para pesos ternarios:
   1. INT8 — pesos ternarios como float32 pre-cuantizados + torch.compile
@@ -13,7 +18,11 @@ Optimizaciones integradas:
   BLOQUE 5 — T-MAC LUT (tabla de decodificacion, empaquetado, gather vectorizado)
 
 Uso:
-    # INT8 (baseline)
+    # CPU1ModelV2
+    engine = CPU1InferenceEngine.from_checkpoint('checkpoint.pt', config)
+    output = engine.generate(b"Buenos dias", max_bytes=200)
+
+    # AblationModel (auto-detectado)
     engine = CPU1InferenceEngine.from_checkpoint('checkpoint.pt', config)
     output = engine.generate(b"Buenos dias", max_bytes=200)
 
@@ -29,6 +38,7 @@ import platform
 import subprocess
 import time
 import types
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
@@ -44,6 +54,74 @@ from model import (
     D_MODEL,
     N_LAYERS,
 )
+
+# Import opcional de AblationModel (puede no existir en deploy minimal)
+try:
+    from ablation import AblationModel, AblationBlock, AblationMLGRU
+    _HAS_ABLATION = True
+except ImportError:
+    _HAS_ABLATION = False
+
+
+# ===========================================================================
+# Deteccion de Arquitectura
+# ===========================================================================
+
+@dataclass
+class ModelInfo:
+    """Describe la arquitectura de un modelo para el engine."""
+    model_class: str = 'unknown'       # 'CPU1ModelV2', 'AblationModel', etc.
+    is_byte_level: bool = True          # byte patches vs BPE tokens
+    is_recurrent: bool = True           # MLGRU (con estados) vs Transformer
+    is_ternary: bool = True             # BitLinear vs nn.Linear
+    n_heads: int = 4                    # 4 para byte, 1 para BPE
+    vocab_size: int = 256               # 256 para byte, 152K para BPE
+    d_model: int = 1024
+    n_layers: int = 14
+    patch_size: int = 4
+    has_forward_one_token: bool = True   # CPU1BlockV2 tiene, AblationBlock no
+
+
+def detect_model_info(model: nn.Module, config: dict) -> ModelInfo:
+    """Auto-detectar arquitectura de cualquier modelo."""
+    info = ModelInfo()
+    info.model_class = type(model).__name__
+    info.d_model = config.get('d_model', D_MODEL)
+    info.n_layers = config.get('n_layers', N_LAYERS)
+
+    # Detectar modelo por clase
+    if isinstance(model, CPU1ModelV2):
+        info.is_byte_level = True
+        info.is_recurrent = True
+        info.is_ternary = True
+        info.n_heads = 4
+        info.vocab_size = VOCAB_SIZE
+        info.has_forward_one_token = True
+
+    elif _HAS_ABLATION and isinstance(model, AblationModel):
+        tok = config.get('tokenization', 'byte')
+        info.is_byte_level = tok in ('byte', 'byte_dynamic')
+        info.is_recurrent = config.get('token_mixer', 'mlgru') == 'mlgru'
+        info.is_ternary = config.get('use_ternary',
+                                     config.get('quantization') == 'ternary')
+        info.n_heads = 4 if info.is_byte_level else 1
+        info.vocab_size = 256 if info.is_byte_level else config.get('bpe_vocab_size', 152064)
+        info.has_forward_one_token = False  # AblationBlock no tiene
+        info.patch_size = config.get('patch_size', 4)
+
+    else:
+        # Modelo desconocido — detectar por inspeccion
+        info.is_ternary = any(isinstance(m, BitLinear) for m in model.modules())
+        info.is_recurrent = not any(
+            'attention' in type(m).__name__.lower() or
+            'transformer' in type(m).__name__.lower()
+            for m in model.modules()
+        )
+        info.has_forward_one_token = hasattr(
+            next(iter(getattr(model, 'blocks', [])), None), 'forward_one_token'
+        ) if hasattr(model, 'blocks') and len(model.blocks) > 0 else False
+
+    return info
 
 # ===========================================================================
 # BLOQUE 1 — Layout de Memoria
@@ -66,15 +144,12 @@ def make_aligned(tensor: Tensor, alignment: int = 64) -> Tensor:
     return aligned
 
 
-def transpose_weights_for_inference(model: CPU1ModelV2) -> None:
+def transpose_weights_for_inference(model: nn.Module) -> None:
     """
     Transponer y hacer contiguos TODOS los pesos BitLinear.
     Llamar UNA VEZ despues de cargar el checkpoint, antes de generar.
 
-    Agrega atributo weight_T a cada BitLinear.
-    El weight original se libera para ahorrar RAM.
-
-    Ganancia: hasta 2x en bandwidth para matmul 1xNxM (inferencia token a token).
+    Si no hay BitLinear (modelo FP16), no hace nada.
     """
     count = 0
     for name, module in model.named_modules():
@@ -85,7 +160,7 @@ def transpose_weights_for_inference(model: CPU1ModelV2) -> None:
     print(f"[CPU opt] {count} pesos BitLinear transpuestos (column-major)")
 
 
-def align_all_weights(model: CPU1ModelV2) -> None:
+def align_all_weights(model: nn.Module) -> None:
     """
     Verificar y corregir alineamiento de todos los pesos a 64 bytes.
     Llamar despues de transpose_weights_for_inference.
@@ -138,7 +213,7 @@ def _bitlinear_optimized_forward(self, x: Tensor) -> Tensor:
     return out.reshape(out_shape).to(x.dtype)
 
 
-def pack_all_bitlinear_to_int8(model: CPU1ModelV2) -> dict:
+def pack_all_bitlinear_to_int8(model: nn.Module) -> dict:
     """
     Pre-computar pesos ternarios y reemplazar forward de todos los BitLinear.
 
@@ -302,7 +377,7 @@ def set_thread_affinity(core_ids: list[int]) -> None:
             pass
 
 
-def compile_for_cpu_inference(model: CPU1ModelV2) -> CPU1ModelV2:
+def compile_for_cpu_inference(model: nn.Module) -> nn.Module:
     """
     Compilar modelo con maximas optimizaciones para CPU.
 
@@ -366,13 +441,15 @@ def warmup_compiled_model(
     for i in range(n_warmup):
         t0 = time.perf_counter()
         with torch.no_grad():
-            _, dummy_states = model(dummy_patch, dummy_states)
+            result = model(dummy_patch, dummy_states)
+            # CPU1ModelV2: (logits, states), AblationModel: (logits, states, extra)
+            dummy_states = result[1]
         t1 = time.perf_counter()
         print(f"  Paso {i+1}: {(t1-t0)*1000:.1f}ms")
     print("[CPU opt] Warmup completo")
 
 
-def prefetch_layer_weights(block: CPU1BlockV2) -> None:
+def prefetch_layer_weights(block: nn.Module) -> None:
     """
     Hint al CPU para traer pesos de un bloque a L3.
 
@@ -391,16 +468,15 @@ def prefetch_layer_weights(block: CPU1BlockV2) -> None:
 
 
 def forward_with_prefetch(
-    model: CPU1ModelV2,
+    model: nn.Module,
     x: Tensor,
     hidden_states: list,
 ) -> tuple[Tensor, list]:
     """
     Forward pass con prefetch de capa i+2 mientras se computa capa i.
 
-    Usar este metodo en generate en lugar del forward estandar.
-    El hardware prefetcher de x86 no cruza paginas, asi que el hint
-    explicito mejora L3 hit rate ~15-20%.
+    Soporta CPU1BlockV2 (forward_one_token) y AblationBlock (forward).
+    Para Transformer (sin estados), hidden_states es lista de None.
     """
     # Manejar modelo compilado (OptimizedModule)
     blocks = model.blocks
@@ -412,7 +488,16 @@ def forward_with_prefetch(
         # Prefetch capa i+2 async mientras procesamos capa i
         if i + 2 < len(blocks):
             prefetch_layer_weights(blocks[i + 2])
-        x, h_new = block.forward_one_token(x, hidden_states[i])
+
+        # CPU1BlockV2 tiene forward_one_token (optimizado para 2D)
+        if hasattr(block, 'forward_one_token'):
+            x, h_new = block.forward_one_token(x, hidden_states[i])
+        else:
+            # AblationBlock y otros: usar forward normal con 3D
+            x_3d = x.unsqueeze(1) if x.dim() == 2 else x
+            x_3d, h_new = block(x_3d, hidden_states[i])
+            x = x_3d.squeeze(1) if x_3d.dim() == 3 else x_3d
+
         new_states.append(h_new)
 
     return x, new_states
@@ -470,51 +555,67 @@ def _nucleus_sample(
     sorted_buf /= sorted_buf.sum()
     return idx_buf[torch.multinomial(sorted_buf.unsqueeze(0), 1).squeeze()].item()
 
-
 class CPU1InferenceEngine:
     """
-    Motor de inferencia CPU-optimizado para CPU1ModelV2.
+    Motor de inferencia CPU-optimizado — Multi-arquitectura.
 
-    Integra todas las optimizaciones de los Bloques 1 y 2.
+    Soporta CPU1ModelV2, AblationModel, y futuros modelos.
+    Detecta automaticamente la arquitectura y aplica optimizaciones
+    condicionales (INT8 solo para ternary, estados solo para recurrente).
 
     Uso:
         engine = CPU1InferenceEngine.from_checkpoint('checkpoint.pt', config)
-        output = engine.generate(b"Buenos dias, como estas?", max_bytes=200)
+        output = engine.generate(b"Buenos dias", max_bytes=200)
+        print(engine.info)  # ModelInfo(model_class='CPU1ModelV2', ...)
     """
 
-    def __init__(self, model: CPU1ModelV2, config: dict):
+    def __init__(self, model: nn.Module, config: dict):
         self.config = config
-        d_model = config.get('d_model', D_MODEL)
-        n_layers = config.get('n_layers', N_LAYERS)
 
-        # === Aplicar todas las optimizaciones al cargar ===
+        # === Detectar arquitectura ===
+        self.info = detect_model_info(model, config)
+        d_model = self.info.d_model
+        n_layers = self.info.n_layers
+
+        # === Aplicar optimizaciones ===
         print("\n" + "=" * 60)
-        print("Aplicando optimizaciones CPU para inferencia")
+        print(f"Optimizaciones CPU — {self.info.model_class}")
+        print(f"  byte_level={self.info.is_byte_level} recurrent={self.info.is_recurrent} "
+              f"ternary={self.info.is_ternary} heads={self.info.n_heads}")
         print("=" * 60)
 
         model.eval()
 
-        # Bloque 1: layout de memoria
-        transpose_weights_for_inference(model)
-        align_all_weights(model)
-        self.scales = pack_all_bitlinear_to_int8(model)
+        # Bloque 1: layout de memoria (solo si hay BitLinear)
+        if self.info.is_ternary:
+            transpose_weights_for_inference(model)
+            align_all_weights(model)
+            self.scales = pack_all_bitlinear_to_int8(model)
+        else:
+            align_all_weights(model)
+            self.scales = {}
+            print("[CPU opt] Modelo FP16 — skip INT8 packing")
 
         # Bloque 2: compilador
-        # Usar TODOS los cores fisicos detectados para maximizar throughput.
-        # El cap anterior de 4 desperdiciaba cores en CPUs con 6+ cores (ej: i7-10th gen).
-        n_threads = configure_cpu_threads()
+        n_threads = configure_cpu_threads(config.get('n_threads'))
         set_thread_affinity(list(range(n_threads)))
 
-        # Pre-alocar buffers reutilizables (sin alloc en generate loop)
-        self.hidden_states = alloc_hidden_states(n_layers, d_model)
-        self.logits_buf = torch.zeros(4, VOCAB_SIZE, dtype=torch.float32)
-        self.probs_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
-        # Buffers para nucleus sampling (evitar alloc por token)
-        self.sorted_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
-        self.idx_buf = torch.zeros(VOCAB_SIZE, dtype=torch.long)
+        # Pre-alocar buffers
+        if self.info.is_recurrent:
+            self.hidden_states = alloc_hidden_states(n_layers, d_model)
+        else:
+            # Transformer: lista de None (sin estados recurrentes)
+            self.hidden_states = [None] * n_layers
+            print(f"[CPU opt] Transformer mode — no MLGRU states")
 
-        # Compilar (beneficia prefill; generate usa forward_with_prefetch)
-        # Si torch.compile falla en runtime, caemos a eager mode
+        vocab = self.info.vocab_size
+        n_heads = self.info.n_heads
+        self.logits_buf = torch.zeros(n_heads, vocab, dtype=torch.float32)
+        self.probs_buf = torch.zeros(vocab, dtype=torch.float32)
+        self.sorted_buf = torch.zeros(vocab, dtype=torch.float32)
+        self.idx_buf = torch.zeros(vocab, dtype=torch.long)
+
+        # Compilar
         compiled = compile_for_cpu_inference(model)
         try:
             warmup_compiled_model(compiled, config, n_warmup=2)
@@ -531,39 +632,69 @@ class CPU1InferenceEngine:
 
     @classmethod
     def from_checkpoint(cls, path: str, config: dict) -> 'CPU1InferenceEngine':
-        """Cargar checkpoint y crear engine optimizado."""
-        model = CPU1ModelV2(config)
+        """Cargar checkpoint y crear engine. Auto-detecta tipo de modelo."""
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         state = checkpoint.get('model_state_dict', checkpoint)
+
+        # Intentar cargar como el modelo que corresponda segun config
+        model = _create_model_from_config(config, state)
         model.load_state_dict(state)
         model.eval()
         return cls(model, config)
 
-    def _get_model(self) -> CPU1ModelV2:
+    def _get_model(self) -> nn.Module:
         """Obtener modelo original (sin wrapper de compile)."""
         if hasattr(self.model, '_orig_mod'):
             return self.model._orig_mod
         return self.model
 
     def reset_state(self) -> None:
-        """Resetear estado MLGRU (nueva conversacion)."""
-        for h in self.hidden_states:
-            h.zero_()
+        """Resetear estado (MLGRU → nuevos zeros, Transformer → no-op)."""
+        if self.info.is_recurrent:
+            # Reallocar para evitar conflictos con InferenceMode
+            self.hidden_states = alloc_hidden_states(
+                self.info.n_layers, self.info.d_model, verbose=False
+            )
+        # Transformer: hidden_states son None, nada que resetear
 
     def _bytes_to_patches(self, data: bytes) -> Tensor:
-        """Convertir bytes a patches de 4. Padding con 0 si no es multiplo. Vectorizado."""
-        padded = data + b'\x00' * ((-len(data)) % 4)
+        """Convertir bytes a patches de 4. Padding con 0 si no es multiplo."""
+        padded = data + b'\x00' * ((-len(data)) % self.info.patch_size)
         t = torch.frombuffer(bytearray(padded), dtype=torch.uint8)
-        return t.reshape(1, -1, 4).long()  # [1, S, 4]
+        return t.reshape(1, -1, self.info.patch_size).long()
+
+    def _get_heads(self, model: nn.Module) -> list:
+        """Obtener las heads de prediccion del modelo."""
+        if hasattr(model, 'byte_heads'):
+            return list(model.byte_heads)
+        elif hasattr(model, 'heads'):
+            return list(model.heads)
+        raise AttributeError(f"{type(model).__name__} no tiene byte_heads ni heads")
+
+    def _get_embedding(self, model: nn.Module):
+        """Obtener la funcion de embedding del modelo."""
+        if hasattr(model, 'patch_embedding'):
+            return model.patch_embedding
+        elif hasattr(model, 'embedding'):
+            return model.embedding
+        raise AttributeError(f"{type(model).__name__} no tiene patch_embedding ni embedding")
 
     @torch.inference_mode()
     def prefill(self, prompt_bytes: bytes) -> None:
-        """
-        Procesar el prompt completo y actualizar hidden states.
-        Despues de esto, el modelo esta listo para generar.
-        """
-        patches = self._bytes_to_patches(prompt_bytes)
-        _, self.hidden_states = self.model(patches, self.hidden_states)
+        """Procesar prompt y actualizar hidden states."""
+        if self.info.is_byte_level:
+            x = self._bytes_to_patches(prompt_bytes)
+        else:
+            raise NotImplementedError("BPE prefill requiere tokenizer — usar prefill_tokens()")
+
+        result = self.model(x, self.hidden_states)
+        # Manejar ambos formatos de retorno:
+        # CPU1ModelV2: (logits_tuple, states)
+        # AblationModel: (logits, states, extra_losses)
+        if len(result) == 2:
+            _, self.hidden_states = result
+        else:
+            _, self.hidden_states, _ = result
 
     @torch.inference_mode()
     def generate(
@@ -575,19 +706,17 @@ class CPU1InferenceEngine:
         reset: bool = True,
     ) -> bytes:
         """
-        Generar texto byte a byte.
-        Sin KV cache. Estado MLGRU fijo. Cero allocaciones en el loop.
+        Generar texto byte a byte (modelos byte-level).
+        Soporta CPU1ModelV2 y AblationModel con tokenization=byte.
 
-        Args:
-            prompt_bytes: prompt como bytes UTF-8 crudos
-            max_bytes:    maximo de bytes a generar (multiplo de 4)
-            temperature:  temperatura de sampling (0 = greedy)
-            top_p:        nucleus sampling p
-            reset:        resetear estado antes de generar (nueva conversacion)
-
-        Returns:
-            bytes generados (sin incluir el prompt)
+        Para modelos BPE, usar generate_tokens() en su lugar.
         """
+        if not self.info.is_byte_level:
+            raise NotImplementedError(
+                "generate() es para modelos byte-level. "
+                "Para BPE usar generate_tokens()."
+            )
+
         if reset:
             self.reset_state()
 
@@ -596,39 +725,41 @@ class CPU1InferenceEngine:
         self.prefill(prompt_bytes)
         prefill_ms = (time.perf_counter() - t_prefill) * 1000
 
-        # Acceder al modelo original para atributos
         model = self._get_model()
+        embed_fn = self._get_embedding(model)
+        heads = self._get_heads(model)
+        n_heads = len(heads)
 
         # Generacion
         output_buf = bytearray(max_bytes)
-        last_patch = self._bytes_to_patches(prompt_bytes)[:, -1:, :]  # [1, 1, 4]
+        last_patch = self._bytes_to_patches(prompt_bytes)[:, -1:, :]
 
-        n_patches = max_bytes // 4
+        n_patches = max_bytes // self.info.patch_size
         token_times = []
 
         for i in range(n_patches):
             t0 = time.perf_counter()
 
-            # Embed patch: [1, 1, 4] -> [1, 1, d_model] -> [1, d_model]
-            x = model.patch_embedding(last_patch).squeeze(1)
+            # Embed: [1, 1, patch_size] -> [1, d_model]
+            x = embed_fn(last_patch).squeeze(1)
 
-            # Forward con prefetch a traves de todas las capas
+            # Forward con prefetch
             x, self.hidden_states = forward_with_prefetch(
                 model, x, self.hidden_states
             )
 
-            # Norm final: unsqueeze a 3D para RMSNorm y BitHead
-            x_3d = x.unsqueeze(1)              # [1, d_model] -> [1, 1, d_model]
-            x_normed = model.norm(x_3d)        # [1, 1, d_model]
+            # Norm final
+            x_3d = x.unsqueeze(1)
+            x_normed = model.norm(x_3d)
 
-            # 4 heads -> 4 bytes (escribir en logits_buf pre-alocado)
-            for h_idx, head in enumerate(model.byte_heads):
-                logits = head(x_normed).squeeze(1).squeeze(0)  # [1, 1, 256] -> [256]
+            # N heads -> N bytes
+            for h_idx, head in enumerate(heads):
+                logits = head(x_normed).squeeze(1).squeeze(0)
                 self.logits_buf[h_idx].copy_(logits)
 
-            # Sampling sin allocar tensores nuevos (buffers pre-alocados)
+            # Sampling
             next_bytes = []
-            for h_idx in range(4):
+            for h_idx in range(n_heads):
                 if temperature == 0:
                     next_byte = self.logits_buf[h_idx].argmax().item()
                 else:
@@ -649,15 +780,14 @@ class CPU1InferenceEngine:
                         ).squeeze().item()
                 next_bytes.append(next_byte)
 
-            # Escribir en output buffer pre-alocado
+            # Escribir output
             for j, b in enumerate(next_bytes):
-                idx = i * 4 + j
+                idx = i * n_heads + j
                 if idx < max_bytes:
                     output_buf[idx] = b
 
-            # Preparar proximo patch in-place
+            # Preparar proximo patch
             last_patch[0, 0] = torch.tensor(next_bytes, dtype=torch.long)
-
             token_times.append((time.perf_counter() - t0) * 1000)
 
         # Metricas
@@ -665,15 +795,33 @@ class CPU1InferenceEngine:
             avg_ms = sum(token_times) / len(token_times)
             p50 = sorted(token_times)[len(token_times) // 2]
             p95 = sorted(token_times)[int(len(token_times) * 0.95)]
-            tps = 1000 / avg_ms * 4  # bytes/seg
+            tps = 1000 / avg_ms * n_heads
 
             print(f"\n[Inference] Prefill: {prefill_ms:.1f}ms")
             print(f"[Inference] Decode:  {avg_ms:.2f}ms/patch | "
                   f"p50={p50:.2f} p95={p95:.2f}")
             print(f"[Inference] Throughput: {tps:.1f} bytes/seg "
-                  f"({tps/4:.1f} patches/seg)")
+                  f"({tps/n_heads:.1f} patches/seg)")
 
         return bytes(output_buf[:max_bytes])
+
+
+def _create_model_from_config(config: dict, state_dict: dict) -> nn.Module:
+    """Crear el modelo correcto segun la config.
+    
+    Detecta si es CPU1ModelV2, AblationModel, u otro por la config.
+    """
+    # Si la config tiene 'token_mixer' o 'tokenization', es AblationModel
+    if _HAS_ABLATION and ('token_mixer' in config or 'tokenization' in config):
+        from ablation import build_ablation_model, get_run_config
+        # Si es un run_XX config, expandirlo
+        if 'name' not in config and 'd_model' not in config:
+            # Es un run name directo
+            pass
+        model = AblationModel(config)
+        return model
+
+    return CPU1ModelV2(config)
 
 
 # ===========================================================================
@@ -767,6 +915,360 @@ def run_full_benchmark(
     print("=" * 60)
 
     return results
+
+
+# ===========================================================================
+# BLOQUE 6 — HuggingFace Engine (modelos externos)
+# ===========================================================================
+
+class _HFBlockWrapper(nn.Module):
+    """Wrappea un bloque HuggingFace para interfaz (x, h=None) → (x, None)."""
+
+    def __init__(self, block):
+        super().__init__()
+        self.block = block
+
+    def forward(self, x: Tensor, h=None) -> tuple[Tensor, None]:
+        out = self.block(x)
+        if isinstance(out, tuple):
+            return out[0], None
+        return out, None
+
+
+class _HFModelWrapper(nn.Module):
+    """Modelo HuggingFace wrapeado con interfaz compatible con CPU1InferenceEngine.
+
+    Atributos:
+        blocks:    lista de _HFBlockWrapper
+        norm:      layer norm final
+        embedding: funcion de embedding (wte + wpe para GPT-2)
+        heads:     ModuleList con una head (lm_head)
+    """
+
+    def __init__(self, hf_model, config):
+        super().__init__()
+        self._hf = hf_model
+
+        # Detectar componentes por arquitectura
+        if hasattr(hf_model, 'transformer'):
+            # GPT-2 style
+            tf = hf_model.transformer
+            self.blocks = nn.ModuleList(
+                [_HFBlockWrapper(b) for b in tf.h]
+            )
+            self.norm = tf.ln_f
+            self._wte = tf.wte
+            self._wpe = tf.wpe if hasattr(tf, 'wpe') else None
+        elif hasattr(hf_model, 'model') and hasattr(hf_model.model, 'layers'):
+            # LLaMA / Mistral / LFM style
+            m = hf_model.model
+            self.blocks = nn.ModuleList(
+                [_HFBlockWrapper(b) for b in m.layers]
+            )
+            self.norm = m.norm if hasattr(m, 'norm') else m.final_layernorm
+            self._wte = m.embed_tokens
+            self._wpe = None
+        elif hasattr(hf_model, 'backbone'):
+            # LFM2 / Mamba style — backbone.layers
+            bb = hf_model.backbone
+            layers = bb.layers if hasattr(bb, 'layers') else list(bb.children())
+            self.blocks = nn.ModuleList(
+                [_HFBlockWrapper(b) for b in layers]
+            )
+            self.norm = bb.norm_f if hasattr(bb, 'norm_f') else bb.final_layernorm
+            self._wte = bb.embedding if hasattr(bb, 'embedding') else bb.embeddings
+            self._wpe = None
+        else:
+            children_names = [n for n, _ in hf_model.named_children()]
+            raise ValueError(
+                f"Arquitectura HF no soportada: {type(hf_model).__name__}. "
+                f"Children: {children_names}"
+            )
+
+        # Head de prediccion
+        if hasattr(hf_model, 'lm_head'):
+            self.heads = nn.ModuleList([hf_model.lm_head])
+        elif hasattr(hf_model, 'output'):
+            self.heads = nn.ModuleList([hf_model.output])
+        else:
+            raise ValueError("No se encontro lm_head en el modelo HF")
+
+        self._d_model = getattr(config, 'hidden_size',
+                                getattr(config, 'd_model', 768))
+
+    def embedding(self, x: Tensor) -> Tensor:
+        """Embedding compatible: [batch, seq] → [batch, seq, d_model]."""
+        h = self._wte(x)
+        if self._wpe is not None:
+            seq_len = x.shape[-1] if x.dim() >= 2 else x.shape[0]
+            pos_ids = torch.arange(seq_len, device=x.device)
+            h = h + self._wpe(pos_ids)
+        return h
+
+    def forward(self, x: Tensor, hidden_states=None) -> tuple[Tensor, list]:
+        """Forward completo: [batch, seq] → (logits, states).
+
+        Acepta model(x) sin hidden_states para compatibilidad con evals.
+        """
+        h = self.embedding(x)
+
+        n_blocks = len(self.blocks)
+        if hidden_states is None:
+            hidden_states = [None] * n_blocks
+
+        states = []
+        for i, block in enumerate(self.blocks):
+            hi = hidden_states[i] if i < len(hidden_states) else None
+            h, s = block(h, hi)
+            states.append(s)
+
+        logits = self.heads[0](self.norm(h))
+        return logits, states
+
+
+def _quantize_int4(model: nn.Module) -> nn.Module:
+    """Cuantizar a INT4 weight-only via torchao."""
+    try:
+        from torchao.quantization import quantize_, int4_weight_only
+        quantize_(model, int4_weight_only(group_size=128))
+        print(f"  Cuantizado: INT4 weight-only (torchao, group_size=128)")
+        return model
+    except ImportError:
+        print(f"  [WARN] torchao no disponible para INT4, fallback a INT8")
+        return _quantize_int8_dynamic(model)
+    except Exception as e:
+        print(f"  [WARN] INT4 fallo ({e}), fallback a INT8")
+        return _quantize_int8_dynamic(model)
+
+
+def _quantize_int8_dynamic(model: nn.Module) -> nn.Module:
+    """Cuantizar a INT8 dinamico via torch.ao."""
+    model = torch.ao.quantization.quantize_dynamic(
+        model, {nn.Linear}, dtype=torch.qint8
+    )
+    print(f"  Cuantizado: INT8 dinamico (CPU)")
+    return model
+
+
+class HuggingFaceEngine:
+    """
+    Engine para modelos HuggingFace con interfaz eval-compatible.
+
+    Soporta INT4 (torchao) e INT8 (torch.ao) en CPU.
+    Soporta GPT-2, LLaMA, LFM2.5, etc.
+
+    Uso:
+        engine = HuggingFaceEngine('openai-community/gpt2-medium', quantize_bits=4)
+        engine = HuggingFaceEngine('models/gpt2-medium', local=True, quantize_bits=8)
+    """
+
+    def __init__(self, model_name: str, n_threads: int = None,
+                 quantize_bits: int = 8, local: bool = False,
+                 save_to: str = None):
+        from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+
+        print(f"\n{'=' * 60}")
+        print(f"HuggingFace Engine — {model_name}")
+        print(f"{'=' * 60}")
+
+        load_kwargs = dict(trust_remote_code=True)
+        if local:
+            load_kwargs['local_files_only'] = True
+            print(f"  Cargando desde carpeta local: {model_name}")
+
+        hf_config = AutoConfig.from_pretrained(model_name, **load_kwargs)
+
+        # Determinar dimensiones
+        d_model = getattr(hf_config, 'hidden_size',
+                          getattr(hf_config, 'd_model', 768))
+        n_layers = getattr(hf_config, 'num_hidden_layers',
+                           getattr(hf_config, 'n_layer', 6))
+        vocab_size = hf_config.vocab_size
+
+        print(f"  d_model={d_model}, n_layers={n_layers}, vocab={vocab_size}")
+
+        # Cargar modelo
+        print(f"  Cargando modelo...")
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.float32, **load_kwargs,
+        )
+        hf_model.eval()
+
+        n_params = sum(p.numel() for p in hf_model.parameters())
+        print(f"  Parametros: {n_params:,} ({n_params / 1e6:.1f}M)")
+
+        # Guardar modelo original a carpeta local si se pide (ANTES de cuantizar)
+        if save_to and not local:
+            os.makedirs(save_to, exist_ok=True)
+            print(f"  Guardando modelo FP32 en: {save_to}")
+            hf_model.save_pretrained(save_to)
+            tokenizer_save = AutoTokenizer.from_pretrained(
+                model_name, trust_remote_code=True)
+            tokenizer_save.save_pretrained(save_to)
+            del tokenizer_save
+            print(f"  Modelo y tokenizer guardados")
+
+        # Cuantizar
+        if quantize_bits <= 4:
+            hf_model = _quantize_int4(hf_model)
+            actual_bits = 4
+        elif quantize_bits <= 8:
+            hf_model = _quantize_int8_dynamic(hf_model)
+            actual_bits = 8
+        else:
+            actual_bits = 32
+            print(f"  Sin cuantizar (FP32)")
+
+        # Tokenizer
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model_name, **load_kwargs
+        )
+
+        # Crear wrapper
+        self._wrapped = _HFModelWrapper(hf_model, hf_config)
+        self._wrapped.eval()
+        self.model = self._wrapped
+        self.config = {
+            'model_name': model_name,
+            'd_model': d_model,
+            'n_layers': n_layers,
+            'quantize_bits': actual_bits,
+        }
+
+        # ModelInfo
+        model_class_name = type(hf_model).__name__
+        # Si esta cuantizado, el tipo puede cambiar
+        if hasattr(hf_model, '_orig_mod'):
+            model_class_name = type(hf_model._orig_mod).__name__
+        self.info = ModelInfo(
+            model_class=f"{model_class_name}(HF-Q{actual_bits})",
+            is_byte_level=False,
+            is_recurrent=False,
+            is_ternary=False,
+            n_heads=1,
+            vocab_size=vocab_size,
+            d_model=d_model,
+            n_layers=n_layers,
+            patch_size=1,
+            has_forward_one_token=False,
+        )
+
+        # Threads
+        n = configure_cpu_threads(n_threads)
+        set_thread_affinity(list(range(n)))
+
+        # Buffers
+        self.hidden_states = [None] * n_layers
+        self.logits_buf = torch.zeros(1, vocab_size, dtype=torch.float32)
+        self.probs_buf = torch.zeros(vocab_size, dtype=torch.float32)
+        self.sorted_buf = torch.zeros(vocab_size, dtype=torch.float32)
+        self.idx_buf = torch.zeros(vocab_size, dtype=torch.long)
+        self.scales = {}
+
+        print(f"{'=' * 60}")
+        print(f"Engine listo: {self.info.model_class}")
+        print(f"  {self.info}")
+        print(f"{'=' * 60}\n")
+
+    def _get_model(self) -> nn.Module:
+        return self._wrapped
+
+    def reset_state(self) -> None:
+        self.hidden_states = [None] * self.info.n_layers
+
+    def _get_embedding(self, model):
+        return model.embedding
+
+    def _get_heads(self, model):
+        return list(model.heads)
+
+    @torch.inference_mode()
+    def prefill(self, prompt_bytes: bytes) -> None:
+        raise NotImplementedError("HF models usan tokens, no bytes")
+
+    @torch.inference_mode()
+    def generate(self, prompt_bytes: bytes, max_bytes: int = 200,
+                 temperature: float = 1.0, top_p: float = 0.9,
+                 reset: bool = True) -> bytes:
+        """Generar texto usando tokenizer nativo."""
+        text = prompt_bytes.decode('utf-8', errors='replace')
+        input_ids = self._tokenizer.encode(text, return_tensors='pt')
+
+        with torch.no_grad():
+            output_ids = self._wrapped._hf.generate(
+                input_ids,
+                max_new_tokens=max_bytes // 4,
+                temperature=max(temperature, 0.01),
+                top_p=top_p,
+                do_sample=temperature > 0,
+                pad_token_id=self._tokenizer.eos_token_id,
+            )
+
+        new_tokens = output_ids[0][input_ids.shape[1]:]
+        text_out = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+        return text_out.encode('utf-8')[:max_bytes]
+
+
+def download_and_save_hf_model(model_name: str, save_dir: str,
+                                clear_cache: bool = False) -> str:
+    """Descargar modelo de HuggingFace y guardarlo localmente.
+
+    Args:
+        model_name: Nombre HF (ej: 'openai-community/gpt2-medium')
+        save_dir: Carpeta destino (ej: 'models/gpt2-medium')
+        clear_cache: Si True, limpiar cache HF despues de guardar
+
+    Returns:
+        Path absoluto de la carpeta guardada
+    """
+    import shutil
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"\n[Download] {model_name} -> {save_dir}")
+
+    print(f"  Descargando modelo...")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, trust_remote_code=True, torch_dtype=torch.float32,
+    )
+    model.save_pretrained(save_dir)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  Parametros: {n_params:,} ({n_params / 1e6:.1f}M)")
+    del model
+
+    print(f"  Descargando tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=True,
+    )
+    tokenizer.save_pretrained(save_dir)
+    del tokenizer
+
+    print(f"  Guardado en: {os.path.abspath(save_dir)}")
+
+    if clear_cache:
+        _clear_hf_cache()
+
+    return os.path.abspath(save_dir)
+
+
+def _clear_hf_cache():
+    """Limpiar cache de HuggingFace."""
+    import shutil
+    cache_dir = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface')
+    if os.path.exists(cache_dir):
+        hub_cache = os.path.join(cache_dir, 'hub')
+        if os.path.exists(hub_cache):
+            size_mb = sum(
+                os.path.getsize(os.path.join(dp, f))
+                for dp, dn, fn in os.walk(hub_cache) for f in fn
+            ) / 1e6
+            print(f"\n[Cache] Limpiando HF cache: {hub_cache} ({size_mb:.0f}MB)")
+            shutil.rmtree(hub_cache, ignore_errors=True)
+            print(f"[Cache] Cache eliminada")
+        else:
+            print(f"[Cache] No hay cache HF en {hub_cache}")
+    else:
+        print(f"[Cache] No hay cache HF en {cache_dir}")
 
 
 # ===========================================================================

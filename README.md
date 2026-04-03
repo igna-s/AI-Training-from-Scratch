@@ -1,6 +1,6 @@
 # CPU-1 — Byte-Level Language Model with Ternary Weights
 
-> A ~170M parameter byte-level language model trained via knowledge distillation from Qwen-7B, using fully ternary weights {-1, 0, 1}, MatMul-free token mixing (MLGRU), and zero matrix multiplications at inference (T-MAC LUT). Optimized for consumer CPU (4 cores, 16GB RAM, 32MB L3).
+> A ~170M parameter byte-level language model trained via knowledge distillation from Qwen2.5-3B, using fully ternary weights {-1, 0, 1}, MatMul-free token mixing (MLGRU), and zero matrix multiplications at inference (T-MAC LUT). Optimized for consumer CPU (4 cores, 16GB RAM, 32MB L3).
 
 ---
 
@@ -165,7 +165,7 @@ python create_dataset.py --n_docs 50000
 python create_dataset.py --logprobs-dir ./logprobs --output-dir ./dataset
 ```
 
-Teacher (Qwen-7B in 4-bit NF4) runs **once**. Produces:
+Teacher (Qwen2.5-3B in 4-bit NF4 or FP8) runs **once**. Produces:
 - `byte_marginalized/` — patches, targets, teacher_probs, teacher_mask, teacher_hidden
 - `bpe_tokenized/` — input_ids, labels, teacher_probs_bpe, teacher_mask_bpe
 - Uploaded to `Cukinator/cpu1-ablation-dataset` on HuggingFace Hub
@@ -189,7 +189,7 @@ python train.py --mode ablation --run run_10 --hf-mount
 
 For runs using DeleteGate (MrT5), training proceeds in two phases:
 
-- **Phase 1 (Distillation):** Standard knowledge distillation from Qwen-7B. DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
+- **Phase 1 (Distillation):** Standard knowledge distillation from Qwen2.5-3B. DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
   `python train.py --mode ablation --run run_14 --phase 1`
 
 - **Phase 2 (Compression):** DeleteGate activated. EmbeddingAligner frozen. Loss changes from KL+CE to CE-only.
@@ -211,7 +211,7 @@ The `kaggle/` directory contains scripts ready to run directly in Kaggle noteboo
 
 | Script | Purpose |
 |---|---|
-| `kaggle/cpu1-create-dataset.py` | Runs Qwen-7B teacher, builds and uploads the shared dataset to HF Hub |
+| `kaggle/cpu1-create-dataset.py` | Runs Qwen2.5-3B teacher (Batch 5 aligned for 4GB VRAM free), builds and uploads the shared dataset to HF Hub |
 | `kaggle/cpu1-training.py` | Trains a specific ablation run; configure `RUN_NAME` and `PHASE` at the top |
 
 Both scripts read `HF_TOKEN` from Kaggle Secrets automatically. To push an updated script:
@@ -283,10 +283,11 @@ output = engine.generate(b"Buenos dias", max_bytes=200)
 │   ├── build_optimized/     #   GCC + AVX2 + FMA + Ninja (-march=native -O3)
 │   └── build_ninja/         #   Previous Ninja build
 │
-│  Models (GGUF)
+│  Models
 ├── models/
-│   ├── LFM2-350M-GGUF/      # LFM2-350M Q4_K_M (219 MB) — mlGRU architecture
-│   └── distilgpt2-GGUF/     # distilgpt2 Q4_K_M (60 MB) — transformer baseline
+│   ├── cpu1-170M/              # CPU-1 170M (ternary, byte-level, MLGRU) — in training
+│   ├── LFM2-350M-GGUF/        # LFM2-350M Q4_K_M (219 MB) — mlGRU architecture
+│   └── distilgpt2-GGUF/       # distilgpt2 Q4_K_M (60 MB) — transformer baseline
 │
 │  Results & Reference
 ├── checkpoints/          # Training checkpoints
@@ -299,44 +300,54 @@ output = engine.generate(b"Buenos dias", max_bytes=200)
 
 ## Evaluation Suite
 
-21 tests across 6 categories. Tests that need extra models or dataset are marked N/A if not provided.
+### Why this architecture
+
+The original eval suite had **26 separate test files** (`test_01_forward.py` through `test_26_benchmark_llama_cpp.py`), each reimplementing its own inference loop — loading the model raw, calling `model.forward()` directly, and bypassing all the optimizations in `inference.py` (INT8 packing, torch.compile, weight transposition, zero-alloc generation). The benchmarks measured the unoptimized model, not what actually runs in production.
+
+Additionally:
+- The model was loaded up to **26 times** when running the full suite
+- Tests 06, 07, 08 each ran separate benchmark loops (200-500 tokens) to measure throughput, latency, and jitter — **three runs for what's a single measurement**
+- Tests 12, 13 generated text independently (2 generation calls for quality + UTF-8 checks)
+- Tests 14-16, 19-20 were ablation comparisons that don't belong in an inference eval suite
+- Tests 22 reimplemented `_freeze_bitlinear_for_inference()` — code that already exists in `inference.py`
+- **None of the tests worked with `AblationModel`** — they were hardcoded for `CPU1ModelV2`
+
+### Current design
+
+14 checks across 5 modules. All inference goes through `CPU1InferenceEngine` from `inference.py` — zero duplicated inference code. The engine is created **once** and reused across all checks.
+
+The suite is **multi-architecture**: it auto-detects the model type via `ModelInfo` and adapts each check. Ternary weight checks are skipped for FP16 models, state propagation is skipped for Transformers, generation quality is skipped for BPE models, etc.
 
 ```bash
-# Basico (13 tests con solo el modelo)
-python eval/run_all_tests.py --model checkpoints/run_10.pt
+# Basic (11 checks, no dataset needed)
+python eval/run_eval.py --model checkpoints/run_10.pt
 
-# Con dataset (adds tests 11, 14, 17, 18, 19)
-python eval/run_all_tests.py --model checkpoints/run_10.pt --dataset path/
+# With dataset (adds perplexity + dataset quality checks)
+python eval/run_eval.py --model checkpoints/run_10.pt --dataset path/
 
-# Completo (all 21 tests)
-python eval/run_all_tests.py --model checkpoints/run_10.pt --dataset path/ \
-    --model-transformer checkpoints/run_01.pt \
-    --model-no-fp checkpoints/run_11.pt \
-    --model-50m checkpoints/run_10.pt \
-    --model-170m checkpoints/cpu1_170m.pt
+# Skip external benchmarks (llama.cpp)
+python eval/run_eval.py --model checkpoints/run_10.pt --skip-external
 ```
 
-| Category | Tests |
-|---|---|
-| Correctness | 01 forward, 02 probs, 03 determinism, 04 state propagation, 05 ternary weights |
-| CPU speed | 06 throughput, 07 latency, 08 jitter, 09 context scaling, 10 RAM |
-| Quality | 11 perplexity, 12 generation, 13 UTF-8 validity |
-| Training | 14 convergence |
-| Ablation | 15 FPResidual, 16 MLGRU vs Transformer, 17 teacher coverage, 18 teacher entropy |
-| Full | 19 benchmark, 20 scaling, 21 MLGRU state / KV cache |
-| llama.cpp | 26 native benchmark (llama-bench, 900 prefill / 100 decode) |
+| Module | Checks | Description |
+|---|---|---|
+| `eval_correctness` | forward_shapes, probs, determinism, state_prop, ternary_weights, state_size | Model properties and correctness |
+| `eval_performance` | throughput+latency+jitter (fused), context_scaling, ram | Speed and memory benchmarks |
+| `eval_quality` | generation+utf8 (fused), perplexity | Output quality evaluation |
+| `eval_dataset` | teacher_coverage, teacher_entropy | Dataset quality (no model needed) |
+| `eval_external` | llama_cpp | Native llama-bench benchmark |
 
-**Baseline (distilgpt2, 82M FP32, local CPU):**
+### Supported architectures
 
-| Metric | Value |
-|---|---|
-| Throughput | 43.8 tok/s |
-| Latency p50 | 22.3 ms |
-| Perplexity | 65.4 |
-| RAM delta | 11.5 MB |
-| UTF-8 valid | 100% |
-
-Full report: [`resultados/distilgpt2.md`](resultados/distilgpt2.md)
+| Architecture | Runs | Adapted checks |
+|---|---|---|
+| MLGRU + Byte + Ternary | 09, 10, 11, 12-15, CPU-1 170M | All 14 checks |
+| MLGRU + Byte + FP16 | 08 | Skip ternary_weights |
+| MLGRU + BPE + Ternary | 06, 07 | Skip generation/utf8 (BPE) |
+| MLGRU + BPE + FP16 | 05 | Skip ternary + generation |
+| Transformer + BPE + Ternary | 03, 04 | Skip state_prop, state_size, generation |
+| Transformer + BPE + FP16 | 01 | Skip ternary + states + generation |
+| Transformer + Byte + FP16 | 02 | Skip ternary + states |
 
 ---
 
@@ -429,7 +440,7 @@ MLGRU's mixing `h_t = f*h + (1-f)*c` is a linear interpolation — all nonlinear
 {-1, 0, 1} weights reduce model size to ~44 MB and enable integer arithmetic (INT8 MAC or T-MAC LUT). FPResidual low-rank branches provide precision recovery.
 
 **Why distill from BPE models?**
-Strong pretrained BPE models (Qwen-7B) encode rich language knowledge. Distillation transfers this to the byte-level student more efficiently than training from scratch, despite the tokenization mismatch. First-byte marginalization solves the BPE-to-byte alignment problem.
+Strong pretrained BPE models (like Qwen2.5-3B) encode rich language knowledge. Distillation transfers this to the byte-level student more efficiently than training from scratch, despite the tokenization mismatch. First-byte marginalization solves the BPE-to-byte alignment problem.
 
 **Why hf_mount?**
 The ablation dataset is ~5 GB. Downloading it in full on each Kaggle session wastes time and disk quota. `hf_mount` uses NFS to mount the HF bucket and fetches only the bytes actually read — compatible with Kaggle's Linux environment, no root required.
@@ -448,7 +459,7 @@ torch==2.6.0+cu124          # CUDA 12.4 build (compatible with 12.6 driver)
 transformers==5.3.0
 datasets==4.8.4
 huggingface_hub==1.8.0
-bitsandbytes==0.49.2        # 4-bit NF4 for Qwen-7B teacher
+bitsandbytes==0.49.2        # 4-bit NF4 for teacher model
 pyarrow==23.0.1
 numpy==2.4.3
 tqdm==4.67.3
@@ -466,9 +477,17 @@ tqdm==4.67.3
 - **HF-mount** — Lazy NFS-based dataset access, no full download needed (`hf_mount.py`)
 - **Training** — AMP, gradient accumulation, distillation loss, both main and ablation modes in one script (`train.py`)
 - **Ablation system** — 15-run experimental design, configurable variants, shared dataset, LaTeX table generation (`ablation.py`)
-- **CPU inference** — INT8 packing with `torch.compile` + T-MAC LUT zero-multiplication engine (`inference.py`)
-- **Evaluation suite** — 21 tests: correctness, speed, quality, training, ablation metrics (`eval/`)
+- **CPU inference** — Multi-architecture engine with auto-detection (`ModelInfo`), INT8 packing, torch.compile, T-MAC LUT (`inference.py`)
+- **Evaluation suite** — 14 checks in 5 modules, multi-architecture adaptive, single engine load, fused benchmarks (`eval/`)
 - **Kaggle scripts** — Ready-to-run notebooks for dataset creation and training on T4 (`kaggle/`)
+
+### Models
+
+| Model | Size | Architecture | Status |
+|---|---|---|---|
+| CPU-1 170M | ~170M params (~44 MB ternary) | MLGRU + Byte + Ternary + FPResidual + PFNet | 🔄 Training |
+| LFM2-350M (GGUF) | 219 MB (Q4_K_M) | mlGRU (LiquidAI) | ✅ Benchmark reference |
+| distilgpt2 (GGUF) | 60 MB (Q4_K_M) | Transformer | ✅ Baseline reference |
 
 ### Pending
 

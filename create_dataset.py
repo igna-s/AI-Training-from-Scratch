@@ -960,7 +960,7 @@ def main():
 # Configuration
 # ============================================================
 
-TEACHER_MODEL = "Qwen/Qwen2.5-7B"
+TEACHER_MODEL = "Qwen/Qwen2.5-3B"
 
 # Module-level cache: tokenizer id → {token_id: bytes}
 _TOKEN_BYTES_CACHE: dict = {}
@@ -972,11 +972,11 @@ PATCH_SIZE = 4
 SEQ_LEN_PATCHES = 5000
 SEQ_LEN_TOKENS = 5000
 MAX_EXTRACTION_TOKENS = 2048  # T4 SDPA usa O(seq²) → 4096 OOM con batch≥2; 2048 usa 0.9 GB vs 3.5 GB
-TEACHER_HIDDEN_DIM = 3584   # Qwen2.5-7B hidden size
+TEACHER_HIDDEN_DIM = 2048   # Qwen2.5-3B hidden size
 ALIGN_DIM = 128             # Project teacher hidden 3584→128 (Johnson-Lindenstrauss)
-SEQS_PER_SHARD = 200        # Sequences per parquet shard
+SEQS_PER_SHARD = 50         # Align with 500-doc chunks to upload immediately
 SEED = 42
-BATCH_SIZE_TEACHER = 2   # T4 15GB: model ~4GB + activations ~3GB/doc → 2 docs safe
+BATCH_SIZE_TEACHER = 8   # T4 15GB: 3GB model + (~1.2GB/doc * 8) = ~12.6GB -> Targets ~11GB-12GB VRAM occupied.
 BATCH_SIZE_TEACHER_L4 = 14   # L4 24GB: FP8 model ~7GB + KV@4096 ~3.8GB + logits ~2.5GB
                               # = ~14GB peak → ~4GB headroom; bucket batching keeps avg low
 MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching cuts avg)
@@ -1020,7 +1020,7 @@ def detect_gpu_profile() -> dict:
             'batch_size': BATCH_SIZE_TEACHER,
             'max_tokens': MAX_EXTRACTION_TOKENS,
             'fp8': False, 'dtype': torch.float16,
-            'logit_chunk_size': 256,
+            'logit_chunk_size': 1024,
             'cpu_workers': 2,
         }
     elif 'a100' in name or 'h100' in name:
@@ -2448,7 +2448,7 @@ def upload_dataset_to_hub(local_dir: str = str(OUTPUT_DIR)) -> None:
 # ============================================================
 
 def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
-                       n_docs: int = 50_000,
+                       n_docs: int = 500_000,
                        skip_extraction: bool = False,
                        use_hf_mount: bool = False,
                        stream_to_hub: bool = False,
@@ -2589,7 +2589,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             from queue import Queue as _Queue
 
             _cpu_workers   = _gpu_profile.get('cpu_workers', 2)
-            _pipeline_q    = _Queue(maxsize=2)
+            _pipeline_q    = _Queue(maxsize=15)
             _gpu_error = [None]
 
             def _gpu_producer():
