@@ -39,12 +39,69 @@ import subprocess
 import time
 import types
 from dataclasses import dataclass, field
+import tempfile
+import ctypes
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+_TERNARY_C_KERNEL = None
+
+def _load_c_kernel():
+    global _TERNARY_C_KERNEL
+    if _TERNARY_C_KERNEL is not None:
+        return _TERNARY_C_KERNEL
+    
+    try:
+        import ctypes
+        import subprocess
+        import os
+        import tempfile
+        
+        # El codigo C++ se compilara al vuelo
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        c_path = os.path.join(base_dir, "kernels.cpp")
+        
+        if not os.path.exists(c_path):
+            raise FileNotFoundError(f"No se encontro {c_path}")
+            
+        tmp_dir = tempfile.gettempdir()
+        dll_path = os.path.join(tmp_dir, "fast_lut.dll" if os.name == 'nt' else "fast_lut.so")
+        
+        # Primero intentamos con OpenMP para multi-threading real (Performance Cores)
+        has_omp = False
+        cmd_omp = ["g++", "-O3", "-shared", "-fPIC", "-fopenmp", "-mavx2", "-ffast-math", "-o", dll_path, c_path]
+        try:
+            subprocess.run(cmd_omp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            has_omp = True
+        except subprocess.CalledProcessError:
+            # Fallback a single-thread sin -fopenmp si GCC no tiene libgomp o es MinGW basico
+            print("  [C Kernel] GCC no soporto OpenMP, intentando fallback vectorizado simple...")
+            cmd_fallback = ["g++", "-O3", "-shared", "-fPIC", "-mavx2", "-ffast-math", "-o", dll_path, c_path]
+            subprocess.run(cmd_fallback, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+        lib = ctypes.CDLL(dll_path)
+        lib.ternary_lut_matmul_omp.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_float, ctypes.c_void_p, ctypes.c_void_p, 
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+        ]
+        
+        if hasattr(lib, 'mlgru_scan_fusion'):
+            lib.mlgru_scan_fusion.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int
+            ]
+            
+        _TERNARY_C_KERNEL = lib
+        mod_str = "OpenMP Multithread" if has_omp else "AVX2 Single-Thread"
+        print(f"  [C Kernel] kernels.cpp cargado exitosamente ({mod_str}). Optimizaciones L3 Cache y TPS extremas activas!")
+    except Exception as e:
+        print(f"  [C Kernel] Modulo C++ omitido (fallback a PyTorch): {e}")
+        _TERNARY_C_KERNEL = False
+        
+    return _TERNARY_C_KERNEL
 from model import (
     CPU1ModelV2,
     CPU1BlockV2,
@@ -504,24 +561,28 @@ def forward_with_prefetch(
 
 
 def hadamard_update_manual(
-    h: Tensor,  # [d_model] estado previo, modificado in-place
-    f: Tensor,  # [d_model] forget gate
-    c: Tensor,  # [d_model] candidate
-    g: Tensor,  # [d_model] output gate
+    h: Tensor,  # [B, d_model] estado previo, modificado in-place
+    f: Tensor,  # [B, d_model] forget gate
+    c: Tensor,  # [B, d_model] candidate
+    g: Tensor,  # [B, d_model] output gate
 ) -> Tensor:
     """
-    Actualizacion MLGRU con operaciones in-place para evitar allocaciones.
-
-    Equivalente a:
-        h = f * h + (1 - f) * c
-        out = g * h
-
-    Pero sin crear tensores temporales (1-f, f*h, etc.).
-    torch.lerp hace h = c + f*(h-c) = f*h + (1-f)*c en una sola op vectorizada.
-
-    Ganancia: elimina ~4 allocaciones temporales por timestep.
-    Con d=2048, FP32: ahorra 4 x 8KB = 32KB de allocaciones por capa por token.
+    Actualizacion MLGRU con operaciones in-place o delegacion C++ fusion.
     """
+    lib = _load_c_kernel()
+    if lib and hasattr(lib, 'mlgru_scan_fusion') and h.is_contiguous() and f.is_contiguous():
+        B, d_model = h.shape
+        out = torch.empty_like(h)
+        lib.mlgru_scan_fusion(
+            ctypes.c_void_p(c.contiguous().data_ptr()),
+            ctypes.c_void_p(f.data_ptr()),
+            ctypes.c_void_p(g.contiguous().data_ptr()),
+            ctypes.c_void_p(h.data_ptr()),
+            ctypes.c_void_p(out.data_ptr()),
+            ctypes.c_int(B), ctypes.c_int(d_model)
+        )
+        return out
+
     torch.lerp(c, h, f, out=h)  # in-place, sin allocar
     out = g * h
     return out
@@ -1124,6 +1185,21 @@ class HuggingFaceEngine:
             model_name, **load_kwargs
         )
 
+        # Optimizaciones HF / LFM-350m para maximizar tokens/sec (Static Cache + Torch Compile)
+        if hasattr(hf_model, "generation_config"):
+            try:
+                hf_model.generation_config.cache_implementation = "static"
+                print("  [HuggingFaceEngine] Generacion configurada con StaticCache")
+            except Exception:
+                pass
+        try:
+            import torch._inductor.config as inductor_cfg
+            inductor_cfg.cpp.cxx_flags = ["-O3", "-march=native", "-funroll-loops"]
+            hf_model.forward = torch.compile(hf_model.forward, mode="reduce-overhead")
+            print("  [HuggingFaceEngine] torch.compile activado en el forward del modelo!")
+        except Exception as e:
+            print(f"  [HuggingFaceEngine] torch.compile fallback due to: {e}")
+
         # Crear wrapper
         self._wrapped = _HFModelWrapper(hf_model, hf_config)
         self._wrapped.eval()
@@ -1469,6 +1545,25 @@ def ternary_lut_matmul(
     d_out = w_packed.shape[0]
     n_groups = d_in // group_size
 
+    # === FAST KERNEL (afanar de llama.cpp / kernels especificos en memoria) ===
+    lib = _load_c_kernel()
+    if lib and x.is_contiguous():
+        # w_packed [d_out, n_groups] ya es Row-Major
+        w_C = w_packed.contiguous()
+        decode_c = decode_table.contiguous()
+        out_c = torch.zeros((M, d_out), dtype=torch.float32, device=x.device)
+        
+        lib.ternary_lut_matmul_omp(
+            ctypes.c_void_p(x.data_ptr()),
+            ctypes.c_void_p(w_C.data_ptr()),
+            ctypes.c_float(w_scale),
+            ctypes.c_void_p(decode_c.data_ptr()),
+            ctypes.c_void_p(out_c.data_ptr()),
+            ctypes.c_int(M), ctypes.c_int(d_in), ctypes.c_int(d_out), ctypes.c_int(group_size)
+        )
+        return out_c
+    # =========================================================================
+
     # 1. Reshape activaciones a grupos: [M, n_groups, group_size]
     x_groups = x.float().reshape(M, n_groups, group_size)
 
@@ -1667,8 +1762,9 @@ class CPU1InferenceEngineLUT(CPU1InferenceEngine):
     ):
         self.config = config
         self.group_size = group_size
-        d_model = config.get('d_model', D_MODEL)
-        n_layers = config.get('n_layers', N_LAYERS)
+        self.info = detect_model_info(model, config)
+        d_model = self.info.d_model
+        n_layers = self.info.n_layers
 
         print("\n" + "=" * 60)
         print("Aplicando optimizaciones CPU para inferencia")

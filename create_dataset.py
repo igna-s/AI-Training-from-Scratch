@@ -971,14 +971,13 @@ TOP_K_LOGPROBS = 128
 PATCH_SIZE = 4
 SEQ_LEN_PATCHES = 5000
 SEQ_LEN_TOKENS = 5000
-MAX_EXTRACTION_TOKENS = 2048  # T4 SDPA usa O(seq²) → 4096 OOM con batch≥2; 2048 usa 0.9 GB vs 3.5 GB
+MAX_EXTRACTION_TOKENS = 768  # Reduced from 2048 to allow batch size 100
 TEACHER_HIDDEN_DIM = 2048   # Qwen2.5-3B hidden size (2048); -7B seria 3584
 ALIGN_DIM = 128             # Project teacher hidden 2048→128 (Johnson-Lindenstrauss)
 SEQS_PER_SHARD = 50         # Align with 500-doc chunks to upload immediately
 SEED = 42
-BATCH_SIZE_TEACHER = 8   # T4 15GB post use_cache=False: 3GB model + attn~3.8GB + hidden~0.5GB + logits(chunk256)~1.2GB ≈ 8.5GB safe
-BATCH_SIZE_TEACHER_L4 = 14   # L4 24GB: FP8 model ~7GB + attn@4096 ~3.8GB + logits(chunk256 batch14)≈1.8GB
-                              # = ~12.6GB peak → ~11GB headroom; bucket batching keeps avg low
+BATCH_SIZE_TEACHER = 100   # Restored to 100! Fits safely in 13GB with MAX_EXTRACTION_TOKENS=768
+BATCH_SIZE_TEACHER_L4 = 100   # L4 24GB: FP8 model ~7GB + attn@4096. Restored to 100.
 MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching cuts avg)
 
 
@@ -1017,16 +1016,16 @@ def detect_gpu_profile() -> dict:
     elif 't4' in name or (vram_gb >= 13 and vram_gb < 18):
         # T4: 15GB. With use_cache=False:
         #   NF4 model: ~3 GB
-        #   Attention [B,H,S,S] FP16: 8×28×2048²×2B = ~3.8 GB
-        #   Hidden hooks (2 layers): 8×2048×2048×2B ×2 = ~0.5 GB
-        #   logit chunk [8,256,151643] FP32: 8×256×151643×4B = ~1.2 GB
-        #   Total peak: ~8.5 GB → 6.5 GB headroom on 15 GB
+        #   Attention [B,H,S,S] FP16: 50×28×768²×2B = ~1.6 GB
+        #   Hidden hooks: 50×768×2048×2B×2 = ~0.3 GB
+        #   logit chunk [50,64,151643] FP32: 50×64×151643×4B = ~1.9 GB
+        #   Total peak: ~6.8 GB → leaves plenty of headroom
         return {
             'name': props.name, 'vram_gb': vram_gb,
             'batch_size': BATCH_SIZE_TEACHER,
             'max_tokens': MAX_EXTRACTION_TOKENS,
             'fp8': False, 'dtype': torch.float16,
-            'logit_chunk_size': 256,  # 1024 caused OOM: 8×1024×151643×4B = 4.7 GB per chunk
+            'logit_chunk_size': 64,  # Reduced from 256 to allow batch size 50
             'cpu_workers': 2,
         }
     elif 'a100' in name or 'h100' in name:
@@ -1854,7 +1853,14 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
                 with lock:
                     pidx = _part_counter[0]; _part_counter[0] += 1
                 part_path = output_path.parent / f"{output_path.stem}_part{pidx:04d}.parquet"
-                _write_parquet_part(batch_results, part_path)
+                
+                # Asynchronous Parquet writing to prevent GPU from going idle
+                threading.Thread(
+                    target=_write_parquet_part, 
+                    args=(batch_results, part_path),
+                    daemon=True
+                ).start()
+                
                 batch_results = []
                 pct = min(100, int((total_docs - _work_q.qsize()) / total_docs * 100))
                 print(f"  [GPU {gpu_id}] {processed} docs done ({pct}%)", flush=True)
