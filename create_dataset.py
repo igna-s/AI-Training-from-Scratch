@@ -1800,7 +1800,7 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
     total_docs = len(valid_indices)
     print(f"[Extraction] {total_docs} docs → work-stealing queue, {n_gpus} GPUs")
 
-    _FLUSH_EVERY = 50
+    _FLUSH_EVERY = batch_size  # Flush every GPU batch (8 docs) — no accumulation
     _part_counter = [0]
 
     def worker(gpu_id, model, tokenizer):
@@ -1835,14 +1835,13 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
             del batch_out
             processed += len(batch_indices)
 
-            # Flush to part file (O(1) write, no read-merge, minimal lock)
+            # Flush immediately after every GPU batch (no accumulation)
             if len(batch_results) >= _FLUSH_EVERY:
                 with lock:
                     pidx = _part_counter[0]; _part_counter[0] += 1
                 part_path = output_path.parent / f"{output_path.stem}_part{pidx:04d}.parquet"
                 _write_parquet_part(batch_results, part_path)
                 batch_results = []
-                gc.collect()
                 pct = min(100, int((total_docs - _work_q.qsize()) / total_docs * 100))
                 print(f"  [GPU {gpu_id}] {processed} docs done ({pct}%)", flush=True)
 
@@ -1853,7 +1852,6 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
             part_path = output_path.parent / f"{output_path.stem}_part{pidx:04d}.parquet"
             _write_parquet_part(batch_results, part_path)
             del batch_results
-        gc.collect()
         torch.cuda.empty_cache()
         print(f"  [GPU {gpu_id}] Done — {processed} docs total", flush=True)
 
@@ -1867,8 +1865,9 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
     for t in threads:
         t.join()
 
-    # Merge all part files into single parquet
-    _merge_parquet_parts(output_path)
+    # NO merge — caller reads part files directly via output_path.parent glob
+    # This eliminates the GPU-blocking read-concat-write of ~1GB of data.
+    print(f"  [Extraction] Complete: {output_path} ({_part_counter[0]} parts)", flush=True)
 
 
 # ============================================================
@@ -1971,8 +1970,22 @@ def build_byte_level_dataset(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logprobs_table = pq.ParquetFile(logprobs_parquet)
-    n_total_rows = logprobs_table.metadata.num_rows
+    # Support single file or glob of part files
+    _p = Path(logprobs_parquet)
+    if _p.exists() and _p.is_file():
+        part_files = [_p]
+    else:
+        # logprobs_parquet is a stem like /tmp/logprobs_chunk_0000.parquet
+        # collect all _partNNNN.parquet files for this chunk
+        stem = _p.stem  # e.g. logprobs_chunk_0000
+        part_files = sorted(_p.parent.glob(f"{stem}_part*.parquet"))
+        if not part_files:
+            print(f"[Byte dataset] No part files found for {logprobs_parquet}")
+            empty_carry = {'patches': [], 'targets': [], 'teacher_probs': [],
+                           'teacher_mask': [], 'teacher_hidden': [], 'has_hidden': False, 'teacher_dim': 0}
+            return {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0, 'coverage_pct': 0.0}, empty_carry
+
+    n_total_rows = sum(pq.ParquetFile(str(f)).metadata.num_rows for f in part_files)
 
     # Autodetectar workers si no se especifica
     if n_workers <= 0:
@@ -1996,60 +2009,62 @@ def build_byte_level_dataset(
         teacher_dim = 0
     stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
 
-    # Process in batches of 50 rows to limit RAM (each row ~10MB in pylist form)
     _MARGIN_BATCH = 50
-    print(f"[Byte dataset] Marginalizing {n_total_rows} docs in batches of {_MARGIN_BATCH}...")
-    
+    print(f"[Byte dataset] Marginalizing {n_total_rows} docs from {len(part_files)} part file(s)...")
+
     shard_records: dict[int, list[dict]] = {}
 
-    for batch in logprobs_table.iter_batches(batch_size=_MARGIN_BATCH):
-        rows = batch.to_pylist()
-        if n_workers > 1 and len(rows) > 10:
-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
-                batch_results = list(executor.map(
-                    _marginalize_one_row, rows,
-                    chunksize=max(1, len(rows) // (n_workers * 4)),
-                ))
-        else:
-            batch_results = [_marginalize_one_row(r) for r in rows]
+    for part_file in part_files:
+        for batch in pq.ParquetFile(str(part_file)).iter_batches(batch_size=_MARGIN_BATCH):
+            rows = batch.to_pylist()
+            if n_workers > 1 and len(rows) > 10:
+                with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                    batch_results = list(executor.map(
+                        _marginalize_one_row, rows,
+                        chunksize=max(1, len(rows) // (n_workers * 4)),
+                    ))
+            else:
+                batch_results = [_marginalize_one_row(r) for r in rows]
 
-        for result in batch_results:
-            all_patches.extend(result['patches'])
-            all_targets.extend(result['targets'])
-            all_teacher_probs.extend(result['teacher_probs'])
-            all_teacher_mask.extend(result['teacher_mask'])
-            stats['n_with_teacher'] += result['n_with_teacher']
-            stats['n_patches_total'] += len(result['patches'])
-            if 'teacher_hidden' in result:
-                has_hidden = True
-                teacher_dim = result['teacher_dim']
-                all_teacher_hidden.extend(result['teacher_hidden'])
+            for result in batch_results:
+                all_patches.extend(result['patches'])
+                all_targets.extend(result['targets'])
+                all_teacher_probs.extend(result['teacher_probs'])
+                all_teacher_mask.extend(result['teacher_mask'])
+                stats['n_with_teacher'] += result['n_with_teacher']
+                stats['n_patches_total'] += len(result['patches'])
+                if 'teacher_hidden' in result:
+                    has_hidden = True
+                    teacher_dim = result['teacher_dim']
+                    all_teacher_hidden.extend(result['teacher_hidden'])
 
-            while len(all_patches) >= seq_len:
-                seq_idx = seq_offset + stats['n_sequences']
-                hidden_slice = all_teacher_hidden[:seq_len] if has_hidden else None
-                record = _make_byte_record(
-                    all_patches[:seq_len], all_targets[:seq_len],
-                    all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
-                    teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
-                )
-                shard = seq_idx // SEQS_PER_SHARD
-                shard_records.setdefault(shard, []).append(record)
-                all_patches = all_patches[seq_len:]
-                all_targets = all_targets[seq_len:]
-                all_teacher_probs = all_teacher_probs[seq_len:]
-                all_teacher_mask = all_teacher_mask[seq_len:]
-                if has_hidden:
-                    all_teacher_hidden = all_teacher_hidden[seq_len:]
-                stats['n_sequences'] += 1
-                
-        # Periodic flush to save RAM
-        for shard_idx in list(shard_records.keys()):
-            if len(shard_records[shard_idx]) >= 10:
-                shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
-                _write_byte_shard(shard_records[shard_idx], shard_path)
-                shard_records[shard_idx] = []
-        del rows, batch_results
+                while len(all_patches) >= seq_len:
+                    seq_idx = seq_offset + stats['n_sequences']
+                    hidden_slice = all_teacher_hidden[:seq_len] if has_hidden else None
+                    record = _make_byte_record(
+                        all_patches[:seq_len], all_targets[:seq_len],
+                        all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
+                        teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
+                    )
+                    shard = seq_idx // SEQS_PER_SHARD
+                    shard_records.setdefault(shard, []).append(record)
+                    all_patches = all_patches[seq_len:]
+                    all_targets = all_targets[seq_len:]
+                    all_teacher_probs = all_teacher_probs[seq_len:]
+                    all_teacher_mask = all_teacher_mask[seq_len:]
+                    if has_hidden:
+                        all_teacher_hidden = all_teacher_hidden[seq_len:]
+                    stats['n_sequences'] += 1
+
+            # Periodic flush to save RAM
+            for shard_idx in list(shard_records.keys()):
+                if len(shard_records[shard_idx]) >= 10:
+                    shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
+                    _write_byte_shard(shard_records[shard_idx], shard_path)
+                    shard_records[shard_idx] = []
+            del rows, batch_results
+        # Delete part file after processing to free disk
+        part_file.unlink(missing_ok=True)
 
     # Final Batch write all remaining records per shard
     for shard, records in shard_records.items():
@@ -2191,8 +2206,19 @@ def build_bpe_dataset(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logprobs_table = pq.ParquetFile(logprobs_parquet)
-    n_total_rows = logprobs_table.metadata.num_rows
+    # Support single file or glob of part files
+    _p = Path(logprobs_parquet)
+    if _p.exists() and _p.is_file():
+        part_files = [_p]
+    else:
+        stem = _p.stem
+        part_files = sorted(_p.parent.glob(f"{stem}_part*.parquet"))
+        if not part_files:
+            print(f"[BPE dataset] No part files found for {logprobs_parquet}")
+            empty_carry = {'ids': [], 'probs': [], 'top_ids': [], 'mask': []}
+            return {'n_sequences': 0, 'n_tokens_total': 0}, empty_carry
+
+    n_total_rows = sum(pq.ParquetFile(str(f)).metadata.num_rows for f in part_files)
 
     stats = {'n_sequences': 0, 'n_tokens_total': 0}
     if carry_state is not None:
@@ -2206,73 +2232,72 @@ def build_bpe_dataset(
         buffer_top_ids = []
         buffer_mask = []
 
-    # In-process tokenization in batches of 50 to limit RAM.
     global _BPE_TOKENIZER_CACHE
     if '_BPE_TOKENIZER_CACHE' not in globals() or _BPE_TOKENIZER_CACHE is None:
         from transformers import AutoTokenizer
         _BPE_TOKENIZER_CACHE = AutoTokenizer.from_pretrained(TEACHER_MODEL)
-    _bpe_tok = _BPE_TOKENIZER_CACHE
 
     _BPE_BATCH = 50
-    print(f"[BPE dataset] Tokenizing {n_total_rows} docs in-process...")
+    print(f"[BPE dataset] Tokenizing {n_total_rows} docs from {len(part_files)} part file(s)...")
 
-    # Aglomerar resultados y empaquetar en secuencias
     shard_records: dict[int, list[dict]] = {}
 
-    # Autodetectar workers si no se especifica
     if n_workers <= 0:
         n_workers = max(1, (os.cpu_count() or 4) - 1)
 
-    for batch in logprobs_table.iter_batches(batch_size=_BPE_BATCH):
-        rows = batch.to_pylist()
+    for part_file in part_files:
+        for batch in pq.ParquetFile(str(part_file)).iter_batches(batch_size=_BPE_BATCH):
+            rows = batch.to_pylist()
 
-        # Armar args para _tokenize_bpe_row
-        args_list = [(r, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for r in rows]
+            # Armar args para _tokenize_bpe_row
+            args_list = [(r, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for r in rows]
 
-        if n_workers > 1 and len(rows) > 10:
-            _exec = executor if executor is not None else ProcessPoolExecutor(max_workers=n_workers)
-            try:
-                batch_results = list(_exec.map(
-                    _tokenize_bpe_row, args_list,
-                    chunksize=max(1, len(rows) // (n_workers * 4)),
-                ))
-            finally:
-                if executor is None:
-                    _exec.shutdown(wait=False)
-        else:
-            batch_results = [_tokenize_bpe_row(a) for a in args_list]
+            if n_workers > 1 and len(rows) > 10:
+                _exec = executor if executor is not None else ProcessPoolExecutor(max_workers=n_workers)
+                try:
+                    batch_results = list(_exec.map(
+                        _tokenize_bpe_row, args_list,
+                        chunksize=max(1, len(rows) // (n_workers * 4)),
+                    ))
+                finally:
+                    if executor is None:
+                        _exec.shutdown(wait=False)
+            else:
+                batch_results = [_tokenize_bpe_row(a) for a in args_list]
 
-        for result in batch_results:
-            buffer_ids.extend(result['ids'])
-            buffer_probs.extend(result['probs'])
-            buffer_top_ids.extend(result['top_ids'])
-            buffer_mask.extend(result['mask'])
-            stats['n_tokens_total'] += len(result['ids'])
+            for result in batch_results:
+                buffer_ids.extend(result['ids'])
+                buffer_probs.extend(result['probs'])
+                buffer_top_ids.extend(result['top_ids'])
+                buffer_mask.extend(result['mask'])
+                stats['n_tokens_total'] += len(result['ids'])
 
-        while len(buffer_ids) >= seq_len + 1:
-            seq_idx = seq_offset + stats['n_sequences']
-            record = _make_bpe_record(
-                buffer_ids[:seq_len],
-                buffer_ids[1:seq_len + 1],
-                buffer_probs[:seq_len],
-                buffer_top_ids[:seq_len],
-                buffer_mask[:seq_len],
-            )
-            shard = seq_idx // SEQS_PER_SHARD
-            shard_records.setdefault(shard, []).append(record)
-            buffer_ids = buffer_ids[seq_len:]
-            buffer_probs = buffer_probs[seq_len:]
-            buffer_top_ids = buffer_top_ids[seq_len:]
-            buffer_mask = buffer_mask[seq_len:]
-            stats['n_sequences'] += 1
-            
-        # Periodic flush to save RAM
-        for shard_idx in list(shard_records.keys()):
-            if len(shard_records[shard_idx]) >= 10:
-                shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
-                _write_bpe_shard(shard_records[shard_idx], shard_path)
-                shard_records[shard_idx] = []
-        del rows
+            while len(buffer_ids) >= seq_len + 1:
+                seq_idx = seq_offset + stats['n_sequences']
+                record = _make_bpe_record(
+                    buffer_ids[:seq_len],
+                    buffer_ids[1:seq_len + 1],
+                    buffer_probs[:seq_len],
+                    buffer_top_ids[:seq_len],
+                    buffer_mask[:seq_len],
+                )
+                shard = seq_idx // SEQS_PER_SHARD
+                shard_records.setdefault(shard, []).append(record)
+                buffer_ids = buffer_ids[seq_len:]
+                buffer_probs = buffer_probs[seq_len:]
+                buffer_top_ids = buffer_top_ids[seq_len:]
+                buffer_mask = buffer_mask[seq_len:]
+                stats['n_sequences'] += 1
+
+            # Periodic flush to save RAM
+            for shard_idx in list(shard_records.keys()):
+                if len(shard_records[shard_idx]) >= 10:
+                    shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
+                    _write_bpe_shard(shard_records[shard_idx], shard_path)
+                    shard_records[shard_idx] = []
+            del rows, batch_results
+        # Delete part file after processing to free disk
+        part_file.unlink(missing_ok=True)
 
     # Batch write all remaining records per shard
     for shard, records in shard_records.items():
@@ -2676,11 +2701,14 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                       f"[CPU processing while GPU extracts next]")
                 print(f"{'=' * 60}")
 
+                # Parquet path used as glob stem: builders find _partNNNN files themselves
                 tmp_parquet = Path(f'/tmp/logprobs_chunk_{chunk_idx:04d}.parquet')
-                if not tmp_parquet.exists():
+                _tmp_stem = tmp_parquet.stem
+                _part_files = sorted(tmp_parquet.parent.glob(f"{_tmp_stem}_part*.parquet"))
+                if not _part_files:
                     raise RuntimeError(
                         f"Extraction failed for chunk {chunk_idx}: "
-                        f"{tmp_parquet} was not created.")
+                        f"no part files found matching /tmp/{_tmp_stem}_part*.parquet")
 
                 # Run byte + BPE in parallel threads (both CPU-only, no VRAM)
                 # BPE uses the persistent pool (workers already warm with tokenizer cached)
