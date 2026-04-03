@@ -2581,6 +2581,10 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _pipeline_t0 = time.time()
             _checkpoint_every = 5
 
+            # Pre-import to avoid threading import lock and lazy module race conditions
+            import transformers
+            import datasets
+
             # ---- 1. Load corpus + teacher model CONCURRENTLY ----
             # One thread downloads FineWeb, another preloads Qwen to VRAM.
             # Both complete before the main loop starts.

@@ -30,4 +30,4 @@ with open(os.path.join(tmp_dir, 'dataset-metadata.json'), 'w', encoding='utf-8')
 
 print("Starting Kaggle dataset upload...")
 kaggle_exe = os.path.join(root_dir, '.venv', 'Scripts', 'kaggle.exe')
-subprocess.run([kaggle_exe, 'datasets', 'version', '-p', tmp_dir, '-m', 'Fix pipeline queue bottleneck', '--dir-mode', 'zip'])
+subprocess.run([kaggle_exe, 'datasets', 'version', '-p', tmp_dir, '-m', 'Update source code', '--dir-mode', 'zip'])

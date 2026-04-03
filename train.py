@@ -168,6 +168,7 @@ class DistillationDataset(Dataset):
         targets:       [seq_len, 4] long — next patches (shifted by 1)
         teacher_probs: [seq_len, 256] float32 — distribución marginalizada byte 0
         teacher_mask:  [seq_len] bool — True donde hay señal teacher
+        teacher_hidden:[seq_len, dim] float32 — estados ocultos del teacher
 
     Document packing: documentos concatenados con patch separador [0,0,0,0].
     El packing se hace en el script de byte_marginalization, no acá.
@@ -270,11 +271,14 @@ class DistillationDataset(Dataset):
                 active = torch.randperm(256)[:n_active]
                 teacher_probs[i, active] = torch.softmax(torch.randn(n_active), dim=0)
 
+        teacher_hidden = torch.zeros(S, 128, dtype=torch.float32)
+
         return {
             'patches': patches,
             'targets': targets,
             'teacher_probs': teacher_probs,
             'teacher_mask': teacher_mask,
+            'teacher_hidden': teacher_hidden,
         }
 
     def _get_hf_item(self, idx: int) -> dict[str, Tensor]:
@@ -310,11 +314,19 @@ class DistillationDataset(Dataset):
         else:
             teacher_mask = torch.zeros(seq_len, dtype=torch.bool)
 
+        if 'teacher_hidden' in item and item['teacher_hidden'] is not None:
+            t_dim = int(item.get('teacher_dim', 128))
+            teacher_hidden = _to_tensor(item['teacher_hidden'], torch.float32)
+            teacher_hidden = teacher_hidden.view(seq_len, t_dim)
+        else:
+            teacher_hidden = torch.zeros(seq_len, 128, dtype=torch.float32)
+
         return {
             'patches': patches,
             'targets': targets,
             'teacher_probs': teacher_probs,
             'teacher_mask': teacher_mask,
+            'teacher_hidden': teacher_hidden,
         }
 
 
@@ -603,11 +615,19 @@ def train(args: argparse.Namespace):
             targets = batch['targets'].to(device, non_blocking=True)
             teacher_probs = batch['teacher_probs'].to(device, non_blocking=True)
             teacher_mask = batch['teacher_mask'].to(device, non_blocking=True)
+            teacher_hidden = batch.get('teacher_hidden')
+            if teacher_hidden is not None:
+                teacher_hidden = teacher_hidden.to(device, non_blocking=True)
 
             is_last_micro = (micro_step == grad_accum - 1)
             amp_ctx = torch.amp.autocast('cuda', dtype=torch.float16) if use_amp else contextlib.nullcontext()
             with amp_ctx:
-                logits, _ = model(patches)
+                # If model is AblationModel, it might accept teacher_hidden
+                import inspect
+                if 'teacher_hidden' in inspect.signature(model.forward).parameters if not hasattr(model, 'module') else inspect.signature(model.module.forward).parameters:
+                    logits, _, _ = model(patches, teacher_hidden=teacher_hidden, teacher_mask=teacher_mask)
+                else:
+                    logits, _ = model(patches)
                 loss, metrics = distillation_loss(
                     logits, targets, teacher_probs, teacher_mask,
                     temperature=args.temperature,
@@ -685,7 +705,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--dry-run', action='store_true',
                    help="Usar datos aleatorios (testing)")
     p.add_argument('--dry-run-samples', type=int, default=1000)
-    p.add_argument('--seq-len', type=int, default=2048,
+    p.add_argument('--seq-len', type=int, default=5000,
                    help="Patches por secuencia")
 
     # Training
