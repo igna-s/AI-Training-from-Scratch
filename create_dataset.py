@@ -2928,7 +2928,35 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 bpe_carry = carry['bpe']
                 print(f"  [resume] Saltando chunks 0-{resume_from_chunk - 1}, "
                       f"byte_seqs={byte_seq_offset}, bpe_seqs={bpe_seq_offset}")
-
+            else:
+                # No checkpoint — auto-detect safe shard_offset from existing HF Hub files.
+                # If a previous session ended before chunk 5 (first checkpoint), we'd otherwise
+                # start at shard_offset from CLI arg and overwrite existing shards.
+                try:
+                    _existing = list(api.list_repo_files(DATASET_REPO, repo_type='dataset'))
+                    def _max_shard(prefix):
+                        nums = []
+                        for f in _existing:
+                            if f.startswith(prefix + '/shard_') and f.endswith('.parquet'):
+                                try:
+                                    nums.append(int(f.split('shard_')[1].split('.')[0]))
+                                except ValueError:
+                                    pass
+                        return max(nums) + 1 if nums else 0  # next free shard index
+                    _byte_next = _max_shard('byte_marginalized')
+                    _bpe_next  = _max_shard('bpe_tokenized')
+                    _safe_offset = max(_byte_next, _bpe_next, shard_offset)
+                    if _safe_offset > shard_offset:
+                        print(f"  [shard_offset] Auto-detected: byte_next={_byte_next}, "
+                              f"bpe_next={_bpe_next} → using shard_offset={_safe_offset} "
+                              f"(was {shard_offset} from CLI, would have overwritten existing shards!)")
+                        shard_offset = _safe_offset
+                    else:
+                        print(f"  [shard_offset] No existing shards detected, "
+                              f"using shard_offset={shard_offset} (from CLI)")
+                except Exception as _e:
+                    print(f"  [shard_offset] Could not auto-detect from HF Hub: {_e}. "
+                          f"Using shard_offset={shard_offset} (from CLI)")
             _pipeline_t0 = time.time()
             _checkpoint_every = 5
 
