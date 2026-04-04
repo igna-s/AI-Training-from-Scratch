@@ -985,13 +985,17 @@ MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching 
 
 # --- Concurrency & Resource Control ---
 TARGET_VRAM_GB = 13.0              # Target VRAM usage per T4 (15GB total, 2GB headroom)
-VRAM_SAFETY_FACTOR = 0.90          # Use 90% of calculated VRAM budget
-CALIBRATION_SAMPLES = 4            # Docs for initial VRAM calibration batch
-EXTRACTION_QUEUE_DEPTH = 2         # Max chunks buffered between GPU→CPU
+VRAM_SAFETY_FACTOR = 0.88          # Use 88% of calculated VRAM budget (conservative)
+CALIBRATION_SAMPLES = 6            # Docs for VRAM calibration (more = accurate)
+CALIBRATION_WARMUP = 2             # Warm-up passes before measuring (eliminates GPU cold-start bias)
+# GPU buffer: how many chunks GPU can run ahead of CPU before blocking.
+# Kaggle T4x2 has 2 cores → CPU (byte+BPE) is slower than GPU → needs deep buffer.
+# Each chunk ≈ 100-200MB of parquet in /tmp. 10 chunks = 1-2GB disk. Kaggle has 57GB.
+EXTRACTION_QUEUE_DEPTH = 10        # GPU buffers up to 10 chunks, NEVER blocks waiting for CPU
 UPLOAD_QUEUE_DEPTH = 6             # Max shards buffered for upload
 MAX_ACCUMULATED_PATCHES = 15_000   # ~3× SEQ_LEN_PATCHES, force flush when exceeded
 MAX_ACCUMULATED_TOKENS = 15_000    # ~3× SEQ_LEN_TOKENS, force flush when exceeded
-MODEL_RESET_EVERY_CHUNKS = 20     # Reload models to defragment VRAM
+MODEL_RESET_EVERY_CHUNKS = 30      # Reload models to defragment VRAM (was 20, extended)
 CORPUS_PROGRESS_INTERVAL = 10_000  # Print progress every N docs during download
 
 
@@ -1079,9 +1083,9 @@ def _calibrate_batch_size(model, tokenizer, profile: dict,
         Optimal batch_size that keeps peak VRAM at target_vram_gb.
     """
     device = next(model.parameters()).device
-    dev_idx = device.index if device.index is not None else 0
+    dev_idx = device.index if (hasattr(device, 'index') and device.index is not None) else 0
 
-    # Return cached result if available (saves ~10s per chunk)
+    # Return cached result if available (saves ~10s per call)
     if dev_idx in _CALIBRATED_BATCH_CACHE:
         cached = _CALIBRATED_BATCH_CACHE[dev_idx]
         print(f"[Calibrate] GPU {dev_idx}: using cached batch_size={cached}")
@@ -1091,14 +1095,32 @@ def _calibrate_batch_size(model, tokenizer, profile: dict,
     torch.cuda.empty_cache()
     gc.collect()
 
-    baseline_vram = torch.cuda.memory_allocated(device) / (1024**3)
-
-    # Representative calibration text: ~675 bytes ≈ median FineWeb doc
-    cal_text = "The quick brown fox jumps over the lazy dog. " * 15
+    # Use texts that match the actual workload: ~max_tokens length (not ~50 tokens).
+    # Short texts massively underestimate per-doc VRAM (no KV cache pressure, tiny
+    # activations). A 768-token doc uses ~10× more VRAM than a 50-token doc.
+    _chars_per_token = 4  # conservative for English text
+    _cal_len = profile.get('max_tokens', MAX_EXTRACTION_TOKENS) * _chars_per_token
+    cal_text = ("The quick brown fox jumps over the lazy dog. " * 200)[:_cal_len]
     cal_texts = [cal_text] * CALIBRATION_SAMPLES
 
-    seq_len = profile['max_tokens']
+    seq_len = profile.get('max_tokens', MAX_EXTRACTION_TOKENS)
     logit_chunk = profile.get('logit_chunk_size', 16)
+
+    # Warm-up pass: eliminate CUDA cold-start bias (first run always allocates more)
+    for _ in range(CALIBRATION_WARMUP):
+        try:
+            _ = extract_logprobs_and_hidden_batch(
+                model, tokenizer, cal_texts[:1],
+                top_k=TOP_K_LOGPROBS, seq_len=seq_len,
+                logit_chunk_size=logit_chunk,
+            )
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache(); gc.collect(); break
+    torch.cuda.reset_peak_memory_stats(device)
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    baseline_vram = torch.cuda.memory_allocated(device) / (1024**3)
 
     try:
         _ = extract_logprobs_and_hidden_batch(
@@ -2988,7 +3010,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                   f"(extraction_q={EXTRACTION_QUEUE_DEPTH}, "
                   f"upload_q={UPLOAD_QUEUE_DEPTH})...")
 
-            _cpu_workers = max(1, (os.cpu_count() or 4) - 1)
+            # On Kaggle T4x2: 2 CPU cores. Both are needed:
+            #   - 1 for the byte marginalization ProcessPoolExecutor
+            #   - 1 for the BPE tokenization ProcessPoolExecutor
+            # Running both in parallel threads = 2 cores fully utilized.
+            # Using cpu_count() directly (not -1) since main thread is I/O-bound.
+            _cpu_workers = max(1, os.cpu_count() or 2)
             _extraction_q = Queue(maxsize=EXTRACTION_QUEUE_DEPTH)
             _upload_q = Queue(maxsize=UPLOAD_QUEUE_DEPTH)
             _gpu_error = [None]
