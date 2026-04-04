@@ -997,15 +997,15 @@ CALIBRATION_SAMPLES = 30           # More samples = accurate per-doc VRAM (overh
 CALIBRATION_WARMUP = 2             # Warm-up passes before measuring (eliminates GPU cold-start bias)
 # GPU buffer: how many chunks GPU can run ahead of CPU before blocking.
 # Each queued chunk is just a tuple — actual data is on /tmp disk (57GB available).
-EXTRACTION_QUEUE_DEPTH = 10        # GPU can queue 10 chunks ahead (was 5)
-UPLOAD_QUEUE_DEPTH = 10            # CPU can queue 10 shards for upload (was 6)
+EXTRACTION_QUEUE_DEPTH = 2         # GPU can queue 2 chunks ahead (reduced to prevent deadlock)
+UPLOAD_QUEUE_DEPTH = 2             # CPU can queue 2 shards for upload (reduced to prevent deadlock)
 MAX_ACCUMULATED_PATCHES = 50_000   # ~10× SEQ_LEN_PATCHES, larger buffer with flattened reads
 MAX_ACCUMULATED_TOKENS = 50_000    # ~10× SEQ_LEN_TOKENS, larger buffer with flattened reads
 MODEL_RESET_EVERY_CHUNKS = 30      # Reload models to defragment VRAM (was 20, extended)
 CORPUS_PROGRESS_INTERVAL = 10_000  # Print progress every N docs during download
 RAM_HEADROOM_FRACTION = 0.17       # Keep 17% RAM free (25/30 = 83% usable)
-CHECKPOINT_EVERY_SHARDS = 3        # Checkpoint+upload every 3 shards (batch uploads for efficiency)
-UPLOAD_EVERY_SHARDS = 3            # Upload byte+BPE shard files to HF every N complete shards
+CHECKPOINT_EVERY_SHARDS = 1        # Checkpoint every 1 shard (upload immediately to prevent deadlock)
+UPLOAD_EVERY_SHARDS = 1            # Upload byte+BPE shard files to HF every 1 shard (no batching)
 
 
 def _get_ram_usage():
@@ -3414,16 +3414,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                   f"(extraction_q={EXTRACTION_QUEUE_DEPTH}, "
                   f"upload_q={UPLOAD_QUEUE_DEPTH})...")
 
-            # Oversubscribe CPU workers: each worker spends significant time
-            # blocked on IPC (pickling large numpy arrays through pipes), so
-            # having more workers than physical cores keeps all cores busy.
-            # On 4 cores: 8 byte + 4 BPE = 12 workers total. The OS scheduler
-            # ensures only 4 run at any instant, but the overlap of IPC waits
-            # with compute keeps CPU utilization near 400%.
+            # Use conservative CPU workers to avoid deadlock from fork() lock
+            # contention. Oversubscription was causing frozen workers on Kaggle.
             _total_cpu = max(2, os.cpu_count() or 2)
-            _byte_workers = max(2, _total_cpu * 2)   # 2x cores for byte (heavy + IPC stalls)
-            _bpe_workers = max(1, _total_cpu)         # 1x cores for BPE (lighter)
-            print(f"  [CPU] {_total_cpu} cores: {_byte_workers} byte + {_bpe_workers} BPE workers (oversubscribed)")
+            _byte_workers = max(1, _total_cpu - 1)    # cores-1 to avoid lock contention deadlock
+            _bpe_workers = max(1, _total_cpu - 1)     # cores-1 for BPE (same to avoid deadlock)
+            print(f"  [CPU] {_total_cpu} cores: {_byte_workers} byte + {_bpe_workers} BPE workers (conservative)")
             _extraction_q = Queue(maxsize=EXTRACTION_QUEUE_DEPTH)
             _upload_q = Queue(maxsize=UPLOAD_QUEUE_DEPTH)
             _gpu_error = [None]
@@ -3436,10 +3432,11 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _last_upload_shard = [0]  # track last uploaded shard for batched uploads
 
             # ---- Persistent worker pools (no per-batch fork overhead) ----
-            # max_tasks_per_child: restart workers after 50 tasks to free leaked memory
-            # (Python processes accumulate fragmented heap over time; restart resets it)
-            _bpe_pool = ProcessPoolExecutor(max_workers=_bpe_workers, max_tasks_per_child=50)
-            _byte_pool = ProcessPoolExecutor(max_workers=_byte_workers, max_tasks_per_child=50)
+            # NO max_tasks_per_child: restarting workers via fork() inherits the
+            # tokenizer's locked Rust mutexes from the parent process, causing
+            # instant deadlock. Workers live for the entire pipeline run.
+            _bpe_pool = ProcessPoolExecutor(max_workers=_bpe_workers)
+            _byte_pool = ProcessPoolExecutor(max_workers=_byte_workers)
 
             # ---- Upload Worker Thread ----
             def _upload_worker():
@@ -3576,53 +3573,34 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         f"Extraction failed for chunk {chunk_idx}: "
                         f"no part files found matching /tmp/{_tmp_stem}_part*.parquet")
 
-                # Run byte + BPE in parallel threads (both CPU-only, no VRAM)
+                # Run byte then BPE SEQUENTIALLY (not parallel).
+                # Two ProcessPoolExecutor pools fighting for the same CPU cores
+                # causes IPC pipe deadlocks where both pools block waiting for
+                # workers that are starved of CPU time. Sequential avoids this.
                 _byte_res = [None]
                 _bpe_res = [None]
                 _cpu_errs = []
 
-                def _byte_worker(_bc=byte_carry, _bso=byte_seq_offset):
-                    try:
-                        _byte_res[0] = build_byte_level_dataset(
-                            str(tmp_parquet), str(byte_dir),
-                            seq_offset=_bso, carry_state=_bc,
-                            n_workers=_byte_workers,
-                            shard_offset=shard_offset,
-                            executor=_byte_pool)
-                    except Exception as _e:
-                        _cpu_errs.append(("byte", _e))
-
-                def _bpe_worker(_pc=bpe_carry, _pso=bpe_seq_offset, _pool=_bpe_pool):
-                    try:
-                        _bpe_res[0] = build_bpe_dataset(
-                            str(tmp_parquet), str(bpe_dir),
-                            seq_offset=_pso, carry_state=_pc,
-                            n_workers=_bpe_workers,
-                            executor=_pool,
-                            shard_offset=shard_offset)
-                    except Exception as _e:
-                        _cpu_errs.append(("bpe", _e))
-
-                _bt = threading.Thread(target=_byte_worker, name="byte-proc")
-                _pt = threading.Thread(target=_bpe_worker, name="bpe-proc")
                 _byte_t0 = time.time()
-                _bt.start(); _pt.start()
+                try:
+                    _byte_res[0] = build_byte_level_dataset(
+                        str(tmp_parquet), str(byte_dir),
+                        seq_offset=byte_seq_offset, carry_state=byte_carry,
+                        n_workers=_byte_workers,
+                        shard_offset=shard_offset,
+                        executor=_byte_pool)
+                except Exception as _e:
+                    _cpu_errs.append(("byte", _e))
 
-                # S3: Prefetch next chunk's parquet into pagecache while byte+BPE run
-                _next_ci = chunk_idx + 1
-                _next_tmp = Path(f'/tmp/logprobs_chunk_{_next_ci:04d}.parquet')
-                _next_stem = _next_tmp.stem
-                _next_parts = sorted(_next_tmp.parent.glob(f"{_next_stem}_part*.parquet"))
-                if _next_parts:
-                    for _nf in _next_parts:
-                        try:
-                            with open(_nf, 'rb') as _fh:
-                                while _fh.read(1024 * 1024):  # 1MB reads → pagecache
-                                    pass
-                        except Exception:
-                            pass  # file may not exist yet — that's fine
-
-                _bt.join(); _pt.join()
+                try:
+                    _bpe_res[0] = build_bpe_dataset(
+                        str(tmp_parquet), str(bpe_dir),
+                        seq_offset=bpe_seq_offset, carry_state=bpe_carry,
+                        n_workers=_bpe_workers,
+                        executor=_bpe_pool,
+                        shard_offset=shard_offset)
+                except Exception as _e:
+                    _cpu_errs.append(("bpe", _e))
                 _cpu_proc_elapsed = time.time() - _byte_t0
 
                 if _cpu_errs:
