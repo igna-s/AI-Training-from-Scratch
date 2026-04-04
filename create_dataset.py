@@ -989,9 +989,9 @@ VRAM_SAFETY_FACTOR = 0.88          # Use 88% of calculated VRAM budget (conserva
 CALIBRATION_SAMPLES = 6            # Docs for VRAM calibration (more = accurate)
 CALIBRATION_WARMUP = 2             # Warm-up passes before measuring (eliminates GPU cold-start bias)
 # GPU buffer: how many chunks GPU can run ahead of CPU before blocking.
-# Kaggle T4x2 has 2 cores → CPU (byte+BPE) is slower than GPU → needs deep buffer.
-# Each chunk ≈ 100-200MB of parquet in /tmp. 10 chunks = 1-2GB disk. Kaggle has 57GB.
-EXTRACTION_QUEUE_DEPTH = 10        # GPU buffers up to 10 chunks, NEVER blocks waiting for CPU
+# Keep at 3: RAM is the constraint (hidden states are large). Disk is fine.
+# Each chunk ≈ 100-200MB of parquet. 3 chunks = ~600MB. Kaggle has 57GB disk.
+EXTRACTION_QUEUE_DEPTH = 3         # GPU buffers up to 3 chunks ahead of CPU
 UPLOAD_QUEUE_DEPTH = 6             # Max shards buffered for upload
 MAX_ACCUMULATED_PATCHES = 15_000   # ~3× SEQ_LEN_PATCHES, force flush when exceeded
 MAX_ACCUMULATED_TOKENS = 15_000    # ~3× SEQ_LEN_TOKENS, force flush when exceeded
@@ -2117,14 +2117,24 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
                 continue
 
             for i, result in zip(batch_indices, batch_out):
+                # Store hidden states as compact float16 bytes instead of Python list.
+                # Python list of 768*2048 floats = ~12MB per doc (float64 objects + overhead).
+                # numpy float16 bytes = 768*2048*2 = 3.1MB per doc. ~4x smaller, no overhead.
+                _h = result['teacher_hidden']
+                if _h is not None:
+                    import numpy as _np
+                    _hb = _np.array(_h, dtype=_np.float16).tobytes()
+                else:
+                    _hb = b''
                 batch_results.append({
                     'doc_id':         i,
                     'text_bytes':     result['text_bytes'],
                     'positions':      json.dumps(result['positions']),
                     'n_tokens':       result['n_tokens'],
-                    'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
+                    'teacher_hidden': _hb,
                     'teacher_dim':    result['teacher_dim'],
                 })
+                del _h, _hb
             del batch_out
             processed += len(batch_indices)
             _batch_count += 1
@@ -2143,6 +2153,12 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
                 )
                 wt.start()
                 _async_write_threads.append(wt)
+
+                # Cap concurrent write threads at 2: join oldest to prevent
+                # unbounded RAM accumulation (each holds ~100MB of batch data)
+                if len(_async_write_threads) > 2:
+                    _async_write_threads[0].join()
+                    _async_write_threads.pop(0)
 
                 batch_results = []
                 pct = min(100, int((total_docs - _work_q.qsize()) / total_docs * 100))
@@ -2929,34 +2945,82 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 print(f"  [resume] Saltando chunks 0-{resume_from_chunk - 1}, "
                       f"byte_seqs={byte_seq_offset}, bpe_seqs={bpe_seq_offset}")
             else:
-                # No checkpoint — auto-detect safe shard_offset from existing HF Hub files.
-                # If a previous session ended before chunk 5 (first checkpoint), we'd otherwise
-                # start at shard_offset from CLI arg and overwrite existing shards.
+                # No checkpoint — scan existing HF Hub shards to reconstruct state.
+                # If a previous session wrote shards but ended before checkpoint (chunk 5),
+                # we recover seq offsets and shard_offset from the actual data on HF.
                 try:
+                    from huggingface_hub import hf_hub_download as _hf_dl
+                    import pyarrow.parquet as _pq
+
                     _existing = list(api.list_repo_files(DATASET_REPO, repo_type='dataset'))
-                    def _max_shard(prefix):
-                        nums = []
+
+                    def _shard_files(prefix):
+                        out = []
                         for f in _existing:
                             if f.startswith(prefix + '/shard_') and f.endswith('.parquet'):
                                 try:
-                                    nums.append(int(f.split('shard_')[1].split('.')[0]))
+                                    idx = int(f.split('shard_')[1].split('.')[0])
+                                    out.append((idx, f))
                                 except ValueError:
                                     pass
-                        return max(nums) + 1 if nums else 0  # next free shard index
-                    _byte_next = _max_shard('byte_marginalized')
-                    _bpe_next  = _max_shard('bpe_tokenized')
-                    _safe_offset = max(_byte_next, _bpe_next, shard_offset)
-                    if _safe_offset > shard_offset:
-                        print(f"  [shard_offset] Auto-detected: byte_next={_byte_next}, "
-                              f"bpe_next={_bpe_next} → using shard_offset={_safe_offset} "
-                              f"(was {shard_offset} from CLI, would have overwritten existing shards!)")
-                        shard_offset = _safe_offset
-                    else:
-                        print(f"  [shard_offset] No existing shards detected, "
-                              f"using shard_offset={shard_offset} (from CLI)")
+                        return sorted(out)
+
+                    def _count_rows_on_hf(shard_list):
+                        """Download each shard metadata-only and count rows."""
+                        total = 0
+                        max_idx = -1
+                        for idx, fname in shard_list:
+                            try:
+                                _p = _hf_dl(repo_id=DATASET_REPO, filename=fname,
+                                            repo_type='dataset')
+                                _meta = _pq.read_metadata(_p)
+                                total += _meta.num_rows
+                                max_idx = max(max_idx, idx)
+                            except Exception as _re:
+                                print(f"  [shard_scan] Could not read {fname}: {_re}")
+                        return total, max_idx
+
+                    _byte_shards = _shard_files('byte_marginalized')
+                    _bpe_shards  = _shard_files('bpe_tokenized')
+
+                    print(f"  [shard_scan] Found {len(_byte_shards)} byte shards, "
+                          f"{len(_bpe_shards)} BPE shards on HF Hub. Counting rows...")
+
+                    _byte_rows, _byte_max_idx = _count_rows_on_hf(_byte_shards)
+                    _bpe_rows,  _bpe_max_idx  = _count_rows_on_hf(_bpe_shards)
+
+                    # Next free shard index
+                    _safe_offset = max(
+                        _byte_max_idx + 1 if _byte_max_idx >= 0 else 0,
+                        _bpe_max_idx  + 1 if _bpe_max_idx  >= 0 else 0,
+                        shard_offset)
+
+                    # Restore seq offsets from actual shard row counts
+                    if _byte_rows > 0:
+                        byte_seq_offset = _byte_rows
+                    if _bpe_rows > 0:
+                        bpe_seq_offset = _bpe_rows
+
+                    # Estimate which chunk to skip based on bpe sequences
+                    # (BPE seqs ≈ docs/SEQ_LEN_TOKENS, so docs ≈ bpe_rows * SEQ_LEN_TOKENS)
+                    if _bpe_rows > 0:
+                        _est_docs_done = int(_bpe_rows * SEQ_LEN_TOKENS)
+                        _est_chunks_done = max(0, _est_docs_done // chunk_size - 1)
+                        resume_from_chunk = _est_chunks_done
+                        print(f"  [shard_scan] ~{_est_docs_done:,} docs in shards "
+                              f"→ skipping ~{_est_chunks_done} chunks")
+
+                    shard_offset = _safe_offset
+
+                    print(f"  [shard_scan] Recovered: byte_seqs={byte_seq_offset}, "
+                          f"bpe_seqs={bpe_seq_offset}, shard_offset={shard_offset}, "
+                          f"resume_from_chunk≈{resume_from_chunk}")
+                    print(f"  [shard_scan] NOTE: carry state unknown (no checkpoint). "
+                          f"Sequences will append correctly but boundary may shift slightly.")
+
                 except Exception as _e:
-                    print(f"  [shard_offset] Could not auto-detect from HF Hub: {_e}. "
-                          f"Using shard_offset={shard_offset} (from CLI)")
+                    print(f"  [shard_scan] Could not scan HF Hub: {_e}. "
+                          f"Using defaults (shard_offset={shard_offset})")
             _pipeline_t0 = time.time()
             _checkpoint_every = 5
 
