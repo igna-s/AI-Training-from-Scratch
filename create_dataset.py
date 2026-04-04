@@ -20,6 +20,7 @@ import gc
 import json
 import math
 import os
+import random
 import shutil
 import threading
 import time
@@ -974,29 +975,66 @@ TOP_K_LOGPROBS = 128
 PATCH_SIZE = 4
 SEQ_LEN_PATCHES = 5000
 SEQ_LEN_TOKENS = 5000
-MAX_EXTRACTION_TOKENS = 768  # Reduced from 2048 to allow batch size 100
+MAX_EXTRACTION_TOKENS = 700  # 700 max tokens per doc → shorter seqs = bigger batch
 TEACHER_HIDDEN_DIM = 2048   # Qwen2.5-3B hidden size (2048); -7B seria 3584
 ALIGN_DIM = 128             # Project teacher hidden 2048→128 (Johnson-Lindenstrauss)
 SEQS_PER_SHARD = 50         # Align with 500-doc chunks to upload immediately
 SEED = 42
-BATCH_SIZE_TEACHER = 100   # Restored to 100! Fits safely in 13GB with MAX_EXTRACTION_TOKENS=768
+BATCH_SIZE_TEACHER = 120   # 700 tok → ~17% less VRAM than 768, fits bs=120 in 13GB
 BATCH_SIZE_TEACHER_L4 = 100   # L4 24GB: FP8 model ~7GB + attn@4096. Restored to 100.
 MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching cuts avg)
 
 # --- Concurrency & Resource Control ---
-TARGET_VRAM_GB = 13.0              # Target VRAM usage per T4 (15GB total, 2GB headroom)
-VRAM_SAFETY_FACTOR = 0.88          # Use 88% of calculated VRAM budget (conservative)
-CALIBRATION_SAMPLES = 6            # Docs for VRAM calibration (more = accurate)
+TARGET_VRAM_GB = 13.0              # Hard cap: 13GB per T4 GPU (15GB total, 2GB headroom)
+VRAM_SAFETY_FACTOR = 0.96          # Aggressive: OOM-halving fallback is the real safety net
+RAM_HARD_LIMIT_GB = 25.0           # Hard cap: never exceed 25GB RAM total
+CALIBRATION_SAMPLES = 30           # More samples = accurate per-doc VRAM (overhead diluted)
 CALIBRATION_WARMUP = 2             # Warm-up passes before measuring (eliminates GPU cold-start bias)
 # GPU buffer: how many chunks GPU can run ahead of CPU before blocking.
-# Keep at 3: RAM is the constraint (hidden states are large). Disk is fine.
-# Each chunk ≈ 100-200MB of parquet. 3 chunks = ~600MB. Kaggle has 57GB disk.
-EXTRACTION_QUEUE_DEPTH = 3         # GPU buffers up to 3 chunks ahead of CPU
-UPLOAD_QUEUE_DEPTH = 6             # Max shards buffered for upload
-MAX_ACCUMULATED_PATCHES = 15_000   # ~3× SEQ_LEN_PATCHES, force flush when exceeded
-MAX_ACCUMULATED_TOKENS = 15_000    # ~3× SEQ_LEN_TOKENS, force flush when exceeded
+# Each queued chunk is just a tuple — actual data is on /tmp disk (57GB available).
+EXTRACTION_QUEUE_DEPTH = 10        # GPU can queue 10 chunks ahead (was 5)
+UPLOAD_QUEUE_DEPTH = 10            # CPU can queue 10 shards for upload (was 6)
+MAX_ACCUMULATED_PATCHES = 50_000   # ~10× SEQ_LEN_PATCHES, larger buffer with flattened reads
+MAX_ACCUMULATED_TOKENS = 50_000    # ~10× SEQ_LEN_TOKENS, larger buffer with flattened reads
 MODEL_RESET_EVERY_CHUNKS = 30      # Reload models to defragment VRAM (was 20, extended)
 CORPUS_PROGRESS_INTERVAL = 10_000  # Print progress every N docs during download
+RAM_HEADROOM_FRACTION = 0.17       # Keep 17% RAM free (25/30 = 83% usable)
+CHECKPOINT_EVERY_SHARDS = 2        # Checkpoint+upload after every N complete shard pairs
+
+
+def _get_ram_usage():
+    """Return (used_gb, total_gb, fraction_used)."""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        return mem.used / 1024**3, mem.total / 1024**3, mem.percent / 100.0
+    except ImportError:
+        try:
+            with open('/proc/meminfo') as f:
+                lines = f.readlines()
+            info = {}
+            for line in lines:
+                parts = line.split()
+                info[parts[0].rstrip(':')] = int(parts[1]) * 1024
+            total = info.get('MemTotal', 0)
+            avail = info.get('MemAvailable', info.get('MemFree', 0))
+            used = total - avail
+            return used / 1024**3, total / 1024**3, used / max(total, 1)
+        except Exception:
+            return 0, 0, 0
+
+
+def _check_ram_pressure(label=""):
+    """Force GC if RAM headroom < RAM_HEADROOM_FRACTION. Returns True if pressure high."""
+    used_gb, total_gb, frac = _get_ram_usage()
+    headroom = 1.0 - frac
+    if headroom < RAM_HEADROOM_FRACTION:
+        gc.collect()
+        used_gb2, _, frac2 = _get_ram_usage()
+        print(f"  [RAM {label}] Pressure! {frac*100:.0f}%→{frac2*100:.0f}% "
+              f"({used_gb:.1f}→{used_gb2:.1f}/{total_gb:.1f}GB) — forced GC", flush=True)
+        return True
+    return False
 
 
 def detect_gpu_profile() -> dict:
@@ -1032,18 +1070,18 @@ def detect_gpu_profile() -> dict:
             'cpu_workers': 4,
         }
     elif 't4' in name or (vram_gb >= 13 and vram_gb < 18):
-        # T4: 15GB. With use_cache=False:
+        # T4: 15GB, cap at 13GB. With use_cache=False, 700 tok max:
         #   NF4 model: ~3 GB
-        #   Attention [B,H,S,S] FP16: 50×28×768²×2B = ~1.6 GB
-        #   Hidden hooks: 50×768×2048×2B×2 = ~0.3 GB
-        #   logit chunk [50,64,151643] FP32: 50×64×151643×4B = ~1.9 GB
-        #   Total peak: ~6.8 GB → leaves plenty of headroom
+        #   Attention [B,H,S,S] FP16: 120×28×700²×2B = ~3.3 GB
+        #   Hidden hooks: 120×700×2048×2B×2 = ~0.7 GB
+        #   logit chunk [120,64,151643] FP32: 120×64×151643×4B = ~4.4 GB
+        #   Total peak: ~11.4 GB → under 13GB cap (calibrator will adjust)
         return {
             'name': props.name, 'vram_gb': vram_gb,
             'batch_size': BATCH_SIZE_TEACHER,
             'max_tokens': MAX_EXTRACTION_TOKENS,
             'fp8': False, 'dtype': torch.float16,
-            'logit_chunk_size': 16,  # Reduced from 64→16: peak logits [B,16,V]×4B = ~1GB (was 3.8GB)
+            'logit_chunk_size': 64,  # 4x larger chunks → fewer kernel launches, better occupancy
             'cpu_workers': 2,
         }
     elif 'a100' in name or 'h100' in name:
@@ -1145,8 +1183,8 @@ def _calibrate_batch_size(model, tokenizer, profile: dict,
     else:
         optimal_batch = profile['batch_size']
 
-    # Cap at 2× profile default to avoid absurd values
-    optimal_batch = min(optimal_batch, profile['batch_size'] * 2)
+    # Cap at 4× profile default to allow aggressive VRAM usage
+    optimal_batch = min(optimal_batch, profile['batch_size'] * 4)
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -1775,7 +1813,7 @@ def _write_parquet_part(records: list[dict], part_path: Path) -> None:
     if records and 'teacher_hidden' in records[0]:
         columns['teacher_hidden'] = pa.array(
             [r['teacher_hidden'] for r in records],
-            type=pa.list_(pa.float32()),
+            type=pa.large_binary(),
         )
         columns['teacher_dim'] = pa.array(
             [r['teacher_dim'] for r in records], type=pa.int32(),
@@ -1960,14 +1998,20 @@ def _run_extraction_single_gpu(corpus_texts, output_path, start_idx,
             )
 
             for j, result in zip(batch_indices, batch_out):
+                _h = result.get('teacher_hidden')
+                if _h is not None:
+                    _hb = np.array(_h, dtype=np.float16).tobytes()
+                else:
+                    _hb = b''
                 batch_results.append({
                     'doc_id':         j,
                     'text_bytes':     result['text_bytes'],
                     'positions':      json.dumps(result['positions']),
                     'n_tokens':       result['n_tokens'],
-                    'teacher_hidden': [v for row in result['teacher_hidden'] for v in row],
+                    'teacher_hidden': _hb,
                     'teacher_dim':    result['teacher_dim'],
                 })
+                del _h
             del batch_out
 
             i += len(batch_indices)
@@ -2075,20 +2119,33 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
         _batch_count = 0
 
         while True:
-            # Pull next batch from shared queue (work-stealing)
-            batch_indices = []
-            for _ in range(bs):
+            # Peek first doc to estimate length for dynamic batch sizing
+            try:
+                first_idx = _work_q.get_nowait()
+            except Empty:
+                break
+            est_len = _est_tok(first_idx)
+            bucket_seq_len = min(seq_len, est_len + 128)
+
+            # Dynamic batch size: shorter docs → bigger batch
+            # Attention VRAM is O(S²), so shorter seqs allow much bigger batches.
+            # Docs are sorted by length, so consecutive docs are similar size.
+            if bucket_seq_len < seq_len * 0.9:
+                vram_scale = (bucket_seq_len / seq_len) ** 1.5
+                dynamic_bs = min(int(bs / max(vram_scale, 0.1)), bs * 5)
+            else:
+                dynamic_bs = bs
+
+            batch_indices = [first_idx]
+            for _ in range(dynamic_bs - 1):
                 try:
                     batch_indices.append(_work_q.get_nowait())
                 except Empty:
                     break
-            if not batch_indices:
-                break
 
             batch_texts = [corpus_texts[i] for i in batch_indices]
 
-            # Dynamic seq_len per bucket: avoid allocating max-length KV cache
-            # for short docs (most FineWeb docs are ~175 tokens)
+            # Recompute actual bucket_seq_len with full batch
             bucket_max_tok = max(_est_tok(j) for j in batch_indices)
             bucket_seq_len = min(seq_len, bucket_max_tok + 128)
 
@@ -2209,7 +2266,11 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
 # ============================================================
 
 def _marginalize_one_row(row: dict) -> dict:
-    """Marginalizar un doc BPE→byte. Diseñado para multiprocessing (sin estado compartido)."""
+    """Marginalizar un doc BPE→byte. Diseñado para multiprocessing (sin estado compartido).
+
+    RAM-optimized: teacher_hidden decoded from float16 bytes, teacher_probs
+    returned as numpy arrays instead of Python lists (~7x less RAM per patch).
+    """
     text_bytes = bytes(row['text_bytes'])
     positions = json.loads(row['positions'])
 
@@ -2217,10 +2278,16 @@ def _marginalize_one_row(row: dict) -> dict:
     has_hidden = 'teacher_hidden' in row and row['teacher_hidden'] is not None
     teacher_dim = row.get('teacher_dim', 0) if has_hidden else 0
     if has_hidden:
-        hidden_flat = row['teacher_hidden']
+        _raw = row['teacher_hidden']
+        if isinstance(_raw, (bytes, bytearray)):
+            hidden_flat = np.frombuffer(_raw, dtype=np.float16).astype(np.float32)
+        elif isinstance(_raw, np.ndarray):
+            hidden_flat = _raw.astype(np.float32)
+        else:
+            hidden_flat = np.array(_raw, dtype=np.float32)
+        del _raw
 
     # Autoregressive: pos[i] predicts what comes at positions[i+1]['byte_offset'].
-    # Store predictions at the *next* token's byte offset so patch boundary lookup is correct.
     byte_to_teacher = {}
     byte_offset_to_pos = {}
     for idx, pos in enumerate(positions):
@@ -2242,42 +2309,46 @@ def _marginalize_one_row(row: dict) -> dict:
         byte_to_teacher[next_byte_off] = byte_probs
         if has_hidden:
             byte_offset_to_pos[next_byte_off] = idx
+    del positions  # free JSON memory early
 
     n_patches = len(text_bytes) // PATCH_SIZE
-    patches, targets, teacher_probs, teacher_mask = [], [], [], []
-    teacher_hidden_patches = [] if has_hidden else None
+    n_out = max(0, n_patches - 1)
+
+    # Pre-allocate numpy arrays instead of Python lists for large fields
+    out_patches = []
+    out_targets = []
+    out_teacher_probs = np.zeros((n_out, 256), dtype=np.float32)
+    out_teacher_mask = np.zeros(n_out, dtype=bool)
+    out_teacher_hidden = np.zeros((n_out, teacher_dim), dtype=np.float32) if has_hidden else None
     n_with_teacher = 0
 
-    for p_idx in range(n_patches - 1):
+    for p_idx in range(n_out):
         patch_start = p_idx * PATCH_SIZE
         target_start = (p_idx + 1) * PATCH_SIZE
-        patches.append(list(text_bytes[patch_start:patch_start + PATCH_SIZE]))
-        targets.append(list(text_bytes[target_start:target_start + PATCH_SIZE]))
-        has_teacher = target_start in byte_to_teacher
-        if has_teacher:
+        out_patches.append(list(text_bytes[patch_start:patch_start + PATCH_SIZE]))
+        out_targets.append(list(text_bytes[target_start:target_start + PATCH_SIZE]))
+        if target_start in byte_to_teacher:
             bp = byte_to_teacher[target_start]
-            teacher_probs.append([bp.get(b, 0.0) for b in range(256)])
+            for b_val, prob in bp.items():
+                out_teacher_probs[p_idx, b_val] = prob
+            out_teacher_mask[p_idx] = True
             n_with_teacher += 1
-        else:
-            teacher_probs.append([0.0] * 256)
-        teacher_mask.append(has_teacher)
 
-        if has_hidden:
-            if has_teacher and target_start in byte_offset_to_pos:
+            if has_hidden and target_start in byte_offset_to_pos:
                 pos_idx = byte_offset_to_pos[target_start]
                 start = pos_idx * teacher_dim
                 end = start + teacher_dim
-                teacher_hidden_patches.append(hidden_flat[start:end])
-            else:
-                teacher_hidden_patches.append([0.0] * teacher_dim)
+                if end <= len(hidden_flat):
+                    out_teacher_hidden[p_idx] = hidden_flat[start:end]
 
     result = {
-        'patches': patches, 'targets': targets,
-        'teacher_probs': teacher_probs, 'teacher_mask': teacher_mask,
+        'patches': out_patches, 'targets': out_targets,
+        'teacher_probs': out_teacher_probs,   # numpy [n_out, 256] float32
+        'teacher_mask': out_teacher_mask,       # numpy [n_out] bool
         'n_with_teacher': n_with_teacher,
     }
     if has_hidden:
-        result['teacher_hidden'] = teacher_hidden_patches
+        result['teacher_hidden'] = out_teacher_hidden  # numpy [n_out, teacher_dim]
         result['teacher_dim'] = teacher_dim
     return result
 
@@ -2290,17 +2361,15 @@ def build_byte_level_dataset(
     seq_offset: int = 0,
     carry_state: dict = None,
     shard_offset: int = 0,
+    executor=None,              # optional persistent ProcessPoolExecutor
 ) -> tuple:
     """
     Convert BPE logprobs to byte-level distributions.
     Parallelizado con ProcessPoolExecutor para saturar CPU multi-core.
 
-    Output per sequence:
-        patches:        [seq_len, 4] uint8
-        targets:        [seq_len, 4] uint8
-        teacher_probs:  [seq_len, 256] float32  (sparse)
-        teacher_mask:   [seq_len] bool
-        teacher_hidden: [seq_len, teacher_dim] float32  (optional, if extracted)
+    RAM-optimized: numpy arrays for teacher_probs/mask/hidden,
+    persistent ProcessPoolExecutor (no per-batch fork overhead),
+    shard writes without read-concat-write, RAM pressure monitoring.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2310,111 +2379,241 @@ def build_byte_level_dataset(
     if _p.exists() and _p.is_file():
         part_files = [_p]
     else:
-        # logprobs_parquet is a stem like /tmp/logprobs_chunk_0000.parquet
-        # collect all _partNNNN.parquet files for this chunk
-        stem = _p.stem  # e.g. logprobs_chunk_0000
+        stem = _p.stem
         part_files = sorted(_p.parent.glob(f"{stem}_part*.parquet"))
         if not part_files:
             print(f"[Byte dataset] No part files found for {logprobs_parquet}")
-            empty_carry = {'patches': [], 'targets': [], 'teacher_probs': [],
-                           'teacher_mask': [], 'teacher_hidden': [], 'has_hidden': False, 'teacher_dim': 0}
+            empty_carry = {'patches': [], 'targets': [],
+                           'teacher_probs_np': np.zeros((0, 256), dtype=np.float32),
+                           'teacher_mask_np': np.zeros(0, dtype=bool),
+                           'teacher_hidden_np': np.zeros((0, 0), dtype=np.float32),
+                           'has_hidden': False, 'teacher_dim': 0}
             return {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0, 'coverage_pct': 0.0}, empty_carry
 
     n_total_rows = sum(pq.ParquetFile(str(f)).metadata.num_rows for f in part_files)
 
-    # Autodetectar workers si no se especifica
     if n_workers <= 0:
         n_workers = max(1, (os.cpu_count() or 4) - 1)
 
+    # --- Restore carry state ---
     if carry_state is not None:
-        all_patches = carry_state['patches']
-        all_targets = carry_state['targets']
-        all_teacher_probs = carry_state['teacher_probs']
-        all_teacher_mask = carry_state['teacher_mask']
-        all_teacher_hidden = carry_state['teacher_hidden']
-        has_hidden = carry_state['has_hidden']
-        teacher_dim = carry_state['teacher_dim']
+        all_patches = carry_state.get('patches', [])
+        all_targets = carry_state.get('targets', [])
+        # Support both old (list) and new (numpy) carry formats
+        _tp = carry_state.get('teacher_probs_np', carry_state.get('teacher_probs'))
+        if isinstance(_tp, np.ndarray):
+            carry_tp = _tp
+        elif _tp:
+            carry_tp = np.array(_tp, dtype=np.float32)
+        else:
+            carry_tp = np.zeros((0, 256), dtype=np.float32)
+        _tm = carry_state.get('teacher_mask_np', carry_state.get('teacher_mask'))
+        if isinstance(_tm, np.ndarray):
+            carry_tm = _tm
+        elif _tm:
+            carry_tm = np.array(_tm, dtype=bool)
+        else:
+            carry_tm = np.zeros(0, dtype=bool)
+        _th = carry_state.get('teacher_hidden_np', carry_state.get('teacher_hidden'))
+        has_hidden = carry_state.get('has_hidden', False)
+        teacher_dim = carry_state.get('teacher_dim', 0)
+        if isinstance(_th, np.ndarray) and _th.size > 0:
+            carry_th = _th
+        elif _th and has_hidden:
+            carry_th = np.array(_th, dtype=np.float32).reshape(-1, max(teacher_dim, 1))
+        else:
+            carry_th = np.zeros((0, max(teacher_dim, 1)), dtype=np.float32)
     else:
         all_patches = []
         all_targets = []
-        all_teacher_probs = []
-        all_teacher_mask = []
-        all_teacher_hidden = []
+        carry_tp = np.zeros((0, 256), dtype=np.float32)
+        carry_tm = np.zeros(0, dtype=bool)
+        carry_th = np.zeros((0, 1), dtype=np.float32)
         has_hidden = False
         teacher_dim = 0
+
     stats = {'n_sequences': 0, 'n_patches_total': 0, 'n_with_teacher': 0}
 
-    _MARGIN_BATCH = 50
+    _MARGIN_BATCH = 500  # Read batch from parquet (larger = fewer I/O calls)
     print(f"[Byte dataset] Marginalizing {n_total_rows} docs from {len(part_files)} part file(s)...")
+
+    # Shard part-file tracking: write incremental parts to avoid read-concat-write
+    _shard_part_counters: dict[int, int] = {}  # shard_idx -> part counter
+
+    def _flush_records_to_disk(records: list[dict], shard_idx: int):
+        """Write records as a NEW part file — no read-merge. O(write_size) only."""
+        if not records:
+            return
+        cnt = _shard_part_counters.get(shard_idx, 0)
+        part_path = output_dir / f"shard_{shard_idx:04d}_part{cnt:02d}.parquet"
+        _shard_part_counters[shard_idx] = cnt + 1
+        _write_byte_shard(records, part_path)
 
     shard_records: dict[int, list[dict]] = {}
 
+    # ---- S1: Flatten all parquet rows upfront, single map() call ----
+    # This eliminates idle gaps between batches. Workers are ALWAYS busy.
+    # RAM cost: ~1500 docs × 400KB ≈ 600MB (safe under 25GB cap)
+    _read_t0 = time.time()
+    all_rows = []
     for part_file in part_files:
         for batch in pq.ParquetFile(str(part_file)).iter_batches(batch_size=_MARGIN_BATCH):
-            rows = batch.to_pylist()
-            if n_workers > 1 and len(rows) > 10:
-                with ProcessPoolExecutor(max_workers=n_workers) as executor:
-                    batch_results = list(executor.map(
-                        _marginalize_one_row, rows,
-                        chunksize=max(1, len(rows) // (n_workers * 4)),
-                    ))
+            all_rows.extend(batch.to_pylist())
+    print(f"  [Byte] Read {len(all_rows)} rows in {time.time()-_read_t0:.2f}s")
+
+    # RAM guard: check before processing
+    _ram_used, _ram_total, _ram_frac = _get_ram_usage()
+    if _ram_used > RAM_HARD_LIMIT_GB:
+        print(f"  [Byte] WARNING: RAM {_ram_used:.1f}GB > {RAM_HARD_LIMIT_GB}GB limit, forcing GC")
+        gc.collect()
+
+    # Single map() — workers pull items continuously with chunksize=1 (no straggler effect)
+    if n_workers > 1 and len(all_rows) > 4:
+        _exec = executor if executor is not None else ProcessPoolExecutor(max_workers=n_workers)
+        try:
+            _map_iter = _exec.map(
+                _marginalize_one_row, all_rows,
+                chunksize=1,  # S2: workers get items immediately, zero idle
+            )
+            if executor is None:
+                all_results = list(_map_iter)
             else:
-                batch_results = [_marginalize_one_row(r) for r in rows]
+                all_results = _map_iter  # lazy — stream as workers finish
+        finally:
+            if executor is None:
+                _exec.shutdown(wait=False)
+    else:
+        all_results = [_marginalize_one_row(r) for r in all_rows]
+    del all_rows  # free input memory
 
-            for result in batch_results:
-                all_patches.extend(result['patches'])
-                all_targets.extend(result['targets'])
-                all_teacher_probs.extend(result['teacher_probs'])
-                all_teacher_mask.extend(result['teacher_mask'])
-                stats['n_with_teacher'] += result['n_with_teacher']
-                stats['n_patches_total'] += len(result['patches'])
-                if 'teacher_hidden' in result:
-                    has_hidden = True
-                    teacher_dim = result['teacher_dim']
-                    all_teacher_hidden.extend(result['teacher_hidden'])
+    # ---- Stream results into accumulators ----
+    _tp_parts = [carry_tp] if carry_tp.shape[0] > 0 else []
+    _tm_parts = [carry_tm] if carry_tm.shape[0] > 0 else []
+    _th_parts = [carry_th] if carry_th.shape[0] > 0 else []
+    _result_count = 0
+    for result in all_results:
+        all_patches.extend(result['patches'])
+        all_targets.extend(result['targets'])
+        n_res = len(result['patches'])
+        _tp_parts.append(result['teacher_probs'])
+        _tm_parts.append(result['teacher_mask'])
+        stats['n_with_teacher'] += result['n_with_teacher']
+        stats['n_patches_total'] += n_res
+        if 'teacher_hidden' in result:
+            has_hidden = True
+            teacher_dim = result['teacher_dim']
+            _th_parts.append(result['teacher_hidden'])
+        del result
+        _result_count += 1
 
-                while len(all_patches) >= seq_len:
-                    seq_idx = seq_offset + stats['n_sequences']
-                    hidden_slice = all_teacher_hidden[:seq_len] if has_hidden else None
-                    record = _make_byte_record(
-                        all_patches[:seq_len], all_targets[:seq_len],
-                        all_teacher_probs[:seq_len], all_teacher_mask[:seq_len],
-                        teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
-                    )
-                    shard = shard_offset + seq_idx // SEQS_PER_SHARD
-                    shard_records.setdefault(shard, []).append(record)
-                    all_patches = all_patches[seq_len:]
-                    all_targets = all_targets[seq_len:]
-                    all_teacher_probs = all_teacher_probs[seq_len:]
-                    all_teacher_mask = all_teacher_mask[seq_len:]
-                    if has_hidden:
-                        all_teacher_hidden = all_teacher_hidden[seq_len:]
-                    stats['n_sequences'] += 1
+        # Emit complete sequences inline (streaming)
+        while len(all_patches) >= seq_len:
+            hidden_slice = carry_th[:seq_len] if has_hidden and carry_th.shape[0] >= seq_len else None
+            # Need to concat accumulated parts to check carry sizes
+            if _tp_parts and (len(_tp_parts) > 50 or len(all_patches) >= seq_len):
+                carry_tp = np.concatenate(_tp_parts, axis=0) if _tp_parts else carry_tp
+                carry_tm = np.concatenate(_tm_parts) if _tm_parts else carry_tm
+                if has_hidden:
+                    valid_th = [p for p in _th_parts if p.shape[1] == teacher_dim] if _th_parts else []
+                    carry_th = np.concatenate(valid_th, axis=0) if valid_th else np.zeros((0, teacher_dim), dtype=np.float32)
+                _tp_parts = []
+                _tm_parts = []
+                _th_parts = []
+                hidden_slice = carry_th[:seq_len] if has_hidden and carry_th.shape[0] >= seq_len else None
 
-            # Periodic flush to save RAM
-            for shard_idx in list(shard_records.keys()):
-                if len(shard_records[shard_idx]) >= 10:
-                    shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
-                    _write_byte_shard(shard_records[shard_idx], shard_path)
-                    shard_records[shard_idx] = []
+            if carry_tp.shape[0] < seq_len:
+                break  # not enough teacher data yet
 
-            # Buffer accumulation guard: if patches accumulate beyond limit
-            # (e.g. many short docs that don't fill seq_len), force GC
+            record = _make_byte_record(
+                all_patches[:seq_len], all_targets[:seq_len],
+                carry_tp[:seq_len], carry_tm[:seq_len],
+                teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
+            )
+            shard = shard_offset + stats['n_sequences'] // SEQS_PER_SHARD
+            shard_records.setdefault(shard, []).append(record)
+            all_patches = all_patches[seq_len:]
+            all_targets = all_targets[seq_len:]
+            carry_tp = carry_tp[seq_len:]
+            carry_tm = carry_tm[seq_len:]
+            if has_hidden:
+                carry_th = carry_th[seq_len:]
+            stats['n_sequences'] += 1
+
+        # Periodic flush to disk
+        for shard_idx in list(shard_records.keys()):
+            if len(shard_records[shard_idx]) >= 10:
+                _flush_records_to_disk(shard_records[shard_idx], shard_idx)
+                shard_records[shard_idx] = []
+
+        # RAM pressure check every 200 rows
+        if _result_count % 200 == 0:
+            _ram_used, _, _ = _get_ram_usage()
+            if _ram_used > RAM_HARD_LIMIT_GB:
+                print(f"  [Byte] RAM {_ram_used:.1f}GB > limit, forcing flush+GC")
+                for _si in list(shard_records.keys()):
+                    if shard_records[_si]:
+                        _flush_records_to_disk(shard_records[_si], _si)
+                        shard_records[_si] = []
+                gc.collect()
             if len(all_patches) > MAX_ACCUMULATED_PATCHES:
                 print(f"  [Byte] WARNING: {len(all_patches)} patches accumulated "
-                      f"(limit {MAX_ACCUMULATED_PATCHES}), pausing to drain")
-                # The while loop above already drains what it can; leftover is carry
+                      f"(limit {MAX_ACCUMULATED_PATCHES}), forcing GC")
                 gc.collect()
+            _check_ram_pressure("byte-margin")
 
-            del rows, batch_results
-        # NOTE: Do NOT unlink part files here — BPE builder runs in parallel
-        # on the same files. Cleanup happens after both builders complete.
+    # Final concat of any remaining parts
+    if _tp_parts:
+        carry_tp = np.concatenate(_tp_parts, axis=0)
+        carry_tm = np.concatenate(_tm_parts)
+        if has_hidden:
+            valid_th = [p for p in _th_parts if p.shape[1] == teacher_dim] if _th_parts else []
+            carry_th = np.concatenate(valid_th, axis=0) if valid_th else np.zeros((0, teacher_dim), dtype=np.float32)
+        del _tp_parts, _tm_parts, _th_parts
 
-    # Final Batch write all remaining records per shard
-    for shard, records in shard_records.items():
+    # Emit any remaining complete sequences
+    while len(all_patches) >= seq_len:
+        hidden_slice = carry_th[:seq_len] if has_hidden else None
+        record = _make_byte_record(
+            all_patches[:seq_len], all_targets[:seq_len],
+            carry_tp[:seq_len], carry_tm[:seq_len],
+            teacher_hidden=hidden_slice, teacher_dim=teacher_dim,
+        )
+        shard = shard_offset + stats['n_sequences'] // SEQS_PER_SHARD
+        shard_records.setdefault(shard, []).append(record)
+        all_patches = all_patches[seq_len:]
+        all_targets = all_targets[seq_len:]
+        carry_tp = carry_tp[seq_len:]
+        carry_tm = carry_tm[seq_len:]
+        if has_hidden:
+            carry_th = carry_th[seq_len:]
+        stats['n_sequences'] += 1
+
+    for shard_idx in list(shard_records.keys()):
+        if len(shard_records[shard_idx]) >= 10:
+            _flush_records_to_disk(shard_records[shard_idx], shard_idx)
+            shard_records[shard_idx] = []
+
+    del all_results
+
+    # Final flush
+    for shard_idx, records in shard_records.items():
         if records:
-            shard_path = output_dir / f"shard_{shard:04d}.parquet"
-            _write_byte_shard(records, shard_path)
+            _flush_records_to_disk(records, shard_idx)
+    shard_records.clear()
+
+    # Merge shard part files into final shard files
+    for shard_idx in _shard_part_counters:
+        shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
+        parts = sorted(output_dir.glob(f"shard_{shard_idx:04d}_part*.parquet"))
+        if parts:
+            tables = [pq.read_table(str(p)) for p in parts]
+            combined = pa.concat_tables(tables)
+            pq.write_table(combined, str(shard_path))
+            for p in parts:
+                p.unlink()
+            del tables, combined
+    _shard_part_counters.clear()
+    gc.collect()
 
     coverage = stats['n_with_teacher'] / max(stats['n_patches_total'], 1) * 100
     stats['coverage_pct'] = coverage
@@ -2424,8 +2623,8 @@ def build_byte_level_dataset(
 
     next_carry = {
         'patches': all_patches, 'targets': all_targets,
-        'teacher_probs': all_teacher_probs, 'teacher_mask': all_teacher_mask,
-        'teacher_hidden': all_teacher_hidden,
+        'teacher_probs_np': carry_tp, 'teacher_mask_np': carry_tm,
+        'teacher_hidden_np': carry_th,
         'has_hidden': has_hidden, 'teacher_dim': teacher_dim,
     }
     return stats, next_carry
@@ -2433,21 +2632,36 @@ def build_byte_level_dataset(
 
 def _make_byte_record(patches, targets, teacher_probs, teacher_mask,
                       teacher_hidden=None, teacher_dim: int = 0) -> dict:
-    """Build a flat record dict for one byte-level sequence."""
+    """Build a flat record dict for one byte-level sequence.
+
+    Accepts numpy arrays or Python lists for teacher_probs/mask/hidden.
+    Flattens using numpy for efficiency.
+    """
     record = {
         'patches':       [b for p in patches for b in p],
         'targets':       [b for t in targets for b in t],
-        'teacher_probs': [v for row in teacher_probs for v in row],
-        'teacher_mask':  list(teacher_mask),
     }
+    # teacher_probs: numpy [seq_len, 256] or list of [256] lists
+    if isinstance(teacher_probs, np.ndarray):
+        record['teacher_probs'] = teacher_probs.ravel().tolist()
+    else:
+        record['teacher_probs'] = [v for row in teacher_probs for v in row]
+    # teacher_mask: numpy [seq_len] bool or list of bools
+    if isinstance(teacher_mask, np.ndarray):
+        record['teacher_mask'] = teacher_mask.tolist()
+    else:
+        record['teacher_mask'] = list(teacher_mask)
     if teacher_hidden is not None:
-        record['teacher_hidden'] = [v for row in teacher_hidden for v in row]
+        if isinstance(teacher_hidden, np.ndarray):
+            record['teacher_hidden'] = teacher_hidden.ravel().tolist()
+        else:
+            record['teacher_hidden'] = [v for row in teacher_hidden for v in row]
         record['teacher_dim'] = teacher_dim
     return record
 
 
 def _write_byte_shard(records: list[dict], shard_path: Path) -> None:
-    """Write multiple byte-level records to a shard parquet in one shot."""
+    """Write byte-level records to a shard parquet. No read-concat-write."""
     if not records:
         return
     columns = {
@@ -2464,9 +2678,7 @@ def _write_byte_shard(records: list[dict], shard_path: Path) -> None:
             [r['teacher_dim'] for r in records], type=pa.int32(),
         )
     table = pa.table(columns)
-    if shard_path.exists():
-        existing = pq.read_table(str(shard_path))
-        table = pa.concat_tables([existing, table])
+    # Write directly — no read-concat-write. Caller uses part files for incremental writes.
     pq.write_table(table, str(shard_path))
 
 
@@ -2582,7 +2794,7 @@ def build_bpe_dataset(
         from transformers import AutoTokenizer
         _BPE_TOKENIZER_CACHE = AutoTokenizer.from_pretrained(TEACHER_MODEL)
 
-    _BPE_BATCH = 50
+    _BPE_BATCH = 500  # Read batch from parquet (larger = fewer I/O calls)
     print(f"[BPE dataset] Tokenizing {n_total_rows} docs from {len(part_files)} part file(s)...")
 
     shard_records: dict[int, list[dict]] = {}
@@ -2590,66 +2802,92 @@ def build_bpe_dataset(
     if n_workers <= 0:
         n_workers = max(1, (os.cpu_count() or 4) - 1)
 
+    # ---- S1: Flatten all parquet rows upfront, single map() call ----
+    # Eliminates idle gaps between batches. Workers are ALWAYS busy.
+    _read_t0 = time.time()
+    all_args = []
     for part_file in part_files:
         for batch in pq.ParquetFile(str(part_file)).iter_batches(batch_size=_BPE_BATCH):
-            rows = batch.to_pylist()
+            for r in batch.to_pylist():
+                all_args.append((r, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS))
+    print(f"  [BPE] Read {len(all_args)} rows in {time.time()-_read_t0:.2f}s")
 
-            # Armar args para _tokenize_bpe_row
-            args_list = [(r, TEACHER_MODEL, seq_len, TOP_K_LOGPROBS) for r in rows]
+    # RAM guard: check before processing
+    _ram_used, _, _ = _get_ram_usage()
+    if _ram_used > RAM_HARD_LIMIT_GB:
+        print(f"  [BPE] WARNING: RAM {_ram_used:.1f}GB > {RAM_HARD_LIMIT_GB}GB limit, forcing GC")
+        gc.collect()
 
-            if n_workers > 1 and len(rows) > 10:
-                _exec = executor if executor is not None else ProcessPoolExecutor(max_workers=n_workers)
-                try:
-                    batch_results = list(_exec.map(
-                        _tokenize_bpe_row, args_list,
-                        chunksize=max(1, len(rows) // (n_workers * 4)),
-                    ))
-                finally:
-                    if executor is None:
-                        _exec.shutdown(wait=False)
+    # Single map() — workers pull items continuously with chunksize=1 (no straggler effect)
+    if n_workers > 1 and len(all_args) > 4:
+        _exec = executor if executor is not None else ProcessPoolExecutor(max_workers=n_workers)
+        try:
+            _map_iter = _exec.map(
+                _tokenize_bpe_row, all_args,
+                chunksize=1,  # S2: workers get items immediately, zero idle
+            )
+            if executor is None:
+                all_results = list(_map_iter)
             else:
-                batch_results = [_tokenize_bpe_row(a) for a in args_list]
+                all_results = _map_iter  # lazy — stream as workers finish
+        finally:
+            if executor is None:
+                _exec.shutdown(wait=False)
+    else:
+        all_results = [_tokenize_bpe_row(a) for a in all_args]
+    del all_args  # free input memory
 
-            for result in batch_results:
-                buffer_ids.extend(result['ids'])
-                buffer_probs.extend(result['probs'])
-                buffer_top_ids.extend(result['top_ids'])
-                buffer_mask.extend(result['mask'])
-                stats['n_tokens_total'] += len(result['ids'])
+    # ---- Stream results into accumulators ----
+    _result_count = 0
+    for result in all_results:
+        buffer_ids.extend(result['ids'])
+        buffer_probs.extend(result['probs'])
+        buffer_top_ids.extend(result['top_ids'])
+        buffer_mask.extend(result['mask'])
+        stats['n_tokens_total'] += len(result['ids'])
+        del result
+        _result_count += 1
 
-            while len(buffer_ids) >= seq_len + 1:
-                seq_idx = seq_offset + stats['n_sequences']
-                record = _make_bpe_record(
-                    buffer_ids[:seq_len],
-                    buffer_ids[1:seq_len + 1],
-                    buffer_probs[:seq_len],
-                    buffer_top_ids[:seq_len],
-                    buffer_mask[:seq_len],
-                )
-                shard = shard_offset + seq_idx // SEQS_PER_SHARD
-                shard_records.setdefault(shard, []).append(record)
-                buffer_ids = buffer_ids[seq_len:]
-                buffer_probs = buffer_probs[seq_len:]
-                buffer_top_ids = buffer_top_ids[seq_len:]
-                buffer_mask = buffer_mask[seq_len:]
-                stats['n_sequences'] += 1
+        # Emit complete sequences inline (streaming)
+        while len(buffer_ids) >= seq_len + 1:
+            record = _make_bpe_record(
+                buffer_ids[:seq_len],
+                buffer_ids[1:seq_len + 1],
+                buffer_probs[:seq_len],
+                buffer_top_ids[:seq_len],
+                buffer_mask[:seq_len],
+            )
+            shard = shard_offset + stats['n_sequences'] // SEQS_PER_SHARD
+            shard_records.setdefault(shard, []).append(record)
+            buffer_ids = buffer_ids[seq_len:]
+            buffer_probs = buffer_probs[seq_len:]
+            buffer_top_ids = buffer_top_ids[seq_len:]
+            buffer_mask = buffer_mask[seq_len:]
+            stats['n_sequences'] += 1
 
-            # Periodic flush to save RAM
-            for shard_idx in list(shard_records.keys()):
-                if len(shard_records[shard_idx]) >= 10:
-                    shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
-                    _write_bpe_shard(shard_records[shard_idx], shard_path)
-                    shard_records[shard_idx] = []
+        # Periodic flush to save RAM
+        for shard_idx in list(shard_records.keys()):
+            if len(shard_records[shard_idx]) >= 10:
+                shard_path = output_dir / f"shard_{shard_idx:04d}.parquet"
+                _write_bpe_shard(shard_records[shard_idx], shard_path)
+                shard_records[shard_idx] = []
 
-            # Buffer accumulation guard: prevent unbounded token buffer growth
+        # RAM pressure check every 200 rows
+        if _result_count % 200 == 0:
+            _ram_used, _, _ = _get_ram_usage()
+            if _ram_used > RAM_HARD_LIMIT_GB:
+                print(f"  [BPE] RAM {_ram_used:.1f}GB > limit, forcing flush+GC")
+                for _si in list(shard_records.keys()):
+                    if shard_records[_si]:
+                        shard_path = output_dir / f"shard_{_si:04d}.parquet"
+                        _write_bpe_shard(shard_records[_si], shard_path)
+                        shard_records[_si] = []
+                gc.collect()
             if len(buffer_ids) > MAX_ACCUMULATED_TOKENS:
                 print(f"  [BPE] WARNING: {len(buffer_ids)} tokens accumulated "
                       f"(limit {MAX_ACCUMULATED_TOKENS}), forcing GC")
                 gc.collect()
-
-            del rows, batch_results
-        # NOTE: Do NOT unlink part files here — byte builder runs in parallel
-        # on the same files. Cleanup happens after both builders complete.
+            _check_ram_pressure("bpe-tok")
 
     # Batch write all remaining records per shard
     for shard, records in shard_records.items():
@@ -2811,6 +3049,31 @@ def _upload_all_shards(output_dir: Path, api, repo_id: str, repo_subdir: str) ->
     return count
 
 
+def _clear_hf_dataset(api, repo_id: str) -> None:
+    """Delete ALL files from the HF dataset repo for a fresh start.
+
+    Called when --clear-dataset is passed. Removes all shards, checkpoints,
+    and metadata so the pipeline starts completely fresh.
+    """
+    try:
+        files = list(api.list_repo_files(repo_id, repo_type='dataset'))
+        # Filter out .gitattributes and README
+        to_delete = [f for f in files
+                     if not f.startswith('.git') and f != 'README.md']
+        if not to_delete:
+            print(f"  [hub] Repo {repo_id} is already empty.")
+            return
+        print(f"  [hub] Clearing {len(to_delete)} files from {repo_id}...")
+        for f in to_delete:
+            try:
+                api.delete_file(f, repo_id=repo_id, repo_type='dataset')
+            except Exception as e:
+                print(f"    [hub] Could not delete {f}: {e}")
+        print(f"  [hub] Cleared {len(to_delete)} files from {repo_id}")
+    except Exception as e:
+        print(f"  [hub] Error clearing repo: {e}")
+
+
 def upload_dataset_to_hub(local_dir: str = str(OUTPUT_DIR)) -> None:
     """Upload complete dataset to HuggingFace Hub (fallback si no se usa hf-mount)."""
     from huggingface_hub import HfApi
@@ -2858,6 +3121,13 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
     """
     global OUTPUT_DIR
     from datasets import load_dataset
+
+    # Global seed for reproducibility
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
 
     # chunk_size=500: ~250 docs/GPU, ~63 batches at batch_size=4.
     # RAM for 500-doc logprobs: ~1-2GB. Safe on Kaggle's 13GB.
@@ -3002,13 +3272,16 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         bpe_seq_offset = _bpe_rows
 
                     # Estimate which chunk to skip based on bpe sequences
-                    # (BPE seqs ≈ docs/SEQ_LEN_TOKENS, so docs ≈ bpe_rows * SEQ_LEN_TOKENS)
+                    # BPE seqs contain SEQ_LEN_TOKENS tokens each.
+                    # Average FineWeb doc ~200 tokens. total_tokens / tokens_per_doc = docs.
                     if _bpe_rows > 0:
-                        _est_docs_done = int(_bpe_rows * SEQ_LEN_TOKENS)
+                        _total_tokens = _bpe_rows * SEQ_LEN_TOKENS
+                        _avg_tokens_per_doc = 200  # FineWeb English average
+                        _est_docs_done = int(_total_tokens / _avg_tokens_per_doc)
                         _est_chunks_done = max(0, _est_docs_done // chunk_size - 1)
                         resume_from_chunk = _est_chunks_done
-                        print(f"  [shard_scan] ~{_est_docs_done:,} docs in shards "
-                              f"→ skipping ~{_est_chunks_done} chunks")
+                        print(f"  [shard_scan] ~{_est_docs_done:,} docs ({_total_tokens:,} tokens) "
+                              f"in shards \u2192 skipping ~{_est_chunks_done} chunks")
 
                     shard_offset = _safe_offset
 
@@ -3022,7 +3295,6 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                     print(f"  [shard_scan] Could not scan HF Hub: {_e}. "
                           f"Using defaults (shard_offset={shard_offset})")
             _pipeline_t0 = time.time()
-            _checkpoint_every = 5
 
             # Pre-import to avoid threading import lock and lazy module race conditions
             import transformers
@@ -3070,6 +3342,9 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 raise _load_errors[0][1]
 
             texts = _corpus_texts
+            # Sort by length: enables efficient bucket batching (short docs get
+            # bigger batches since attention is O(S²)). ~3× throughput improvement.
+            texts.sort(key=len)
             _cold_time = time.time() - _t0_cold
             print(f"[Pipeline] Cold start done in {_cold_time:.1f}s — "
                   f"{len(texts):,} docs + {len(_preloaded_models)} models ready.")
@@ -3102,21 +3377,29 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                   f"(extraction_q={EXTRACTION_QUEUE_DEPTH}, "
                   f"upload_q={UPLOAD_QUEUE_DEPTH})...")
 
-            # On Kaggle T4x2: 2 CPU cores. Both are needed:
-            #   - 1 for the byte marginalization ProcessPoolExecutor
-            #   - 1 for the BPE tokenization ProcessPoolExecutor
-            # Running both in parallel threads = 2 cores fully utilized.
-            # Using cpu_count() directly (not -1) since main thread is I/O-bound.
-            _cpu_workers = max(1, os.cpu_count() or 2)
+            # Oversubscribe CPU workers: each worker spends significant time
+            # blocked on IPC (pickling large numpy arrays through pipes), so
+            # having more workers than physical cores keeps all cores busy.
+            # On 4 cores: 8 byte + 4 BPE = 12 workers total. The OS scheduler
+            # ensures only 4 run at any instant, but the overlap of IPC waits
+            # with compute keeps CPU utilization near 400%.
+            _total_cpu = max(2, os.cpu_count() or 2)
+            _byte_workers = max(2, _total_cpu * 2)   # 2x cores for byte (heavy + IPC stalls)
+            _bpe_workers = max(1, _total_cpu)         # 1x cores for BPE (lighter)
+            print(f"  [CPU] {_total_cpu} cores: {_byte_workers} byte + {_bpe_workers} BPE workers (oversubscribed)")
             _extraction_q = Queue(maxsize=EXTRACTION_QUEUE_DEPTH)
             _upload_q = Queue(maxsize=UPLOAD_QUEUE_DEPTH)
             _gpu_error = [None]
             _upload_error = [None]
             _chunks_since_reset = [0]
             _upload_done = threading.Event()
+            _last_ckpt_shard = [0]  # track last checkpointed shard for every-2-shard checkpoint
 
-            # ---- Persistent BPE worker pool ----
-            _bpe_pool = ProcessPoolExecutor(max_workers=_cpu_workers)
+            # ---- Persistent worker pools (no per-batch fork overhead) ----
+            # max_tasks_per_child: restart workers after 50 tasks to free leaked memory
+            # (Python processes accumulate fragmented heap over time; restart resets it)
+            _bpe_pool = ProcessPoolExecutor(max_workers=_bpe_workers, max_tasks_per_child=50)
+            _byte_pool = ProcessPoolExecutor(max_workers=_byte_workers, max_tasks_per_child=50)
 
             # ---- Upload Worker Thread ----
             def _upload_worker():
@@ -3132,9 +3415,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                                 _byte_dir, _bpe_dir = payload
                                 _upload_all_shards(_byte_dir, api, DATASET_REPO, "byte_marginalized")
                                 _upload_all_shards(_bpe_dir, api, DATASET_REPO, "bpe_tokenized")
-                                # NOTE: raw logprob part files (_part*.parquet) are already
-                                # deleted by the CPU consumer after byte+BPE processing.
-                                # Uploading them is not needed — the processed shards ARE the data.
+                                gc.collect()  # free memory from uploaded shard data
                             elif action == 'checkpoint':
                                 _ci, _bso, _pso, _bc, _pc, _so = payload
                                 _save_stream_checkpoint(api, DATASET_REPO, _ci,
@@ -3154,6 +3435,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _upload_thread.start()
 
             # ---- GPU Producer Thread ----
+            _gpu_idle_total = [0.0]  # S11: total time GPU blocked on queue.put()
+
             def _gpu_producer():
                 """Extract logprobs on GPU, push chunk info to extraction_q.
 
@@ -3192,11 +3475,19 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         print(f"\n  [GPU] Extracting chunk {_ci+1}/{n_chunks} "
                               f"(docs {_cs}-{_ce-1}) "
                               f"[{_elapsed/60:.1f}min elapsed]...", flush=True)
+                        _extract_t0 = time.time()
                         run_logprob_extraction(
                             _ctexts, str(_tmp), resume=False,
                             preloaded_models=_preloaded_models)
-                        # Push to bounded queue — blocks if CPU is behind
+                        _extract_elapsed = time.time() - _extract_t0
+                        # S11: Track GPU idle time (blocked on queue.put)
+                        _put_t0 = time.time()
                         _extraction_q.put((_ci, _cs, _ce))
+                        _put_wait = time.time() - _put_t0
+                        _gpu_idle_total[0] += _put_wait
+                        if _put_wait > 0.5:
+                            print(f"  [GPU IDLE] Blocked {_put_wait:.1f}s on extraction_q.put() "
+                                  f"(CPU too slow) — extraction took {_extract_elapsed:.1f}s")
                         del _ctexts
                 except Exception as _e:
                     traceback.print_exc()
@@ -3209,12 +3500,20 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _gpu_thread.start()
 
             chunk_idx = max(0, resume_from_chunk - 1)
+            _cpu_idle_total = 0.0  # S11: total time CPU blocked on extraction_q.get()
 
             # ---- CPU Consumer: byte + BPE in parallel, then queue upload ----
             while True:
+                # S11: Track CPU idle time (waiting for GPU)
+                _get_t0 = time.time()
                 _item = _extraction_q.get()
+                _get_wait = time.time() - _get_t0
+                _cpu_idle_total += _get_wait
                 if _item is None:
                     break
+                if _get_wait > 0.5:
+                    print(f"  [CPU IDLE] Blocked {_get_wait:.1f}s on extraction_q.get() "
+                          f"(GPU too slow)")
                 chunk_idx, chunk_start, chunk_end = _item
                 total_chunks += 1
 
@@ -3243,8 +3542,9 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         _byte_res[0] = build_byte_level_dataset(
                             str(tmp_parquet), str(byte_dir),
                             seq_offset=_bso, carry_state=_bc,
-                            n_workers=_cpu_workers,
-                            shard_offset=shard_offset)
+                            n_workers=_byte_workers,
+                            shard_offset=shard_offset,
+                            executor=_byte_pool)
                     except Exception as _e:
                         _cpu_errs.append(("byte", _e))
 
@@ -3253,7 +3553,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         _bpe_res[0] = build_bpe_dataset(
                             str(tmp_parquet), str(bpe_dir),
                             seq_offset=_pso, carry_state=_pc,
-                            n_workers=_cpu_workers,
+                            n_workers=_bpe_workers,
                             executor=_pool,
                             shard_offset=shard_offset)
                     except Exception as _e:
@@ -3261,8 +3561,25 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
                 _bt = threading.Thread(target=_byte_worker, name="byte-proc")
                 _pt = threading.Thread(target=_bpe_worker, name="bpe-proc")
+                _byte_t0 = time.time()
                 _bt.start(); _pt.start()
-                _bt.join();  _pt.join()
+
+                # S3: Prefetch next chunk's parquet into pagecache while byte+BPE run
+                _next_ci = chunk_idx + 1
+                _next_tmp = Path(f'/tmp/logprobs_chunk_{_next_ci:04d}.parquet')
+                _next_stem = _next_tmp.stem
+                _next_parts = sorted(_next_tmp.parent.glob(f"{_next_stem}_part*.parquet"))
+                if _next_parts:
+                    for _nf in _next_parts:
+                        try:
+                            with open(_nf, 'rb') as _fh:
+                                while _fh.read(1024 * 1024):  # 1MB reads → pagecache
+                                    pass
+                        except Exception:
+                            pass  # file may not exist yet — that's fine
+
+                _bt.join(); _pt.join()
+                _cpu_proc_elapsed = time.time() - _byte_t0
 
                 if _cpu_errs:
                     for _n, _e in _cpu_errs:
@@ -3280,11 +3597,13 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                     _pf.unlink(missing_ok=True)
 
                 _chunk_elapsed = time.time() - _chunk_t0
+                _docs_in_chunk = chunk_end - chunk_start
+                _docs_per_sec = _docs_in_chunk / max(_chunk_elapsed, 0.01)
 
-                # Queue upload — payload is just the two shard dirs (no file path needed)
+                # Queue upload — shards accumulated on disk, sent to HF
                 _upload_q.put(('shards', (byte_dir, bpe_dir)))
 
-                # VRAM status report
+                # S12: Per-chunk resource summary
                 _vram_msg = ""
                 if torch.cuda.is_available():
                     for _gi in range(torch.cuda.device_count()):
@@ -3294,20 +3613,65 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         _vram_msg += f" GPU{_gi}={used:.1f}GB(frag={frag:.0%})"
 
                 gc.collect()
-                print(f"  [Chunk {chunk_idx+1}] Done in {_chunk_elapsed:.1f}s. "
-                      f"Byte: {byte_seq_offset} seqs, BPE: {bpe_seq_offset} seqs"
-                      f"{_vram_msg}")
+                _ram_used, _ram_total, _ram_frac = _get_ram_usage()
+                _check_ram_pressure("chunk-end")
 
-                # Checkpoint every N chunks
-                # Queue checkpoint AFTER the shards upload — the upload worker
-                # processes queue items in order, so checkpoint runs after shards land.
-                if (chunk_idx + 1) % _checkpoint_every == 0:
+                # RAM backpressure: if too high, wait for upload worker to drain shards
+                if _ram_used > RAM_HARD_LIMIT_GB:
+                    print(f"  [RAM] {_ram_used:.1f}GB > {RAM_HARD_LIMIT_GB}GB limit, "
+                          f"waiting for upload queue to drain...", flush=True)
+                    while not _upload_q.empty():
+                        time.sleep(0.5)
+                    gc.collect()
+                    _ram_used, _ram_total, _ram_frac = _get_ram_usage()
+                    print(f"  [RAM] After drain+GC: {_ram_used:.1f}/{_ram_total:.1f}GB")
+
+                # S11+S12: Combined resource + idle summary
+                try:
+                    import psutil
+                    _cpu_pct = psutil.cpu_percent(interval=0.1)
+                except Exception:
+                    _cpu_pct = -1
+                print(f"  [Chunk {chunk_idx+1}] Done in {_chunk_elapsed:.1f}s "
+                      f"(byte+BPE={_cpu_proc_elapsed:.1f}s, {_docs_per_sec:.1f} docs/s)")
+                print(f"    CPU={_cpu_pct:.0f}%{_vram_msg}  "
+                      f"RAM={_ram_used:.1f}/{_ram_total:.1f}GB({_ram_frac*100:.0f}%)")
+                print(f"    Idle totals: GPU_blocked={_gpu_idle_total[0]:.1f}s "
+                      f"CPU_blocked={_cpu_idle_total:.1f}s")
+
+                # Checkpoint every CHECKPOINT_EVERY_SHARDS complete shard pairs
+                _current_shard = byte_seq_offset // SEQS_PER_SHARD
+                if (_current_shard >= _last_ckpt_shard[0] + CHECKPOINT_EVERY_SHARDS
+                        and _current_shard > 0):
+                    _last_ckpt_shard[0] = _current_shard
                     _upload_q.put(('checkpoint', (
                         chunk_idx, byte_seq_offset, bpe_seq_offset,
                         byte_carry, bpe_carry, shard_offset)))
+                    print(f"  [checkpoint] Triggered at shard {_current_shard} "
+                          f"(every {CHECKPOINT_EVERY_SHARDS})")
 
             _gpu_thread.join()
             _bpe_pool.shutdown(wait=False)
+            _byte_pool.shutdown(wait=False)
+
+            # S11: Final pipeline idle summary
+            _pipeline_elapsed = time.time() - _pipeline_t0
+            print(f"\n{'=' * 60}")
+            print(f"PIPELINE IDLE SUMMARY ({_pipeline_elapsed/60:.1f}min total)")
+            print(f"  GPU blocked on queue.put(): {_gpu_idle_total[0]:.1f}s "
+                  f"({_gpu_idle_total[0]/_pipeline_elapsed*100:.1f}% of pipeline)")
+            print(f"  CPU blocked on queue.get(): {_cpu_idle_total:.1f}s "
+                  f"({_cpu_idle_total/_pipeline_elapsed*100:.1f}% of pipeline)")
+            if _gpu_idle_total[0] > _cpu_idle_total:
+                print(f"  → BOTTLENECK: CPU is slower than GPU "
+                      f"(GPU waited {_gpu_idle_total[0]-_cpu_idle_total:.1f}s more)")
+            elif _cpu_idle_total > _gpu_idle_total[0]:
+                print(f"  → BOTTLENECK: GPU is slower than CPU "
+                      f"(CPU waited {_cpu_idle_total-_gpu_idle_total[0]:.1f}s more)")
+            else:
+                print(f"  → Pipeline perfectly balanced")
+            print(f"{'=' * 60}")
+
             if _gpu_error[0]:
                 raise _gpu_error[0]
 
