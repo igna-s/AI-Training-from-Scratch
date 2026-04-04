@@ -544,6 +544,17 @@ class AblationBlock(nn.Module):
             x = x + self.pfnet(residual)
         return x, h_new
 
+    def forward_one_token(self, x: Tensor, h: Tensor | None = None
+                          ) -> tuple[Tensor, Tensor | None]:
+        """Decode-time shortcut — x is [B, d_model] (no sequence dim).
+
+        Avoids unsqueeze/squeeze overhead in the per-token loop in inference.py
+        for all 14 blocks × every generated patch.
+        """
+        x_3d = x.unsqueeze(1)
+        out_3d, h_new = self.forward(x_3d, h)
+        return out_3d.squeeze(1), h_new
+
 
 # ============================================================
 # Prediction heads

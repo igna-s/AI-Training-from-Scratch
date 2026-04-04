@@ -14,12 +14,17 @@ Usage:
     python create_dataset.py --logprobs-dir ./logprobs --output-dir ./dataset
 """
 
+# MUST be set before any HuggingFace tokenizer import.
+# ProcessPoolExecutor uses fork() on Linux; the tokenizer's internal Rust threads
+# hold locks that get cloned in a locked state, deadlocking all CPU workers.
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import argparse
 import enum
 import gc
 import json
 import math
-import os
 import random
 import shutil
 import threading
@@ -980,7 +985,7 @@ TEACHER_HIDDEN_DIM = 2048   # Qwen2.5-3B hidden size (2048); -7B seria 3584
 ALIGN_DIM = 128             # Project teacher hidden 2048→128 (Johnson-Lindenstrauss)
 SEQS_PER_SHARD = 50         # Align with 500-doc chunks to upload immediately
 SEED = 42
-BATCH_SIZE_TEACHER = 120   # 700 tok → ~17% less VRAM than 768, fits bs=120 in 13GB
+BATCH_SIZE_TEACHER = 29    # T4 optimal: avoids OOM cascade (was 120→57→42→31)
 BATCH_SIZE_TEACHER_L4 = 100   # L4 24GB: FP8 model ~7GB + attn@4096. Restored to 100.
 MAX_EXTRACTION_TOKENS_L4 = 4096  # L4: 4k seq fits at batch 14 (bucket batching cuts avg)
 
@@ -999,7 +1004,8 @@ MAX_ACCUMULATED_TOKENS = 50_000    # ~10× SEQ_LEN_TOKENS, larger buffer with fl
 MODEL_RESET_EVERY_CHUNKS = 30      # Reload models to defragment VRAM (was 20, extended)
 CORPUS_PROGRESS_INTERVAL = 10_000  # Print progress every N docs during download
 RAM_HEADROOM_FRACTION = 0.17       # Keep 17% RAM free (25/30 = 83% usable)
-CHECKPOINT_EVERY_SHARDS = 2        # Checkpoint+upload after every N complete shard pairs
+CHECKPOINT_EVERY_SHARDS = 3        # Checkpoint+upload every 3 shards (batch uploads for efficiency)
+UPLOAD_EVERY_SHARDS = 3            # Upload byte+BPE shard files to HF every N complete shards
 
 
 def _get_ram_usage():
@@ -2029,8 +2035,8 @@ def _run_extraction_single_gpu(corpus_texts, output_path, start_idx,
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
             gc.collect()
-            new_n = max(1, _eff_batch[0] // 2)
-            pbar.write(f"[OOM] batch {_eff_batch[0]} → {new_n} (permanent). "
+            new_n = max(1, _eff_batch[0] * 3 // 4)
+            pbar.write(f"[OOM] batch {_eff_batch[0]} → {new_n} (permanent, 75%). "
                        f"Resuming from doc {i}/{n_valid}")
             _eff_batch[0] = new_n
             # i is NOT advanced — retries the same position with a smaller batch
@@ -2158,8 +2164,8 @@ def _run_extraction_multi_gpu(corpus_texts, output_path, start_idx, n_gpus,
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 gc.collect()
-                new_bs = max(1, bs // 2)
-                print(f"\n  [GPU {gpu_id}] OOM at batch={bs}, reducing to {new_bs} (permanent)")
+                new_bs = max(1, bs * 3 // 4)
+                print(f"\n  [GPU {gpu_id}] OOM at batch={bs}, reducing to {new_bs} (permanent, 75%)")
                 calibrated_bs[gpu_id] = new_bs
                 bs = new_bs
                 # Put docs back for retry with smaller batch
@@ -3037,15 +3043,27 @@ def _upload_sealed_shards(output_dir: Path, api, repo_id: str,
 
 
 def _upload_all_shards(output_dir: Path, api, repo_id: str, repo_subdir: str) -> int:
-    """Upload ALL shards (sealed + incomplete). Returns count uploaded."""
+    """Upload ALL shards (sealed + incomplete). Returns count uploaded.
+
+    Per-shard error isolation: one failed shard does NOT block the rest.
+    Failed shards stay on disk and will be retried on the next upload cycle.
+    """
     count = 0
+    failed = 0
     for shard_path in sorted(output_dir.glob("shard_*.parquet")):
-        _hf_upload_with_retry(api, str(shard_path),
-                              f"{repo_subdir}/{shard_path.name}", repo_id)
-        shard_path.unlink()
-        count += 1
+        try:
+            _hf_upload_with_retry(api, str(shard_path),
+                                  f"{repo_subdir}/{shard_path.name}", repo_id)
+            shard_path.unlink()
+            count += 1
+        except Exception as e:
+            failed += 1
+            print(f"  [hub] FAILED {repo_subdir}/{shard_path.name}: {e}", flush=True)
     if count:
         print(f"  [hub] Uploaded {count} shards from {repo_subdir}/", flush=True)
+    if failed:
+        print(f"  [hub] WARNING: {failed} shards FAILED in {repo_subdir}/ "
+              f"(will retry next cycle)", flush=True)
     return count
 
 
@@ -3186,6 +3204,25 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             except Exception as e:
                 print(f"  [hub] create_repo FAILED: {e}")
                 raise
+
+            # Verify upload actually works before spending hours on GPU
+            import io as _io
+            _test_buf = _io.BytesIO(b"upload_test")
+            try:
+                api.upload_file(
+                    path_or_fileobj=_test_buf,
+                    path_in_repo=".upload_test",
+                    repo_id=DATASET_REPO,
+                    repo_type="dataset",
+                )
+                api.delete_file(".upload_test", repo_id=DATASET_REPO,
+                                repo_type="dataset")
+                print(f"  [hub] Upload verification OK (write access confirmed)")
+            except Exception as e:
+                print(f"\n  [hub] *** UPLOAD VERIFICATION FAILED ***")
+                print(f"  [hub] Token can create repo but CANNOT upload files: {e}")
+                print(f"  [hub] Fix HF_TOKEN permissions before running pipeline!")
+                raise RuntimeError(f"HF upload verification failed: {e}")
 
             byte_dir = OUTPUT_DIR / "byte_marginalized"
             bpe_dir = OUTPUT_DIR / "bpe_tokenized"
@@ -3391,9 +3428,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _upload_q = Queue(maxsize=UPLOAD_QUEUE_DEPTH)
             _gpu_error = [None]
             _upload_error = [None]
+            _upload_success_count = [0]   # total shards successfully uploaded
+            _upload_fail_count = [0]      # total shard upload failures
             _chunks_since_reset = [0]
             _upload_done = threading.Event()
-            _last_ckpt_shard = [0]  # track last checkpointed shard for every-2-shard checkpoint
+            _last_ckpt_shard = [0]  # track last checkpointed shard for every-N-shard checkpoint
+            _last_upload_shard = [0]  # track last uploaded shard for batched uploads
 
             # ---- Persistent worker pools (no per-batch fork overhead) ----
             # max_tasks_per_child: restart workers after 50 tasks to free leaked memory
@@ -3413,8 +3453,9 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         try:
                             if action == 'shards':
                                 _byte_dir, _bpe_dir = payload
-                                _upload_all_shards(_byte_dir, api, DATASET_REPO, "byte_marginalized")
-                                _upload_all_shards(_bpe_dir, api, DATASET_REPO, "bpe_tokenized")
+                                _n1 = _upload_all_shards(_byte_dir, api, DATASET_REPO, "byte_marginalized")
+                                _n2 = _upload_all_shards(_bpe_dir, api, DATASET_REPO, "bpe_tokenized")
+                                _upload_success_count[0] += _n1 + _n2
                                 gc.collect()  # free memory from uploaded shard data
                             elif action == 'checkpoint':
                                 _ci, _bso, _pso, _bc, _pc, _so = payload
@@ -3422,10 +3463,13 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                                                         _bso, _pso, _bc, _pc,
                                                         shard_offset=_so)
                         except Exception as _e:
-                            print(f"  [Upload] Error: {_e}")
+                            _upload_fail_count[0] += 1
+                            print(f"  [Upload] *** ERROR #{_upload_fail_count[0]} ***: {_e}",
+                                  flush=True)
                             traceback.print_exc()
                 except Exception as _e:
                     _upload_error[0] = _e
+                    print(f"  [Upload] *** FATAL: upload worker died: {_e} ***", flush=True)
                     traceback.print_exc()
                 finally:
                     _upload_done.set()
@@ -3600,8 +3644,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 _docs_in_chunk = chunk_end - chunk_start
                 _docs_per_sec = _docs_in_chunk / max(_chunk_elapsed, 0.01)
 
-                # Queue upload — shards accumulated on disk, sent to HF
-                _upload_q.put(('shards', (byte_dir, bpe_dir)))
+                # Queue upload every UPLOAD_EVERY_SHARDS complete shards
+                # (byte+BPE together so HF always has complete sets)
+                _current_upload_shard = byte_seq_offset // SEQS_PER_SHARD
+                if _current_upload_shard >= _last_upload_shard[0] + UPLOAD_EVERY_SHARDS:
+                    _last_upload_shard[0] = _current_upload_shard
+                    _upload_q.put(('shards', (byte_dir, bpe_dir)))
 
                 # S12: Per-chunk resource summary
                 _vram_msg = ""
@@ -3638,6 +3686,14 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                       f"RAM={_ram_used:.1f}/{_ram_total:.1f}GB({_ram_frac*100:.0f}%)")
                 print(f"    Idle totals: GPU_blocked={_gpu_idle_total[0]:.1f}s "
                       f"CPU_blocked={_cpu_idle_total:.1f}s")
+                print(f"    Uploads: {_upload_success_count[0]} ok, "
+                      f"{_upload_fail_count[0]} failed, "
+                      f"queue={_upload_q.qsize()}/{UPLOAD_QUEUE_DEPTH}")
+
+                # Early warning if upload worker died
+                if _upload_done.is_set() and _upload_error[0]:
+                    print(f"  [Upload] *** UPLOAD WORKER DIED: {_upload_error[0]} ***",
+                          flush=True)
 
                 # Checkpoint every CHECKPOINT_EVERY_SHARDS complete shard pairs
                 _current_shard = byte_seq_offset // SEQS_PER_SHARD

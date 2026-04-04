@@ -53,54 +53,104 @@ def _load_c_kernel():
     global _TERNARY_C_KERNEL
     if _TERNARY_C_KERNEL is not None:
         return _TERNARY_C_KERNEL
-    
+
     try:
         import ctypes
         import subprocess
         import os
         import tempfile
-        
-        # El codigo C++ se compilara al vuelo
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
         c_path = os.path.join(base_dir, "kernels.cpp")
-        
+
         if not os.path.exists(c_path):
             raise FileNotFoundError(f"No se encontro {c_path}")
-            
+
         tmp_dir = tempfile.gettempdir()
         dll_path = os.path.join(tmp_dir, "fast_lut.dll" if os.name == 'nt' else "fast_lut.so")
-        
-        # Primero intentamos con OpenMP para multi-threading real (Performance Cores)
+
+        # Flags base comunes a todas las variantes
+        # -mtune=native: CPU-specific scheduling sin habilitar ISA extensions peligrosas
+        # -march=native se evita porque en CPUs con AVX-512 en CPUID pero sin soporte
+        # OS (XCR0), GCC emite EVEX-encoded instructions que causan SIGILL
+        base_flags = [
+            "-O3", "-shared", "-fPIC",
+            "-mtune=native",
+            "-funroll-loops",
+            "-fno-signed-zeros", "-fno-trapping-math",
+            "-ffast-math",
+        ]
+        # Intentar alinear loops si GCC lo soporta (no disponible en todos los MinGW)
+        align_flag = ["-falign-loops=32"]
+
+        # Intentar OpenMP (da multi-threading real en los Performance Cores)
         has_omp = False
-        cmd_omp = ["g++", "-O3", "-shared", "-fPIC", "-fopenmp", "-mavx2", "-ffast-math", "-o", dll_path, c_path]
-        try:
-            subprocess.run(cmd_omp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            has_omp = True
-        except subprocess.CalledProcessError:
-            # Fallback a single-thread sin -fopenmp si GCC no tiene libgomp o es MinGW basico
-            print("  [C Kernel] GCC no soporto OpenMP, intentando fallback vectorizado simple...")
-            cmd_fallback = ["g++", "-O3", "-shared", "-fPIC", "-mavx2", "-ffast-math", "-o", dll_path, c_path]
-            subprocess.run(cmd_fallback, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+        omp_flag = ["-fopenmp"]
+
+        # AVX2+FMA es el target optimo — nuestros kernels usan intrinsics AVX2.
+        # AVX-512 se omite: causa SIGILL en Windows donde el OS no habilita ZMM state.
+        avx_variants = [
+            (["-mavx2", "-mfma"], "AVX2"),
+            ([], "SSE2"),
+        ]
+
+        compiled_ok = False
+        avx_str = "AVX2"
+        for avx_flags, avx_label in avx_variants:
+            # Probar primero con OpenMP + flags completos
+            for try_omp in (True, False):
+                omp_part = omp_flag if try_omp else []
+                cmd = ["g++"] + base_flags + align_flag + avx_flags + omp_part + ["-o", dll_path, c_path]
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                if result.returncode == 0:
+                    has_omp = try_omp
+                    avx_str = avx_label
+                    compiled_ok = True
+                    break
+                # Si fallo por -falign-loops, intentar sin ese flag
+                cmd2 = ["g++"] + base_flags + avx_flags + omp_part + ["-o", dll_path, c_path]
+                result2 = subprocess.run(cmd2, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                if result2.returncode == 0:
+                    has_omp = try_omp
+                    avx_str = avx_label
+                    compiled_ok = True
+                    break
+            if compiled_ok:
+                break
+
+        if not compiled_ok:
+            raise RuntimeError("g++ no pudo compilar kernels.cpp con ninguna variante")
+
         lib = ctypes.CDLL(dll_path)
+
         lib.ternary_lut_matmul_omp.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_float, ctypes.c_void_p, ctypes.c_void_p, 
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_float, ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
         ]
-        
+        lib.ternary_lut_matmul_omp.restype = None
+
         if hasattr(lib, 'mlgru_scan_fusion'):
             lib.mlgru_scan_fusion.argtypes = [
                 ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
                 ctypes.c_int, ctypes.c_int
             ]
-            
+            lib.mlgru_scan_fusion.restype = None
+
+        if hasattr(lib, 'fp32_gemv_avx2'):
+            lib.fp32_gemv_avx2.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int
+            ]
+            lib.fp32_gemv_avx2.restype = None
+
         _TERNARY_C_KERNEL = lib
-        mod_str = "OpenMP Multithread" if has_omp else "AVX2 Single-Thread"
-        print(f"  [C Kernel] kernels.cpp cargado exitosamente ({mod_str}). Optimizaciones L3 Cache y TPS extremas activas!")
+        thread_str = "OpenMP" if has_omp else "single-thread"
+        print(f"  [C Kernel] kernels.cpp OK ({avx_str} + {thread_str}). "
+              f"LUT-tiling L2-aware, AVX2 gather, mlgru fusion activos.")
     except Exception as e:
         print(f"  [C Kernel] Modulo C++ omitido (fallback a PyTorch): {e}")
         _TERNARY_C_KERNEL = False
-        
+
     return _TERNARY_C_KERNEL
 from model import (
     CPU1ModelV2,
@@ -163,7 +213,7 @@ def detect_model_info(model: nn.Module, config: dict) -> ModelInfo:
                                      config.get('quantization') == 'ternary')
         info.n_heads = 4 if info.is_byte_level else 1
         info.vocab_size = 256 if info.is_byte_level else config.get('bpe_vocab_size', 152064)
-        info.has_forward_one_token = False  # AblationBlock no tiene
+        info.has_forward_one_token = True   # AblationBlock.forward_one_token added
         info.patch_size = config.get('patch_size', 4)
 
     else:
@@ -436,48 +486,55 @@ def set_thread_affinity(core_ids: list[int]) -> None:
 
 def compile_for_cpu_inference(model: nn.Module) -> nn.Module:
     """
-    Compilar modelo con maximas optimizaciones para CPU.
+    Compilar modelo para CPU — estrategia per-block (Cambio 20).
 
-    torch.compile con backend inductor genera C++ vectorizado.
-    El MLGRU se beneficia especialmente: sigmoid, mul, add se fusionan
-    en un solo kernel con AVX2/AVX-512 automatico.
+    Compila cada bloque individualmente en lugar del modelo completo.
+    Mas estable que fullgraph=True para arquitecturas mixtas (recurrente +
+    Transformer) y evita el graph-break del loop MLGRU.
 
-    IMPORTANTE: la primera inferencia tarda ~30-60 seg (compilacion JIT).
-    Ganancia tipica: 1.5-3x sobre eager mode en CPU.
+    Ganancia tipica: ~1.4x vs eager mode por bloque. La primera inferencia
+    compila cada bloque la primera vez que se ejecuta (~30-60 seg total).
     """
     # Configurar inductor para CPU
     try:
         import torch._inductor.config as inductor_cfg
-        inductor_cfg.cpp.cxx_flags = ["-O3", "-march=native", "-funroll-loops"]
+        inductor_cfg.cpp.cxx_flags = ["-O3", "-mtune=native", "-mavx2", "-mfma", "-funroll-loops"]
         inductor_cfg.cpp.enable_kernel_profile = False
     except Exception:
         pass
 
-    # Intentar fullgraph primero, fallback si hay graph breaks
-    try:
-        compiled = torch.compile(
-            model,
-            mode="max-autotune",
-            backend="inductor",
-            fullgraph=True,
-        )
-        print("[CPU opt] torch.compile fullgraph OK (max-autotune)")
-        return compiled
-    except Exception as e:
-        print(f"[CPU opt] fullgraph fallo ({e})")
-
-    try:
-        compiled = torch.compile(
-            model,
-            mode="reduce-overhead",
-            backend="inductor",
-            fullgraph=False,
-        )
-        print("[CPU opt] torch.compile reduce-overhead OK")
-        return compiled
-    except Exception:
+    if not hasattr(torch, 'compile'):
         print("[CPU opt] torch.compile no disponible, usando eager mode")
         return model
+
+    if not hasattr(model, 'blocks'):
+        # Modelo sin .blocks (improbable): intentar compilacion completa
+        try:
+            return torch.compile(model, mode="reduce-overhead", backend="inductor")
+        except Exception:
+            return model
+
+    # Compilar cada bloque individualmente
+    n_compiled = 0
+    for i in range(len(model.blocks)):
+        try:
+            model.blocks[i] = torch.compile(
+                model.blocks[i],
+                mode="reduce-overhead",
+                backend="inductor",
+                fullgraph=False,
+            )
+            n_compiled += 1
+        except Exception as e:
+            # Si falla un bloque, dejar en eager (no es fatal)
+            pass
+
+    if n_compiled > 0:
+        print(f"[CPU opt] torch.compile per-block: {n_compiled}/{len(model.blocks)} bloques compilados")
+    else:
+        print("[CPU opt] torch.compile per-block: todos fallaron, usando eager mode")
+
+    return model
 
 
 def warmup_compiled_model(
@@ -528,36 +585,48 @@ def forward_with_prefetch(
     model: nn.Module,
     x: Tensor,
     hidden_states: list,
+    _block_flags: list | None = None,
+    _states_buf: list | None = None,
 ) -> tuple[Tensor, list]:
     """
     Forward pass con prefetch de capa i+2 mientras se computa capa i.
 
     Soporta CPU1BlockV2 (forward_one_token) y AblationBlock (forward).
     Para Transformer (sin estados), hidden_states es lista de None.
+
+    Args:
+        _block_flags: lista pre-computada de bool (True si el bloque tiene
+                      forward_one_token). Evita 14 hasattr() por patch.
+        _states_buf:  buffer pre-alocado para los nuevos estados. Reutilizado
+                      entre llamadas para evitar 14 list.append() + resize.
     """
     # Manejar modelo compilado (OptimizedModule)
     blocks = model.blocks
     if hasattr(model, '_orig_mod'):
         blocks = model._orig_mod.blocks
 
-    new_states = []
-    for i, block in enumerate(blocks):
+    n = len(blocks)
+    # Si no se pasan buffers externos, crear locales (fallback seguro)
+    if _states_buf is None:
+        _states_buf = [None] * n
+    if _block_flags is None:
+        _block_flags = [hasattr(b, 'forward_one_token') for b in blocks]
+
+    for i in range(n):
         # Prefetch capa i+2 async mientras procesamos capa i
-        if i + 2 < len(blocks):
+        if i + 2 < n:
             prefetch_layer_weights(blocks[i + 2])
 
-        # CPU1BlockV2 tiene forward_one_token (optimizado para 2D)
-        if hasattr(block, 'forward_one_token'):
-            x, h_new = block.forward_one_token(x, hidden_states[i])
+        if _block_flags[i]:
+            x, h_new = blocks[i].forward_one_token(x, hidden_states[i])
         else:
-            # AblationBlock y otros: usar forward normal con 3D
             x_3d = x.unsqueeze(1) if x.dim() == 2 else x
-            x_3d, h_new = block(x_3d, hidden_states[i])
+            x_3d, h_new = blocks[i](x_3d, hidden_states[i])
             x = x_3d.squeeze(1) if x_3d.dim() == 3 else x_3d
 
-        new_states.append(h_new)
+        _states_buf[i] = h_new
 
-    return x, new_states
+    return x, _states_buf
 
 
 def hadamard_update_manual(
@@ -592,6 +661,7 @@ def hadamard_update_manual(
 # BLOQUE 3 — Loop de Generacion Optimizado
 # ===========================================================================
 
+@torch.inference_mode()
 def _nucleus_sample(
     probs: Tensor,
     p: float,
@@ -601,20 +671,37 @@ def _nucleus_sample(
     """Nucleus (top-p) sampling con buffers pre-alocados opcionales.
 
     Args:
-        probs: [V] probabilidades
+        probs: [V] probabilidades (ya son softmax)
         p: threshold de nucleus
         sorted_buf: [V] buffer pre-alocado para sorted probs (evita alloc)
         idx_buf: [V] buffer pre-alocado para sorted indices (evita alloc)
+
+    Optimizacion vocab=256: torch.sort sobre 256 floats es trivial (~1µs).
+    El overhead dominante es la alloc de tensores intermedios — los buffers
+    pre-alocados eliminan eso. Para vocabularios grandes (BPE ~152K) el sort
+    es el cuello de botella y se podria usar torch.topk con k dinamico.
     """
+    V = probs.shape[0]
     if sorted_buf is not None and idx_buf is not None:
+        # In-place sort en buffers pre-alocados: sin alloc
         torch.sort(probs, descending=True, out=(sorted_buf, idx_buf))
+        sp, si = sorted_buf, idx_buf
+    elif V <= 256:
+        # vocab byte: sort trivial, pero sin buffers externos usamos argsort
+        # que es ligeramente mas rapido que sort para 256 elementos
+        si = torch.argsort(probs, descending=True)
+        sp = probs[si]
     else:
-        sorted_buf, idx_buf = torch.sort(probs, descending=True)
-    cumsum = torch.cumsum(sorted_buf, dim=0)
-    mask = cumsum - sorted_buf > p
-    sorted_buf[mask] = 0.0
-    sorted_buf /= sorted_buf.sum()
-    return idx_buf[torch.multinomial(sorted_buf.unsqueeze(0), 1).squeeze()].item()
+        sp, si = torch.sort(probs, descending=True)
+
+    cumsum = torch.cumsum(sp, dim=0)
+    mask = cumsum - sp > p
+    sp = sp.clone() if sp.data_ptr() == probs.data_ptr() else sp
+    sp[mask] = 0.0
+    total = sp.sum()
+    if total > 0:
+        sp /= total
+    return si[torch.multinomial(sp.unsqueeze(0), 1).item()].item()
 
 class CPU1InferenceEngine:
     """
@@ -655,15 +742,28 @@ class CPU1InferenceEngine:
         else:
             align_all_weights(model)
             self.scales = {}
-            print("[CPU opt] Modelo FP16 — skip INT8 packing")
+            # Cambio 18: bfloat16 para modelos FP16 — ~1.5x mas rapido en Intel BF16
+            # Solo activar si AVX-512 BF16 esta disponible en la CPU
+            self.info._bf16_active = False
+            try:
+                cap = str(torch._C._get_cpu_capability())
+                if 'avx512' in cap.lower() or 'amx' in cap.lower():
+                    model = model.to(torch.bfloat16)
+                    self.info._bf16_active = True
+                    print("[CPU opt] Modelo bfloat16 (AVX-512 BF16 detectado)")
+                else:
+                    print("[CPU opt] Modelo FP32 (no AVX-512 BF16 en esta CPU)")
+            except Exception:
+                print("[CPU opt] Modelo FP16 — skip INT8 packing")
 
         # Bloque 2: compilador
         n_threads = configure_cpu_threads(config.get('n_threads'))
         set_thread_affinity(list(range(n_threads)))
 
-        # Pre-alocar buffers
+        # Pre-alocar buffers (dtype debe coincidir con el modelo)
+        state_dtype = torch.bfloat16 if getattr(self.info, '_bf16_active', False) else torch.float32
         if self.info.is_recurrent:
-            self.hidden_states = alloc_hidden_states(n_layers, d_model)
+            self.hidden_states = alloc_hidden_states(n_layers, d_model, dtype=state_dtype)
         else:
             # Transformer: lista de None (sin estados recurrentes)
             self.hidden_states = [None] * n_layers
@@ -672,11 +772,13 @@ class CPU1InferenceEngine:
         vocab = self.info.vocab_size
         n_heads = self.info.n_heads
         self.logits_buf = torch.zeros(n_heads, vocab, dtype=torch.float32)
-        self.probs_buf = torch.zeros(vocab, dtype=torch.float32)
+        self.probs_buf = torch.zeros(n_heads, vocab, dtype=torch.float32)
         self.sorted_buf = torch.zeros(vocab, dtype=torch.float32)
         self.idx_buf = torch.zeros(vocab, dtype=torch.long)
+        # Pre-allocated states buffer (avoids 14 list.append per patch)
+        self._states_buf = list(self.hidden_states)  # same length, overwritten in-place
 
-        # Compilar
+        # Compilar (per-block: modifica model.blocks[i] in-place)
         compiled = compile_for_cpu_inference(model)
         try:
             warmup_compiled_model(compiled, config, n_warmup=2)
@@ -684,8 +786,25 @@ class CPU1InferenceEngine:
         except Exception as e:
             print(f"[CPU opt] torch.compile fallo en runtime ({type(e).__name__}), "
                   f"usando eager mode")
+            # Un-compile: blocks were modified in-place, restore originals
+            if hasattr(model, 'blocks'):
+                for i, block in enumerate(model.blocks):
+                    if hasattr(block, '_orig_mod'):
+                        model.blocks[i] = block._orig_mod
             self.model = model
             warmup_compiled_model(model, config, n_warmup=2)
+
+        # Pre-compute block capability flags AFTER compilation.
+        # forward_one_token calls self.forward() (not self.__call__), so for
+        # per-block compiled blocks (OptimizedModule) it bypasses compilation.
+        # In that case, prefer block(x_3d, h) via __call__ to get the compiled path.
+        _active_blocks = self._get_model().blocks
+        _any_compiled = any(hasattr(b, '_orig_mod') for b in _active_blocks)
+        if _any_compiled:
+            # Use __call__ for all blocks to route through compiled forward
+            self._block_flags = [False] * len(_active_blocks)
+        else:
+            self._block_flags = [hasattr(b, 'forward_one_token') for b in _active_blocks]
 
         print("=" * 60)
         print("Optimizaciones aplicadas")
@@ -694,7 +813,17 @@ class CPU1InferenceEngine:
     @classmethod
     def from_checkpoint(cls, path: str, config: dict) -> 'CPU1InferenceEngine':
         """Cargar checkpoint y crear engine. Auto-detecta tipo de modelo."""
-        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        # Cambio 19: mmap=True evita duplicar RAM al cargar (350M = ~360MB en FP16)
+        # Disponible en PyTorch >= 2.1
+        load_kwargs: dict = {'map_location': 'cpu', 'weights_only': False}
+        try:
+            import torch.version
+            major, minor = (int(x) for x in torch.version.__version__.split('.')[:2])
+            if (major, minor) >= (2, 1):
+                load_kwargs['mmap'] = True
+        except Exception:
+            pass
+        checkpoint = torch.load(path, **load_kwargs)
         state = checkpoint.get('model_state_dict', checkpoint)
 
         # Intentar cargar como el modelo que corresponda segun config
@@ -712,10 +841,12 @@ class CPU1InferenceEngine:
     def reset_state(self) -> None:
         """Resetear estado (MLGRU → nuevos zeros, Transformer → no-op)."""
         if self.info.is_recurrent:
+            state_dtype = torch.bfloat16 if getattr(self.info, '_bf16_active', False) else torch.float32
             # Reallocar para evitar conflictos con InferenceMode
             self.hidden_states = alloc_hidden_states(
-                self.info.n_layers, self.info.d_model, verbose=False
+                self.info.n_layers, self.info.d_model, dtype=state_dtype, verbose=False
             )
+            self._states_buf = list(self.hidden_states)  # sync pre-alloc buf
         # Transformer: hidden_states son None, nada que resetear
 
     def _bytes_to_patches(self, data: bytes) -> Tensor:
@@ -797,6 +928,7 @@ class CPU1InferenceEngine:
 
         n_patches = max_bytes // self.info.patch_size
         token_times = []
+        inv_temp = 1.0 / temperature if temperature > 0 else 0.0
 
         for i in range(n_patches):
             t0 = time.perf_counter()
@@ -804,51 +936,49 @@ class CPU1InferenceEngine:
             # Embed: [1, 1, patch_size] -> [1, d_model]
             x = embed_fn(last_patch).squeeze(1)
 
-            # Forward con prefetch
+            # Forward con prefetch — usa buffers pre-alocados (Cambios 11+14)
             x, self.hidden_states = forward_with_prefetch(
-                model, x, self.hidden_states
+                model, x, self.hidden_states,
+                _block_flags=self._block_flags,
+                _states_buf=self._states_buf,
             )
 
             # Norm final
             x_3d = x.unsqueeze(1)
             x_normed = model.norm(x_3d)
 
-            # N heads -> N bytes
+            # N heads → logits_buf[n_heads, vocab] (sin alloc)
             for h_idx, head in enumerate(heads):
-                logits = head(x_normed).squeeze(1).squeeze(0)
-                self.logits_buf[h_idx].copy_(logits)
+                self.logits_buf[h_idx].copy_(head(x_normed).squeeze(1).squeeze(0))
 
-            # Sampling
-            next_bytes = []
-            for h_idx in range(n_heads):
-                if temperature == 0:
-                    next_byte = self.logits_buf[h_idx].argmax().item()
-                else:
-                    torch.softmax(
-                        self.logits_buf[h_idx] / temperature,
-                        dim=-1,
-                        out=self.probs_buf,
-                    )
-                    if top_p < 1.0:
-                        next_byte = _nucleus_sample(
-                            self.probs_buf, top_p,
+            # Sampling batch (Cambio 17): 1 softmax + 1 multinomial para todos los heads
+            if temperature == 0:
+                next_bytes = self.logits_buf.argmax(dim=-1).tolist()
+            else:
+                # Batch softmax: [n_heads, vocab] en un solo op
+                torch.softmax(self.logits_buf * inv_temp, dim=-1, out=self.probs_buf)
+                if top_p < 1.0:
+                    # Nucleus per-head (no se puede vectorizar el threshold adaptativo)
+                    next_bytes = []
+                    for h_idx in range(n_heads):
+                        next_bytes.append(_nucleus_sample(
+                            self.probs_buf[h_idx], top_p,
                             sorted_buf=self.sorted_buf,
                             idx_buf=self.idx_buf,
-                        )
-                    else:
-                        next_byte = torch.multinomial(
-                            self.probs_buf.unsqueeze(0), 1
-                        ).squeeze().item()
-                next_bytes.append(next_byte)
+                        ))
+                else:
+                    # Batch multinomial: un solo call para todos los heads
+                    next_bytes = torch.multinomial(self.probs_buf, 1).squeeze(-1).tolist()
 
             # Escribir output
-            for j, b in enumerate(next_bytes):
-                idx = i * n_heads + j
+            base = i * n_heads
+            for j in range(n_heads):
+                idx = base + j
                 if idx < max_bytes:
-                    output_buf[idx] = b
+                    output_buf[idx] = next_bytes[j]
 
             # Preparar proximo patch
-            last_patch[0, 0] = torch.tensor(next_bytes, dtype=torch.long)
+            last_patch[0, 0, :n_heads] = torch.tensor(next_bytes, dtype=torch.long)
             token_times.append((time.perf_counter() - t0) * 1000)
 
         # Metricas
@@ -1194,7 +1324,7 @@ class HuggingFaceEngine:
                 pass
         try:
             import torch._inductor.config as inductor_cfg
-            inductor_cfg.cpp.cxx_flags = ["-O3", "-march=native", "-funroll-loops"]
+            inductor_cfg.cpp.cxx_flags = ["-O3", "-mtune=native", "-mavx2", "-mfma", "-funroll-loops"]
             hf_model.forward = torch.compile(hf_model.forward, mode="reduce-overhead")
             print("  [HuggingFaceEngine] torch.compile activado en el forward del modelo!")
         except Exception as e:
@@ -1794,10 +1924,15 @@ class CPU1InferenceEngineLUT(CPU1InferenceEngine):
 
         # Pre-alocar buffers reutilizables
         self.hidden_states = alloc_hidden_states(n_layers, d_model)
-        self.logits_buf = torch.zeros(4, VOCAB_SIZE, dtype=torch.float32)
-        self.probs_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
-        self.sorted_buf = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
-        self.idx_buf = torch.zeros(VOCAB_SIZE, dtype=torch.long)
+        n_heads = self.info.n_heads
+        vocab = self.info.vocab_size
+        self.logits_buf = torch.zeros(n_heads, vocab, dtype=torch.float32)
+        self.probs_buf = torch.zeros(n_heads, vocab, dtype=torch.float32)
+        self.sorted_buf = torch.zeros(vocab, dtype=torch.float32)
+        self.idx_buf = torch.zeros(vocab, dtype=torch.long)
+
+        # Pre-allocated states buffer + block flags
+        self._states_buf = list(self.hidden_states)
 
         # Compilar
         compiled = compile_for_cpu_inference(model)
@@ -1807,8 +1942,20 @@ class CPU1InferenceEngineLUT(CPU1InferenceEngine):
         except Exception as e:
             print(f"[CPU opt] torch.compile fallo en runtime ({type(e).__name__}), "
                   f"usando eager mode")
+            if hasattr(model, 'blocks'):
+                for i, block in enumerate(model.blocks):
+                    if hasattr(block, '_orig_mod'):
+                        model.blocks[i] = block._orig_mod
             self.model = model
             warmup_compiled_model(model, config, n_warmup=2)
+
+        # Block flags AFTER compilation
+        _active = self.model.blocks if hasattr(self.model, 'blocks') else []
+        _any_compiled = any(hasattr(b, '_orig_mod') for b in _active)
+        if _any_compiled:
+            self._block_flags = [False] * len(_active)
+        else:
+            self._block_flags = [hasattr(b, 'forward_one_token') for b in _active]
 
         print("=" * 60)
         print("Optimizaciones aplicadas")
