@@ -3037,17 +3037,12 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         action, payload = item
                         try:
                             if action == 'shards':
-                                _byte_dir, _bpe_dir, _tp, _ci = payload
+                                _byte_dir, _bpe_dir = payload
                                 _upload_all_shards(_byte_dir, api, DATASET_REPO, "byte_marginalized")
                                 _upload_all_shards(_bpe_dir, api, DATASET_REPO, "bpe_tokenized")
-                                # Upload raw logprobs too
-                                try:
-                                    _hf_upload_with_retry(api, str(_tp),
-                                        f"logprobs_raw/logprobs_chunk_{_ci:04d}.parquet", DATASET_REPO)
-                                    Path(str(_tp)).unlink(missing_ok=True)
-                                except Exception as _e:
-                                    print(f"  [WARN] Raw parquet upload failed: {_e}")
-                                    Path(str(_tp)).unlink(missing_ok=True)
+                                # NOTE: raw logprob part files (_part*.parquet) are already
+                                # deleted by the CPU consumer after byte+BPE processing.
+                                # Uploading them is not needed — the processed shards ARE the data.
                             elif action == 'checkpoint':
                                 _ci, _bso, _pso, _bc, _pc, _so = payload
                                 _save_stream_checkpoint(api, DATASET_REPO, _ci,
@@ -3194,8 +3189,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
 
                 _chunk_elapsed = time.time() - _chunk_t0
 
-                # Queue upload in background (bounded queue → backpressure if upload slow)
-                _upload_q.put(('shards', (byte_dir, bpe_dir, tmp_parquet, chunk_idx)))
+                # Queue upload — payload is just the two shard dirs (no file path needed)
+                _upload_q.put(('shards', (byte_dir, bpe_dir)))
 
                 # VRAM status report
                 _vram_msg = ""
@@ -3225,8 +3220,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 raise _gpu_error[0]
 
             # Queue final uploads for any remaining shards
-            _upload_q.put(('shards', (byte_dir, bpe_dir,
-                                       Path('/tmp/_final_placeholder'), -1)))
+            _upload_q.put(('shards', (byte_dir, bpe_dir)))
 
             # Queue final checkpoint
             _upload_q.put(('checkpoint', (
