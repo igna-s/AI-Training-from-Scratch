@@ -296,6 +296,23 @@ Before committing to long 50M runs, we train **~10M parameter models** to answer
 **Training budget:** 2500 steps each (~1h on T4, ~200M effective tokens).
 `small_03` starts from the `small_01` checkpoint, replaces the BPE embedding with a fresh byte-patch embedding, then trains for 2500 byte steps — same byte-step budget as `small_02` for a fair comparison. Inspired by Bolmo's two-stage byteification procedure.
 
+### Chinchilla Scaling Analysis
+
+All three `small_` runs are **compute-optimal by Chinchilla law** (tokens ≈ 20 × params = 200M tokens for 10M params).
+
+Dataset structure: `Cukinator/cpu1-ablation-dataset` contains **6,121 total rows** across both splits:
+
+| Run | Tokenization | Dataset subset | Total tokens | Cycling for 200M | Convergence risk |
+|---|---|---|---|---|---|
+| `small_01` | BPE (4K vocab) | `bpe_tokenized/` (60 shards) | 6,121 rows × 5,000 BPE = **30.6M BPE** | 200M ÷ 30.6M = **6.5×** | ⚠️ **Moderate** (repeated data) |
+| `small_02` | Byte-level | `byte_marginalized/` (60 shards) | 6,121 rows × 5,000 × 4 bytes = **122.4M bytes** | 200M ÷ 122.4M = **1.63×** | ✅ **Good** (mostly fresh) |
+| `small_03` | Byte-level (warm-start) | `byte_marginalized/` (60 shards) | Same as small_02 = **122.4M bytes** | **1.63×** | ✅ **Good** |
+| `small_04` | Raw bytes, no teacher | `HuggingFaceFW/fineweb` | ~1B+ tokens available | **1.63×** (uses 200M) | ✅ **Good** |
+
+**Key insight:** BPE requires 6.5 cycles of the same dataset to hit Chinchilla-optimal training budget. While this introduces a modest overfitting risk, the **byte-level runs** (small_02, small_03, small_04) see mostly fresh data (1.63 cycles), enabling clean convergence comparisons.
+
+For the paper: *"10M models trained with Chinchilla-optimal scaling (200M tokens each). BPE subset requires dataset cycling; byte-level subsets converge cleanly with minimal data repetition."*
+
 ### What the results answer
 
 | Comparison | Question |

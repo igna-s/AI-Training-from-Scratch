@@ -292,32 +292,37 @@ def align_all_weights(model: nn.Module) -> None:
 def _bitlinear_optimized_forward(self, x: Tensor) -> Tensor:
     """
     Forward pass de BitLinear con pesos ternarios pre-computados.
-
-    Reemplaza el forward original que cuantiza pesos en cada llamada.
-    Los pesos ya estan pre-cuantizados a {-1, 0, 1} como float y
-    transpuestos para acceso column-major.
-
-    Beneficios vs forward original:
-    - Elimina abs().mean(), div, round, clamp de pesos (pre-computado)
-    - Pesos transpuestos y contiguos (2x menos cache miss)
-    - Compatible con torch.compile/inductor (ops float estandar)
+    Zero-alloc: buffers pre-asignados, in-place ops para eliminar temporales.
     """
     original_shape = x.shape
     x_2d = x.reshape(-1, x.shape[-1]).float()  # [M, d_in]
+    M, d_in = x_2d.shape
+    d_out = self.weight_T_ternary.shape[1]
 
-    # Cuantizar activaciones a rango int8 per-token
-    x_scale = x_2d.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / 127.0
-    x_quant = (x_2d / x_scale).round().clamp(-128, 127)
+    # Lazy-alloc de buffers: una sola vez por modulo (o cuando M cambia)
+    if not hasattr(self, '_int8_M') or self._int8_M != M:
+        self._quant_buf = torch.empty(M, d_in,  dtype=torch.float32)
+        self._scale_buf = torch.empty(M, 1,     dtype=torch.float32)
+        self._out_buf   = torch.empty(M, d_out, dtype=torch.float32)
+        self._int8_M    = M
 
-    # Matmul con pesos ternarios pre-computados ({-1., 0., 1.} float)
-    # weight_T_ternary: [d_in, d_out] transpuesto y contiguo
-    out = x_quant @ self.weight_T_ternary
+    # abs en buffer pre-asignado → scale per-token (in-place clamp/div)
+    torch.abs(x_2d, out=self._quant_buf)
+    torch.amax(self._quant_buf, dim=-1, keepdim=True, out=self._scale_buf)
+    self._scale_buf.clamp_(min=1e-8).div_(127.0)
 
-    # Restaurar escala: output = (x_quant * x_scale / 127) @ (w_ternary * w_scale)
-    out = out * (x_scale * self.weight_scale)
+    # Cuantizar activaciones in-place
+    torch.div(x_2d, self._scale_buf, out=self._quant_buf)
+    self._quant_buf.round_().clamp_(-128, 127)
 
-    out_shape = list(original_shape[:-1]) + [out.shape[-1]]
-    return out.reshape(out_shape).to(x.dtype)
+    # Matmul con pesos ternarios — sin alloc intermedio
+    torch.mm(self._quant_buf, self.weight_T_ternary, out=self._out_buf)
+
+    # Restaurar escala in-place
+    self._out_buf.mul_(self._scale_buf * self.weight_scale)
+
+    out_shape = list(original_shape[:-1]) + [d_out]
+    return self._out_buf.reshape(out_shape).to(x.dtype)
 
 
 def pack_all_bitlinear_to_int8(model: nn.Module) -> dict:
@@ -510,7 +515,7 @@ def compile_for_cpu_inference(model: nn.Module) -> nn.Module:
     if not hasattr(model, 'blocks'):
         # Modelo sin .blocks (improbable): intentar compilacion completa
         try:
-            return torch.compile(model, mode="reduce-overhead", backend="inductor")
+            return torch.compile(model, mode="max-autotune", backend="inductor")
         except Exception:
             return model
 
@@ -520,7 +525,7 @@ def compile_for_cpu_inference(model: nn.Module) -> nn.Module:
         try:
             model.blocks[i] = torch.compile(
                 model.blocks[i],
-                mode="reduce-overhead",
+                mode="max-autotune",
                 backend="inductor",
                 fullgraph=False,
             )
@@ -1192,8 +1197,11 @@ class _HFModelWrapper(nn.Module):
         h = self._wte(x)
         if self._wpe is not None:
             seq_len = x.shape[-1] if x.dim() >= 2 else x.shape[0]
-            pos_ids = torch.arange(seq_len, device=x.device)
-            h = h + self._wpe(pos_ids)
+            # Cache pos_ids: evita torch.arange en cada llamada de embedding
+            if not hasattr(self, '_pos_ids_len') or self._pos_ids_len != seq_len:
+                self._pos_ids = torch.arange(seq_len, device=x.device)
+                self._pos_ids_len = seq_len
+            h = h + self._wpe(self._pos_ids)
         return h
 
     def forward(self, x: Tensor, hidden_states=None) -> tuple[Tensor, list]:
@@ -1207,11 +1215,11 @@ class _HFModelWrapper(nn.Module):
         if hidden_states is None:
             hidden_states = [None] * n_blocks
 
-        states = []
+        # Pre-allocated fixed-size list: evita n_blocks append() en cada llamada
+        states = [None] * n_blocks
         for i, block in enumerate(self.blocks):
             hi = hidden_states[i] if i < len(hidden_states) else None
-            h, s = block(h, hi)
-            states.append(s)
+            h, states[i] = block(h, hi)
 
         logits = self.heads[0](self.norm(h))
         return logits, states
@@ -1325,7 +1333,7 @@ class HuggingFaceEngine:
         try:
             import torch._inductor.config as inductor_cfg
             inductor_cfg.cpp.cxx_flags = ["-O3", "-mtune=native", "-mavx2", "-mfma", "-funroll-loops"]
-            hf_model.forward = torch.compile(hf_model.forward, mode="reduce-overhead")
+            hf_model.forward = torch.compile(hf_model.forward, mode="max-autotune")
             print("  [HuggingFaceEngine] torch.compile activado en el forward del modelo!")
         except Exception as e:
             print(f"  [HuggingFaceEngine] torch.compile fallback due to: {e}")
@@ -1681,8 +1689,8 @@ def ternary_lut_matmul(
         # w_packed [d_out, n_groups] ya es Row-Major
         w_C = w_packed.contiguous()
         decode_c = decode_table.contiguous()
-        out_c = torch.zeros((M, d_out), dtype=torch.float32, device=x.device)
-        
+        out_c = torch.empty((M, d_out), dtype=torch.float32, device=x.device)
+
         lib.ternary_lut_matmul_omp(
             ctypes.c_void_p(x.data_ptr()),
             ctypes.c_void_p(w_C.data_ptr()),
