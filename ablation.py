@@ -1,9 +1,13 @@
 """
 Ablation study for CPU-1: configuration, models, and analysis.
 
-Section 1 - Configuration: 15 run configs at 50M params on Kaggle T4.
+Section 1 - Configuration: 10 run configs at 50M params on Lightning.ai T4.
 Section 2 - Models: configurable model variants for all ablation runs.
 Section 3 - Analysis: paper-ready tables (text + LaTeX).
+
+All runs use CE-only training (no teacher) on raw text.
+All runs use ternary weights or FP16 baseline for comparison.
+Architecture constraint: 1.58-bit weights, no activation×activation matmul at inference.
 
 Usage:
     from ablation import get_run_config, build_ablation_model, RUN_CONFIGS
@@ -43,38 +47,46 @@ from model import (
 # =============================================================================
 
 # ============================================================
-# Base config shared by ALL 15 runs (50M params)
+# Base config shared by ALL 10 runs (50M params)
+# ============================================================
+#
+# Architecture constraint:
+#   - 1.58-bit ternary weights (BitLinear, BitEmbedding)
+#   - No activation×activation matmul at inference (MLGRU uses Hadamard only)
+#   - Transformer runs use sliding-window attention (local, CPU-friendly)
+#   - FP16 runs included as reference baselines only
+#
+# Dataset: CE-only training on raw text (no teacher logprobs needed).
+#   Current:  Cukinator/cpu1-ablation-dataset (~37.5M tokens, sequences pre-packed)
+#   Future:   HuggingFaceFW/fineweb sample-10BT (1B+ tokens, requires train.py update)
 # ============================================================
 
 BASE_CONFIG = {
-    # Architecture (50M params)
+    # Architecture (50M params: d_model=512, n_layers=12)
     'd_model':      512,
     'n_layers':     12,
     'd_ff':         1376,       # 8/3 × 512, rounded to multiple of 128
-    'fp_rank':      4,          # FPResidual low-rank correction
-    'n_heads':      8,          # for transformer runs
+    'fp_rank':      4,          # FPResidual low-rank correction (0 = disabled)
+    'n_heads':      8,          # for transformer / folded-transformer runs
     'head_dim':     64,
-    'pfnet_hidden': 0,          # disabled for 50M ablation
+    'window_size':  512,        # sliding-window attention span (in patches)
+    'pfnet_hidden': 0,          # PFNet disabled for ablation runs
 
     # Training
-    'batch_per_gpu':                8,
-    'gradient_accumulation_steps':  2,
-    'lr':                           3e-4,
-    'min_lr':                       3e-5,
-    'warmup_steps':                 500,
-    'total_steps':                  10_000,
-    'weight_decay_bitlinear':       0.1,
-    'weight_decay_fpresidual':      0.0,
-    'weight_decay_heads':           0.01,
-    'grad_clip':                    1.0,
-    'seed':                         42,
+    'batch_per_gpu':               8,
+    'gradient_accumulation_steps': 2,
+    'lr':                          3e-4,
+    'min_lr':                      3e-5,
+    'warmup_steps':                500,
+    'total_steps':                 5_000,
+    'weight_decay_bitlinear':      0.1,
+    'weight_decay_fpresidual':     0.0,
+    'weight_decay_heads':          0.01,
+    'grad_clip':                   1.0,
+    'seed':                        42,
 
-    # Distillation
-    'temperature':  4.0,
-    'alpha_kl':     0.9,
-    'alpha_ce':     0.1,
-    'lambda_align': 0.3,            # EmbeddingAligner weight (runs 13, 15)
-    'teacher_dim':  128,            # projected dim for EmbeddingAligner
+    # Training signal — CE only for all ablation runs
+    'training_signal': 'ce_only',
 
     # Dataset
     'dataset_repo':     'Cukinator/cpu1-ablation-dataset',
@@ -83,133 +95,243 @@ BASE_CONFIG = {
 
     # Checkpoints
     'checkpoint_repo':  'Cukinator/cpu1-ablation-checkpoints',
-    'save_every_steps': 2000,
+    'save_every_steps': 1000,
 }
 
 # ============================================================
-# Per-run delta configs
+# Per-run delta configs — 10 progressive runs
 # ============================================================
 #
-# Grid 2×2 (Mixer × Tokenization):
+# Story: start from a standard FP16 Transformer baseline and add
+# ONE CPU-1 design choice per run until we reach the full architecture.
+# All runs: CE-only training from scratch, 50M params.
 #
-#               BPE                    Byte
-# Transformer   Run 01, 03, 04         Run 02
-# MLGRU         Run 05, 06, 07         Run 08, 09, 10, 11
+# Progressive chain:
+#
+#   run_01  Transformer + BPE + FP16            (absolute baseline)
+#     ↓ swap tokenizer
+#   run_02  Transformer + Byte + FP16           (+byte patches)
+#     ↓ swap mixer
+#   run_03  MLGRU + BPE + FP16                 (+MatMul-free mixer)
+#     ↓ combine both
+#   run_04  MLGRU + Byte + FP16                (+MLGRU AND byte)
+#     ↓ quantize
+#   run_05  MLGRU + Byte + Ternary             (+1.58-bit weights)
+#     ↓ correct
+#   run_06  MLGRU + Byte + Ternary + FPRes      (+FPResidual) ← CPU-1 core
+#     ↓ branch: add components
+#   run_07  CPU-1 core + Bolmo                  (+dynamic byte patches)
+#   run_08  CPU-1 core + DeleteGate             (+state elimination)
+#   run_09  Folded Transformer + Byte + Ternary (alternative: local attn)
+#   run_10  CPU-1 core + Bolmo + DeleteGate     ← CPU-1 COMPLETE ⭐
+#
+# Key questions:
+#   run_01 → run_02 : Does byte-level hurt a FP16 Transformer?
+#   run_01 → run_03 : Is MLGRU better than Transformer (BPE, FP16)?
+#   run_03 → run_04 : Do byte patches help MLGRU?
+#   run_04 → run_05 : Does ternary hurt MLGRU+byte?
+#   run_05 → run_06 : Does FPResidual recover ternary quality loss?
+#   run_06 → run_07 : Does Bolmo improve over fixed patches?
+#   run_06 → run_08 : Does DeleteGate preserve quality while pruning?
+#   run_06 vs run_09 : CPU-1 core vs best local-attention Transformer
+#   run_06 → run_10 : Full CPU-1 vs core — cost of all extras combined
 
 RUN_CONFIGS = {
+    # ------------------------------------------------------------------
+    # run_01: absolute baseline
+    # ------------------------------------------------------------------
     'run_01': {
-        'name':             'transformer_bpe_fp16_ce',
-        'token_mixer':      'transformer',
-        'tokenization':     'bpe',
-        'quantization':     'fp16',
-        'training_signal':  'ce_only',
-        'fp_residual':      False,
-        'description':      'Baseline absoluto — Transformer FP16 BPE sin distilación',
-        'cites':            [],
+        'name':         'transformer_bpe_fp16',
+        'token_mixer':  'transformer',
+        'tokenization': 'bpe',
+        'quantization': 'fp16',
+        'fp_residual':  False,
+        'description':  'Absolute baseline — FP16 Transformer, BPE tokens, CE-only.',
+        'cites':        [],
     },
+
+    # ------------------------------------------------------------------
+    # run_02: +byte patches (swap tokenizer)
+    # ------------------------------------------------------------------
     'run_02': {
-        'name':             'transformer_byte_fp16_ce',
-        'token_mixer':      'transformer',
-        'tokenization':     'byte',
-        'quantization':     'fp16',
-        'training_signal':  'ce_only',
-        'fp_residual':      False,
-        'description':      'Aislar efecto de byte-level sobre Transformer FP16',
-        'cites':            ['MegaByte (Yu et al., 2023)'],
+        'name':         'transformer_byte_fp16',
+        'token_mixer':  'transformer',
+        'tokenization': 'byte',
+        'quantization': 'fp16',
+        'fp_residual':  False,
+        'description':  '+Byte patches — FP16 Transformer with 4-byte patches. Isolates tokenization.',
+        'cites':        ['MegaByte (Yu et al., 2023)'],
     },
+
+    # ------------------------------------------------------------------
+    # run_03: +MLGRU (swap mixer, back to BPE for clean isolation)
+    # ------------------------------------------------------------------
     'run_03': {
-        'name':             'transformer_bpe_ternary_ce',
-        'token_mixer':      'transformer',
-        'tokenization':     'bpe',
-        'quantization':     'ternary',
-        'training_signal':  'ce_only',
-        'fp_residual':      True,
-        'description':      'Aislar efecto de cuantización ternaria sobre transformer BPE',
-        'cites':            ['BitNet b1.58 (Wang et al., 2024)',
-                             'Slender-Mamba (Yu et al., 2025)'],
+        'name':         'mlgru_bpe_fp16',
+        'token_mixer':  'mlgru',
+        'tokenization': 'bpe',
+        'quantization': 'fp16',
+        'fp_residual':  False,
+        'description':  '+MLGRU — MatMul-free token mixer on BPE. Isolates mixer vs run_01.',
+        'cites':        ['MatMul-free LM (Zhu et al., 2024)'],
     },
+
+    # ------------------------------------------------------------------
+    # run_04: MLGRU + byte (both components together)
+    # ------------------------------------------------------------------
     'run_04': {
-        'name':             'transformer_bpe_ternary_distil',
-        'token_mixer':      'transformer',
-        'tokenization':     'bpe',
-        'quantization':     'ternary',
-        'training_signal':  'distillation',
-        'fp_residual':      True,
-        'description':      'Transformer completo con ternario y distilación',
-        'cites':            ['BitNet b1.58', 'Hinton et al. 2015'],
+        'name':         'mlgru_byte_fp16',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte',
+        'quantization': 'fp16',
+        'fp_residual':  False,
+        'description':  'MLGRU + byte patches, FP16. Combined mixer+tokenization.',
+        'cites':        ['MatMul-free LM', 'MegaByte (Yu et al., 2023)'],
     },
+
+    # ------------------------------------------------------------------
+    # run_05: +ternary weights
+    # ------------------------------------------------------------------
     'run_05': {
-        'name':             'mlgru_bpe_fp16_ce',
-        'token_mixer':      'mlgru',
-        'tokenization':     'bpe',
-        'quantization':     'fp16',
-        'training_signal':  'ce_only',
-        'fp_residual':      False,
-        'description':      'Aislar efecto de MLGRU sobre BPE FP16',
-        'cites':            ['MatMul-free LM (Zhu et al., 2024)'],
+        'name':         'mlgru_byte_ternary',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  False,
+        'description':  '+Ternary — 1.58-bit weights on MLGRU+byte. Isolates quantization cost.',
+        'cites':        ['BitNet b1.58 (Wang et al., 2024)', 'MatMul-free LM'],
     },
+
+    # ------------------------------------------------------------------
+    # run_06: +FPResidual → CPU-1 core architecture
+    # ------------------------------------------------------------------
     'run_06': {
-        'name':             'mlgru_bpe_ternary_ce',
-        'token_mixer':      'mlgru',
-        'tokenization':     'bpe',
-        'quantization':     'ternary',
-        'training_signal':  'ce_only',
-        'fp_residual':      True,
-        'description':      'Aislar MLGRU + ternario sobre BPE',
-        'cites':            ['MatMul-free LM', 'BitNet b1.58'],
+        'name':         'mlgru_byte_ternary_fpres',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'description':  (
+            '+FPResidual — low-rank FP16 correction alongside ternary weights. '
+            'run_05 → run_06 answers: does FPResidual recover ternary quality loss? '
+            'This is the CPU-1 core architecture.'
+        ),
+        'cites':        ['Slender-Mamba (Yu et al., 2025)', 'BitNet b1.58'],
     },
+
+    # ------------------------------------------------------------------
+    # run_07: CPU-1 core + Bolmo (dynamic byte patches)
+    # ------------------------------------------------------------------
     'run_07': {
-        'name':             'mlgru_bpe_ternary_distil',
-        'token_mixer':      'mlgru',
-        'tokenization':     'bpe',
-        'quantization':     'ternary',
-        'training_signal':  'distillation',
-        'fp_residual':      True,
-        'description':      'MLGRU BPE completo — comparación directa vs Run 10',
-        'cites':            ['MatMul-free LM', 'BitNet b1.58', 'Hinton et al. 2015'],
+        'name':         'mlgru_byte_ternary_fpres_bolmo',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_boundary_predictor': True,
+        'description':  (
+            '+Bolmo — dynamic byte patches aligned to word boundaries. '
+            'CPU-1 core + boundary predictor. run_06 → run_07: fixed vs dynamic patches.'
+        ),
+        'cites':        ['BLT (Pagnoni et al., 2024)'],
     },
+
+    # ------------------------------------------------------------------
+    # run_08: CPU-1 core + DeleteGate (state elimination)
+    # ------------------------------------------------------------------
     'run_08': {
-        'name':             'mlgru_byte_fp16_ce',
-        'token_mixer':      'mlgru',
-        'tokenization':     'byte',
-        'quantization':     'fp16',
-        'training_signal':  'ce_only',
-        'fp_residual':      False,
-        'description':      'Aislar byte-level sobre MLGRU FP16',
-        'cites':            ['MegaByte (Yu et al., 2023)'],
+        'name':         'mlgru_byte_ternary_fpres_deletegate',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_delete_gate': True,
+        'description':  (
+            '+DeleteGate — MrT5-style state elimination at midpoint (~40%). '
+            'CPU-1 core + delete gate. run_06 → run_08: quality vs speed tradeoff.'
+        ),
+        'cites':        ['MrT5 (Pagliardini et al., 2024)'],
     },
+
+    # ------------------------------------------------------------------
+    # run_09: alternative — Folded Transformer (local sliding-window)
+    # Not part of the build-up chain; compares a CPU-friendly attention
+    # baseline against the CPU-1 core (run_06) at the same parameter budget.
+    # window_size=128 patches = 512 bytes of context per position.
+    # ------------------------------------------------------------------
     'run_09': {
-        'name':             'mlgru_byte_ternary_ce',
-        'token_mixer':      'mlgru',
-        'tokenization':     'byte',
-        'quantization':     'ternary',
-        'training_signal':  'ce_only',
-        'fp_residual':      True,
-        'description':      'CPU-1 sin distilación — aislar efecto del teacher signal',
-        'cites':            [],
-    },
-    'run_10': {
-        'name':             'mlgru_byte_ternary_distil_fpres',
-        'token_mixer':      'mlgru',
-        'tokenization':     'byte',
-        'quantization':     'ternary',
-        'training_signal':  'distillation',
-        'fp_residual':      True,
-        'description':      'CPU-1 COMPLETO con FPResidual — propuesta principal del paper',
-        'cites':            [],
-        'is_proposed':      True,
-    },
-    'run_11': {
-        'name':             'mlgru_byte_ternary_distil_nofp',
-        'token_mixer':      'mlgru',
-        'tokenization':     'byte',
-        'quantization':     'ternary',
-        'training_signal':  'distillation',
-        'fp_residual':      False,
-        'description':      '100% ternario puro — sin FPResidual. '
-                            'Run 10 vs 11 responde: ¿vale la pena la rama FP16?',
-        'cites':            [
+        'name':         'folded_transformer_byte_ternary',
+        'token_mixer':  'transformer',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  False,
+        'window_size':  128,
+        'description':  (
+            'Folded Transformer — ternary sliding-window attention over byte patches. '
+            'O(N·128) vs O(N²). Alternative to MLGRU. '
+            'run_06 vs run_09: MLGRU core vs best local-attention Transformer.'
+        ),
+        'cites':        [
+            'Longformer (Beltagy et al., 2020)',
             'BitNet b1.58 (Wang et al., 2024)',
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # run_10: CPU-1 COMPLETE — all components together
+    # ------------------------------------------------------------------
+    'run_10': {
+        'name':         'cpu1_complete',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_boundary_predictor': True,
+        'use_delete_gate': True,
+        'description':  (
+            'CPU-1 COMPLETE — MLGRU + Bolmo (dynamic byte patches) + ternary + '
+            'FPResidual + DeleteGate. Full proposed architecture.'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'BLT (Pagnoni et al., 2024)',
+            'MrT5 (Pagliardini et al., 2024)',
+            'Slender-Mamba (Yu et al., 2025)',
+        ],
+        'is_proposed':  True,
+    },
+
+    # ------------------------------------------------------------------
+    # run_11: CPU-1 COMPLETE + PFNet (cache-resident nonlinear residual)
+    # ------------------------------------------------------------------
+    # PFNet adds a small 2-layer ternary MLP (pfnet_hidden=32) as a residual
+    # branch per block. At 50M (d_model=512, 12 layers):
+    #   params: 12 × 2 × 512 × 32 = 393K — fits entirely in L2 cache (~786KB BF16)
+    # Key property: PFNet weights are L2-resident alongside the MLGRU state,
+    # so they don't add RAM streaming cost. Near-zero latency overhead.
+    # MLGRU mixing h_t = f*h + (1-f)*c is a linear interpolation — PFNet adds
+    # a direct nonlinear pathway that MLGRU structurally cannot express.
+    # Question: does PFNet improve quality without hurting inference speed?
+    # ------------------------------------------------------------------
+    'run_11': {
+        'name':         'cpu1_pfnet',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'pfnet_hidden': 32,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'description':  (
+            'CPU-1 COMPLETE + PFNet (pfnet_hidden=32). '
+            'Cache-resident nonlinear residual — quality gain, zero RAM overhead.'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'BLT (Pagnoni et al., 2024)',
+            'MrT5 (Pagliardini et al., 2024)',
             'Slender-Mamba (Yu et al., 2025)',
         ],
     },
@@ -217,107 +339,164 @@ RUN_CONFIGS = {
 
 
 # ============================================================
-# Extended runs 12-15: Bolmo + MrT5 + EmbeddingAlignment
+# Bonus: 10M parameter runs — fast scaling-consistency check
 # ============================================================
+#
+# Why 10M?
+#   - Trains in ~1h on T4 (vs 4h for 50M) — fast iteration
+#   - BPE vocab (152K tokens) can't fit in 10M params: embedding alone = 39M
+#     → byte-level only at this scale
+#   - Mirrors the key 50M decisions to verify trends are scale-consistent
+#   - Paper can show: same ordering holds at 10M and 50M → trends generalize
+#
+# All three small_ runs use the CPU-1 COMPLETE architecture (MLGRU + ternary +
+# FPResidual + Bolmo + DeleteGate). Only the TRAINING STRATEGY varies.
+#
+# Key question: which data strategy produces the best byte-level model?
+#   small_01  CPU-1 COMPLETE + compact BPE (4K vocab) from scratch
+#   small_02  CPU-1 COMPLETE + byte from scratch
+#   small_03  CPU-1 COMPLETE + complement (BPE warm-start → byte finetune)
+#
+# BPE vocab constraint: full 152K Qwen vocab → 152K × 320 = 48.7M params, larger
+#   than the entire 10M model. small_01 uses top-4096 tokens by frequency from
+#   cpu1-ablation-dataset (bpe_tokenized/ split). Embedding: 4096 × 320 ≈ 1.3M params.
+#
+# Architecture: d_model=320, n_layers=8, d_ff=853 → ~10M params
+#   MLGRU per block:  3 × 320² = 307K
+#   SwiGLU per block: 3 × 320 × 853 = 819K
+#   8 blocks: 9.0M | embedding+heads: 0.35M | total ≈ 10M
+#
+# Training: 2500 steps each (~1h on T4, 200M effective tokens).
+#   small_03 starts from small_01 checkpoint and continues for 2500 byte steps —
+#   same byte-step budget as small_02, but with BPE warm-start on top.
+#
+# "Complement" mode: run 10M first to find best design choices in <1h each,
+#   then only scale up the winners to 50M — saves ~3h per eliminated run.
 
-# Run 12: Bolmo solo (parches dinámicos, sin MrT5 ni EmbAlign)
-RUN_CONFIGS['run_12'] = {
-    'name':                    'mlgru_byte_ternary_distil_bolmo',
-    'token_mixer':             'mlgru',
-    'tokenization':            'byte_dynamic',   # parches dinámicos
-    'quantization':            'ternary',
-    'training_signal':         'distillation',
-    'fp_residual':             True,
-    'use_boundary_predictor':  True,
-    'use_delete_gate':         False,
-    'use_embedding_alignment': False,
-    'description': (
-        'CPU-1 + Bolmo (parches dinámicos). '
-        'Compara contra Run 10 (parches estáticos). '
-        'Responde: ¿los parches dinámicos mejoran PPL o TPS?'
-    ),
-    'cites': ['Bolmo (Allen AI, 2025)'],
+SMALL_BASE_CONFIG = {
+    **BASE_CONFIG,
+    # Architecture (~10M params)
+    'd_model':      320,
+    'n_layers':     8,
+    'd_ff':         853,        # 8/3 × 320 = 853
+    'fp_rank':      4,
+    'n_heads':      8,
+    'head_dim':     40,         # 320 / 8
+    'window_size':  256,
+
+    # Shorter training — 10M converges faster
+    'total_steps':  2500,
+    'warmup_steps': 250,
 }
 
-# Run 13: EmbeddingAlignment solo (sin Bolmo ni MrT5)
-RUN_CONFIGS['run_13'] = {
-    'name':                    'mlgru_byte_ternary_distil_embalign',
-    'token_mixer':             'mlgru',
-    'tokenization':            'byte',
-    'quantization':            'ternary',
-    'training_signal':         'distillation',
-    'fp_residual':             True,
-    'use_boundary_predictor':  False,
-    'use_delete_gate':         False,
-    'use_embedding_alignment': True,
-    'lambda_align':            0.3,
-    'description': (
-        'CPU-1 + EmbeddingAlignment. '
-        'Compara contra Run 10 (sin alineación). '
-        'Responde: ¿alinear embeddings mejora la calidad del conocimiento transferido?'
-    ),
-    'cites': ['arXiv 2602 (2025) — Distilling Byte-Level Models'],
+SMALL_RUN_CONFIGS = {
+    # ------------------------------------------------------------------
+    # small_01: CPU-1 COMPLETE + compact BPE (4K vocab) from scratch
+    # ------------------------------------------------------------------
+    # BPE at 10M: uses top-4096 tokens by frequency from cpu1-ablation-dataset
+    # (bpe_tokenized/ split). Full 152K Qwen vocab is impossible at this scale.
+    # BoundaryPredictor disabled — BPE tokens carry their own subword boundaries.
+    # ------------------------------------------------------------------
+    'small_01': {
+        'name':                   'small_cpu1_bpe',
+        'token_mixer':            'mlgru',
+        'tokenization':           'bpe',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_boundary_predictor': False,   # BPE has its own boundaries
+        'use_delete_gate':        True,
+        'bpe_vocab_size':         4096,    # compact — top-4096 by frequency
+        'description':            'CPU-1 COMPLETE @ 10M, compact BPE (4K vocab) from scratch. '
+                                  'Does BPE tokenization outperform byte-level at 10M?',
+        'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'MrT5'],
+    },
+
+    # ------------------------------------------------------------------
+    # small_02: CPU-1 COMPLETE + byte-level from scratch
+    # ------------------------------------------------------------------
+    'small_02': {
+        'name':                   'small_cpu1_byte',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'description':            'CPU-1 COMPLETE @ 10M, byte-level from scratch. '
+                                  'Pure byte baseline for complement comparison.',
+        'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
+        'is_proposed':            True,
+    },
+
+    # ------------------------------------------------------------------
+    # small_03: CPU-1 COMPLETE + complement (BPE warm-start → byte finetune)
+    # ------------------------------------------------------------------
+    # Starts from small_01 checkpoint. The BPE embedding layer is discarded and
+    # replaced with a fresh BytePatchEmbeddingV2; all other weights carry over.
+    # Then continues training on byte data for 2500 steps (same byte budget as
+    # small_02). Inspired by Bolmo's two-stage subword→byte byteification.
+    # ------------------------------------------------------------------
+    'small_03': {
+        'name':                   'small_cpu1_complement',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'complement_from':        'small_01',   # load weights, swap embedding
+        'description':            'CPU-1 COMPLETE @ 10M, complement: BPE warm-start (small_01) '
+                                  '→ byte finetune. Does BPE pretraining bootstrap byte quality?',
+        'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
+    },
+
+    # ------------------------------------------------------------------
+    # small_04: CPU-1 COMPLETE + raw bytes, NO teacher (pure CE, no Qwen)
+    # ------------------------------------------------------------------
+    # Streams raw UTF-8 bytes directly from HuggingFaceFW/fineweb — no teacher
+    # forward pass, no logprobs, no teacher_mask. Pure CE loss on byte patches.
+    # Answers: do Qwen teacher logprobs (in small_02) actually help, or does
+    # training on raw bytes alone reach the same quality?
+    # Uses a separate dataset path (raw fineweb bytes) so it's truly independent
+    # of the cpu1-ablation-dataset pipeline.
+    # ------------------------------------------------------------------
+    'small_04': {
+        'name':                   'small_cpu1_raw_bytes',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'raw_bytes_only':         True,    # skip teacher columns, stream raw fineweb bytes
+        'dataset_repo':           'HuggingFaceFW/fineweb',
+        'description':            'CPU-1 COMPLETE @ 10M, raw bytes from scratch, zero teacher. '
+                                  'Do Qwen logprobs in small_02 actually help vs pure CE on raw bytes?',
+        'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
+    },
 }
 
-# Run 14: MrT5 (DeleteGate, 2 fases) — sobre Run 10
-RUN_CONFIGS['run_14'] = {
-    'name':                    'mlgru_byte_ternary_distil_deletegate',
-    'token_mixer':             'mlgru',
-    'tokenization':            'byte',
-    'quantization':            'ternary',
-    'training_signal':         'distillation_then_ce',  # Fase 1 distil, Fase 2 CE
-    'fp_residual':             True,
-    'use_boundary_predictor':  False,
-    'use_delete_gate':         True,
-    'target_elimination':      0.4,             # eliminar 40% de estados
-    'training_phases':         2,               # entrenar en 2 fases
-    'use_embedding_alignment': False,
-    'description': (
-        'CPU-1 + DeleteGate (MrT5 style). Training en 2 fases. '
-        'Compara TPS vs Run 10: ¿cuánto más rápido en CPU con 40% menos estados? '
-        'Compara PPL vs Run 10: ¿cuánta calidad se pierde?'
-    ),
-    'cites': ['MrT5 (Google, 2024)'],
-}
-
-# Run 15: Todo junto — Bolmo + EmbAlign + MrT5 (la propuesta final)
-RUN_CONFIGS['run_15'] = {
-    'name':                    'mlgru_byte_ternary_distil_full',
-    'token_mixer':             'mlgru',
-    'tokenization':            'byte_dynamic',
-    'quantization':            'ternary',
-    'training_signal':         'distillation_then_ce',
-    'fp_residual':             True,
-    'use_boundary_predictor':  True,
-    'use_delete_gate':         True,
-    'use_embedding_alignment': True,
-    'target_elimination':      0.4,
-    'lambda_align':            0.3,
-    'training_phases':         2,
-    'description': (
-        'CPU-1 COMPLETO v3 — todas las técnicas integradas. '
-        'Propuesta final del paper si los runs 12-14 muestran mejoras individuales. '
-        'Bolmo mejora entrada, EmbAlign mejora conocimiento, MrT5 mejora velocidad.'
-    ),
-    'cites': [
-        'Bolmo (Allen AI, 2025)',
-        'MrT5 (Google, 2024)',
-        'arXiv 2602 (2025)',
-    ],
-    'is_proposed_v3': True,
-}
+# Merged registry — both 50M and 10M runs
+ALL_RUN_CONFIGS = {**RUN_CONFIGS, **SMALL_RUN_CONFIGS}
 
 
 def get_run_config(run_name: str) -> dict:
-    """Merge BASE_CONFIG with run-specific delta."""
-    if run_name not in RUN_CONFIGS:
+    """Merge base config with run-specific delta. Handles both 50M and 10M runs."""
+    if run_name not in ALL_RUN_CONFIGS:
         raise ValueError(
-            f"Unknown run: {run_name}. Available: {list(RUN_CONFIGS.keys())}"
+            f"Unknown run: {run_name}. Available: {list(ALL_RUN_CONFIGS.keys())}"
         )
-    run = RUN_CONFIGS[run_name]
-    merged = {**BASE_CONFIG}
+    run = ALL_RUN_CONFIGS[run_name]
+    # 10M runs use SMALL_BASE_CONFIG, 50M runs use BASE_CONFIG
+    base = SMALL_BASE_CONFIG if run_name.startswith('small_') else BASE_CONFIG
+    merged = {**base}
     merged['use_ternary'] = run['quantization'] == 'ternary'
-    merged['fp_rank'] = BASE_CONFIG['fp_rank'] if run.get('fp_residual', True) else 0
+    fp_residual = run.get('fp_residual', False)
+    merged['fp_rank'] = base['fp_rank'] if (fp_residual and run['quantization'] == 'ternary') else 0
+    # Optional architecture flags — default off unless run specifies them
+    merged['use_boundary_predictor'] = run.get('use_boundary_predictor', False)
+    merged['use_delete_gate'] = run.get('use_delete_gate', False)
+    merged['use_embedding_alignment'] = run.get('use_embedding_alignment', False)
     merged.update(run)
     return merged
 
@@ -848,9 +1027,10 @@ def generate_latex_table(results: dict[str, dict]) -> str:
     lines = [
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Ablation study at 50M parameters, 1B tokens. "
-        r"TPS = tokens per second on consumer CPU (4-core). "
-        r"$\downarrow$ lower is better, $\uparrow$ higher is better.}",
+        r"\caption{Ablation study at 50M parameters. CE-only training from scratch. "
+        r"TPS = tokens per second on consumer CPU (4-core, no SIMD). "
+        r"$\downarrow$ lower is better, $\uparrow$ higher is better. "
+        r"Run 10 (\textbf{CPU-1 Complete}) is the proposed architecture.}",
         r"\label{tab:ablation}",
         r"\begin{tabular}{lllllrrr}",
         r"\toprule",
@@ -915,27 +1095,35 @@ def generate_comparison_summary(results: dict[str, dict]) -> str:
             f"    Delta: PPL {ppl_delta:+.1f}%, TPS {tps_delta:+.1f}%\n"
         )
 
-    lines.append("1. MLGRU vs Transformer (BPE FP16, CE):")
-    lines.append(_compare("  Mixer effect", 'run_01', 'run_05'))
+    lines.append("1. Byte patches — tokenization effect on FP16 Transformer:")
+    lines.append(_compare("  run_01 (BPE) vs run_02 (Byte)", 'run_01', 'run_02'))
 
-    lines.append("2. Byte vs BPE (Transformer FP16, CE):")
-    lines.append(_compare("  Tokenization effect", 'run_01', 'run_02'))
+    lines.append("2. MLGRU vs Transformer — mixer effect (BPE, FP16):")
+    lines.append(_compare("  run_01 (Transformer) vs run_03 (MLGRU)", 'run_01', 'run_03'))
 
-    lines.append("3. Ternary vs FP16 (Transformer BPE, CE):")
-    lines.append(_compare("  Quantization effect", 'run_01', 'run_03'))
+    lines.append("3. Byte patches on MLGRU:")
+    lines.append(_compare("  run_03 (BPE) vs run_04 (Byte)", 'run_03', 'run_04'))
 
-    lines.append("4. Distillation vs CE (Transformer BPE ternary):")
-    lines.append(_compare("  Training signal effect", 'run_03', 'run_04'))
+    lines.append("4. Ternary quantization cost on MLGRU+Byte:")
+    lines.append(_compare("  run_04 (FP16) vs run_05 (Ternary)", 'run_04', 'run_05'))
 
-    lines.append("5. Full proposal vs baseline:")
-    lines.append(_compare("  CPU-1 vs Transformer baseline", 'run_01', 'run_10'))
+    lines.append("5. FPResidual correction on MLGRU+Byte+Ternary (→ CPU-1 core):")
+    lines.append(_compare("  run_05 (no FPRes) vs run_06 (FPRes)", 'run_05', 'run_06'))
 
-    lines.append("6. FPResidual ablation:")
-    lines.append(_compare("  With vs without FPResidual", 'run_11', 'run_10'))
+    lines.append("6. Bolmo — dynamic patches on CPU-1 core:")
+    lines.append(_compare("  run_06 (fixed) vs run_07 (Bolmo)", 'run_06', 'run_07'))
 
-    lines.append("7. Distillation effect on CPU-1:")
-    lines.append(_compare("  CE vs distillation (MLGRU+Byte+Ternary)",
-                           'run_09', 'run_10'))
+    lines.append("7. DeleteGate — state elimination on CPU-1 core:")
+    lines.append(_compare("  run_06 (no gate) vs run_08 (DeleteGate)", 'run_06', 'run_08'))
+
+    lines.append("8. CPU-1 core vs Folded Transformer (MLGRU vs local-attn):")
+    lines.append(_compare("  run_06 (MLGRU) vs run_09 (Folded Transformer)", 'run_06', 'run_09'))
+
+    lines.append("9. CPU-1 COMPLETE vs CPU-1 core:")
+    lines.append(_compare("  run_06 (core) vs run_10 (complete)", 'run_06', 'run_10'))
+
+    lines.append("10. Full CPU-1 COMPLETE vs absolute baseline:")
+    lines.append(_compare("  run_01 (FP16 Transformer) vs run_10 (CPU-1 Complete)", 'run_01', 'run_10'))
 
     return "\n".join(lines)
 

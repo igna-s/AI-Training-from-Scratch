@@ -39,6 +39,49 @@
 | Active layer weights | — | ~3.1 MB (1 layer) — L3 |
 | Full model weights | — | ~44 MB — RAM streaming |
 
+### Size Comparison at 350M Parameters
+
+Theoretical comparison if CPU-1 were scaled to 350M parameters, vs LFM2.5-350M (LiquidAI).
+
+| Model | Format | Size | Ratio |
+|---|---|---|---|
+| LFM2.5-350M | BF16 (baseline) | ~700 MB | 1.0× |
+| LFM2.5-350M | Q4_K_M (GGUF) | ~219 MB | 3.2× smaller |
+| **CPU-1 350M** | **2-bit ternary packed** | **~92 MB** | **7.6× smaller than BF16** |
+| **CPU-1 350M** | **vs Q4** | **~92 MB** | **2.4× smaller than Q4** |
+
+CPU-1's ternary 2-bit packing (2 bits/weight) is **half the density of Q4** (4 bits/weight), with FPResidual branches in FP16 accounting for the remaining ~4MB.
+
+Beyond size, CPU-1 has **zero matrix multiplications at inference** (T-MAC LUT + Hadamard products only), while LFM2.5 requires standard Q4 matmul for both its convolution and GQA attention blocks.
+
+### Theoretical CPU Speed Comparison at 350M (i7-8750H, ~38 GB/s RAM)
+
+> All numbers below are **theoretical estimates**. CPU-1 at 350M has not been trained; LFM2.5 measured at ~41 tok/s on same hardware (llama.cpp Q4, from benchmark section below).
+
+**Bottleneck: RAM bandwidth.** At decode, both models stream all weights from RAM each token step:
+
+```
+Theoretical peak = bandwidth ÷ model_size
+LFM2.5-350M Q4:   38 GB/s ÷ 219 MB ≈ 174 tok/s
+CPU-1 350M 2-bit: 38 GB/s ÷  92 MB ≈ 413 tok/s
+```
+
+| Factor | LFM2.5-350M Q4 | CPU-1 350M 2-bit |
+|---|---|---|
+| Compute per weight | Q4 matmul (dequantize + multiply) | T-MAC LUT (lookup only, no multiply) — ~4× faster per byte |
+| KV cache | Grows with context (6 GQA blocks) | **Zero** — fixed MLGRU state ~57 KB |
+| Cache behavior | All weights from RAM | PFNet + MLGRU state in **L2** (~700 KB) — never touch RAM |
+| DeleteGate | — | Eliminates 40% of states in layers N/2..N → ~20% extra speedup |
+
+| Scenario | LFM2.5-350M Q4 | CPU-1 350M 2-bit (estimated) |
+|---|---|---|
+| Short context (<512 tokens) | ~41 tok/s *(measured)* | **~180–220 tok/s** |
+| Long context (>2K tokens) | Degrades (KV cache pressure) | **Unchanged** — state is always 57 KB |
+| Theoretical bandwidth peak | ~174 tok/s | ~413 tok/s |
+| DDR5 hardware (128 GB/s, e.g. Ryzen AI Max) | ~550 tok/s | **~1 400 tok/s** |
+
+CPU-1's advantage compounds at long context: LFM2.5's KV cache grows linearly (6 attention blocks × context length), while CPU-1's recurrent state stays fixed at 57 KB regardless of context length.
+
 ### Extended Architecture (v3)
 
 CPU-1 v3 extends the base architecture with three optional modules:
@@ -58,58 +101,62 @@ use_embedding_alignment: false # set true for embedding distillation
 
 ### References
 
-- [Slender-Mamba (COLING 2025)](https://aclanthology.org/2025.coling-main.316/) — Ternary embeddings and prediction heads.
-- [Scalable MatMul-free Language Modeling (arXiv 2406.02528)](https://arxiv.org/abs/2406.02528) — MLGRU token mixer.
-- [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) — LUT-based inference for low-bit LLMs.
-- [BitNet b1.58 (arXiv 2402.17764)](https://arxiv.org/abs/2402.17764) — 1.58-bit weight quantization.
-- [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) — KL + CE distillation loss, T=4.0.
-- [Bolmo (Allen AI, 2025)](https://arxiv.org/abs/2410.20771) — Dynamic byte-level patches with boundary prediction.
-- [MrT5 (Google, 2024)](https://arxiv.org/abs/2512.15586) — Token deletion gate for efficient inference.
-- [Distilling Byte-Level Models (arXiv 2602, 2025)](https://arxiv.org/abs/2602.01007) — Embedding alignment distillation.
+| Paper | What it contributes to CPU-1 | Implemented |
+|---|---|---|
+| [Scalable MatMul-free LM (arXiv 2406.02528)](https://arxiv.org/abs/2406.02528) | MLGRU token mixer — Hadamard-only, no Q@K^T | ✅ `MatMulFreeTokenMixer` |
+| [Slender-Mamba (COLING 2025)](https://aclanthology.org/2025.coling-main.316/) | Ternary embedding and prediction heads | ✅ `BitEmbedding`, `BitLinear` |
+| [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) | LUT-based zero-multiply inference on CPU | ✅ `CPU1InferenceEngineLUT` |
+| [BitNet b1.58 (arXiv 2402.17764)](https://arxiv.org/abs/2402.17764) | 1.58-bit weight quantization with STE | ✅ `BitLinear` |
+| [Bolmo (arXiv 2410.20771)](https://arxiv.org/abs/2410.20771) | Dynamic byte patches via boundary prediction | ✅ `BoundaryPredictor` |
+| [MrT5 (arXiv 2512.15586)](https://arxiv.org/abs/2512.15586) | Token deletion gate — prunes 40% of states | ✅ `DeleteGate` |
+| [Distilling Byte-Level Models (arXiv 2602.01007)](https://arxiv.org/abs/2602.01007) | Embedding alignment distillation loss | ✅ `EmbeddingAligner` (CE-only for ablation) |
+| [LFM2 (arXiv 2511.23404)](https://arxiv.org/abs/2511.23404) | Hybrid CNN + GQA architecture (LiquidAI) | ⚠️ **Not implemented** — external benchmark only (LFM2-350M GGUF) |
+| [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) | KL + CE distillation loss, T=4.0 | ✅ `train.py` distillation mode |
 
 ---
 
-## Ablation Study — 15 Runs, Shared Dataset
+## Ablation Study — 10 Progressive Runs, CE Training
 
-The ablation validates each design decision independently at 50M parameters, using a single shared dataset (teacher runs once).
+The ablation tells a story: starting from a standard FP16 Transformer baseline, we add **one CPU-1 design choice per run** until we reach the full architecture. Each step isolates the contribution of a single component.
 
-### Variables Under Study
+All runs: CE-only training from scratch, 50M params, same data/optimizer/steps.
 
-| Variable | Baseline | Proposed |
-|---|---|---|
-| Token mixer | Transformer (SlidingWindowAttention) | MLGRU (MatMul-free) |
-| Tokenization | BPE (Qwen, ~152K vocab) | Byte-level (patches of 4) |
-| Weight quantization | FP16 | Ternary 1.58-bit (BitLinear) |
-| Training signal | CE only | KD: BPE→byte distillation |
-| Patch type | Fixed 4-byte | Dynamic (Bolmo) |
-| Embedding distillation | None | Cosine alignment (arXiv 2602) |
-| State compression | None | DeleteGate (MrT5) |
+**Architecture constraint:** 1.58-bit ternary weights (BitLinear/BitEmbedding). No activation×activation matrix multiplications at inference (MLGRU uses Hadamard products only; Folded Transformer uses bounded local attention O(N·w)).
 
-### Experimental Design (15 runs)
+### Progressive Design (11 runs)
 
 ```
-Run 01: Transformer + BPE  + FP16    + CE     ← absolute baseline
-Run 02: Transformer + Byte + FP16    + CE     ← isolate byte-level
-Run 03: Transformer + BPE  + Ternary + CE     ← isolate quantization
-Run 04: Transformer + BPE  + Ternary + Distil ← transformer complete
-Run 05: MLGRU       + BPE  + FP16    + CE     ← isolate MLGRU
-Run 06: MLGRU       + BPE  + Ternary + CE     ← MLGRU + ternary
-Run 07: MLGRU       + BPE  + Ternary + Distil ← MLGRU BPE complete
-Run 08: MLGRU       + Byte + FP16    + CE     ← isolate byte on MLGRU
-Run 09: MLGRU       + Byte + Ternary + CE     ← without distillation
-Run 10: MLGRU       + Byte + Ternary + Distil + FPResidual  ← PROPOSED (CPU-1)
-Run 11: MLGRU       + Byte + Ternary + Distil − FPResidual  ← 100% ternary pure
-Run 12: Run 10 + BoundaryPredictor (Bolmo)    ← dynamic patches
-Run 13: Run 10 + EmbeddingAligner (arXiv 2602) ← embedding distillation
-Run 14: Run 10 + DeleteGate (MrT5, 2 phases)  ← state compression
-Run 15: Run 10 + all three                    ← PROPOSED v3 (CPU-1 complete)
+run_01: Transformer  + BPE   + FP16                    ← absolute baseline
+          ↓ swap tokenizer
+run_02: Transformer  + Byte  + FP16                    ← +byte patches
+          ↓ swap mixer (back to BPE for isolation)
+run_03: MLGRU        + BPE   + FP16                    ← +MLGRU (MatMul-free)
+          ↓ combine
+run_04: MLGRU        + Byte  + FP16                    ← +both MLGRU and byte
+          ↓ quantize
+run_05: MLGRU        + Byte  + Ternary                 ← +1.58-bit weights
+          ↓ correct
+run_06: MLGRU        + Byte  + Ternary + FPRes         ← +FPResidual = CPU-1 core ⭐
+          ↓ branch: add optional components
+run_07: CPU-1 core   + Bolmo (dynamic byte patches)    ← +boundary predictor
+run_08: CPU-1 core   + DeleteGate (state elimination)  ← +MrT5-style compression
+run_09: FoldedXfmr   + Byte  + Ternary (w=128)        ← alternative: local attention
+run_10: CPU-1 core   + Bolmo + DeleteGate              ← CPU-1 COMPLETE ⭐
+          ↓ add nonlinear residual
+run_11: CPU-1 COMPLETE + PFNet (pfnet_hidden=32)      ← +cache-resident MLP
 ```
 
-Run 10 vs 11 answers: is the FP16 correction branch worth it?
-Run 10 vs 12: effect of dynamic patches (Bolmo).
-Run 10 vs 13: effect of embedding alignment.
-Run 10 vs 14: effect of DeleteGate (CPU speed).
-Run 10 vs 15: combined effect (v3 proposal).
+Key questions answered:
+- `run_01 → run_02`: Does byte-level tokenization hurt a FP16 Transformer?
+- `run_01 → run_03`: Is MLGRU (MatMul-free) competitive with full attention?
+- `run_03 → run_04`: Do byte patches help MLGRU?
+- `run_04 → run_05`: Does ternary quantization hurt MLGRU+byte?
+- `run_05 → run_06`: Does FPResidual recover ternary quality loss?
+- `run_06 → run_07`: Does Bolmo improve over fixed 4-byte patches?
+- `run_06 → run_08`: Does DeleteGate preserve quality while pruning 40% of states?
+- `run_06 vs run_09`: CPU-1 core (MLGRU) vs best local-attention Transformer?
+- `run_06 → run_10`: Full CPU-1 vs core — combined cost of all extras?
+- `run_10 → run_11`: Does PFNet improve quality without hurting inference speed?
 
 ### Justified with Citations (no runs needed)
 
@@ -120,7 +167,12 @@ Run 10 vs 15: combined effect (v3 proposal).
 | FPResidual parallel branch | MatMul-free LM (Zhu et al., 2024) |
 | SwiGLU | PaLM (Chowdhery et al., 2022) |
 | RMSNorm | LLaMA (Touvron et al., 2023) |
-| KL + CE loss, T=4.0 | Hinton et al., 2015 |
+
+### Dataset
+
+All ablation runs use CE training on `Cukinator/cpu1-ablation-dataset` (~37.5M tokens, sequences pre-packed at 5000 tokens). This dataset was built via `create_dataset.py`, which also extracts Qwen2.5-7B teacher logprobs for each position — those are available for future distillation experiments but not used in the current ablation runs.
+
+Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale training (~1B tokens for 50M params).
 
 ---
 
@@ -153,7 +205,7 @@ Raw Text Corpus
 └─────────────────────────────┘
 ```
 
-### Ablation Pipeline (50M × 15 runs on Kaggle T4)
+### Ablation Pipeline (50M × 10 runs on Lightning.ai T4)
 
 #### 1. Build Shared Dataset (once)
 
@@ -185,23 +237,80 @@ python train.py --mode ablation --run run_01 --dry_run --total_steps 10
 python train.py --mode ablation --run run_10 --hf-mount
 ```
 
-#### Two-Phase Training (runs 14–15 only)
+#### Two-Phase Training (runs 08 and 10 — DeleteGate)
 
-For runs using DeleteGate (MrT5), training proceeds in two phases:
+For runs that include DeleteGate (MrT5-style), training proceeds in two phases:
 
-- **Phase 1 (Distillation):** Standard knowledge distillation from Qwen2.5-3B. DeleteGate disabled (elimination_rate=0). EmbeddingAligner active.
-  `python train.py --mode ablation --run run_14 --phase 1`
+- **Phase 1 (CE pretraining):** Standard CE training. DeleteGate disabled (elimination_rate=0).
+  `python train.py --mode ablation --run run_08 --phase 1`
 
-- **Phase 2 (Compression):** DeleteGate activated. EmbeddingAligner frozen. Loss changes from KL+CE to CE-only.
-  `python train.py --mode ablation --run run_14 --phase 2 --phase1_ckpt <path>`
+- **Phase 2 (Compression):** DeleteGate activated. Elimination rate anneals to 40% over training.
+  `python train.py --mode ablation --run run_08 --phase 2 --phase1_ckpt <path>`
 
-#### 3. Analyze Results
+#### 3. Checkpoint Formats
+
+Two checkpoint formats are saved automatically:
+
+| Format | When | Contents | Size (50M) | Size (170M) |
+|---|---|---|---|---|
+| **Resume** (intermediate) | Every N steps | BF16 model + BF16 optimizer state | ~214 MB | ~700 MB |
+| **Final** (inference) | End of training | 2-bit packed model, no optimizer | **~14 MB** | **~44 MB** |
+
+The final inference checkpoint uses 2-bit ternary packing: {-1, 0, 1} → {0, 1, 2}, 4 values per byte. Non-ternary weights (norms, gates) are stored as BF16. Load with `unpack_compact_state()` from `model.py`.
+
+#### 4. Analyze Results
 
 ```bash
 python ablation.py --metrics_dir .
 ```
 
 Generates a text table for terminal and a LaTeX table for the paper (`ablation_table.tex`).
+
+---
+
+## 10M Bonus Runs — Training Strategy Study
+
+Before committing to long 50M runs, we train **~10M parameter models** to answer one targeted question: **which training data strategy produces the best byte-level model at this scale?** All three `small_` runs use the **same CPU-1 COMPLETE architecture** (MLGRU + ternary + FPResidual + Bolmo + DeleteGate). Only the training data strategy varies.
+
+### Architecture (10M — same as CPU-1 COMPLETE)
+
+| Hyperparameter | Value |
+|---|---|
+| `d_model` | 320 |
+| `n_layers` | 8 |
+| `d_ff` | 853 (SwiGLU, ~8/3 × d_model) |
+| `vocab_size` | 256 (byte-level) or 4096 (compact BPE — see note) |
+| **Total parameters** | **~10M** |
+
+### Small Runs
+
+| Run | Training strategy | Data | Key question |
+|---|---|---|---|
+| `small_01` | CPU-1 COMPLETE + **compact BPE** (4K vocab), from scratch | `bpe_tokenized/` | Does subword tokenization beat byte-level at 10M? |
+| `small_02` | CPU-1 COMPLETE + **byte-level**, from scratch | `byte_marginalized/` | Pure byte baseline (with Qwen teacher probs available) |
+| `small_03` | CPU-1 COMPLETE + **complement** — BPE warm-start → byte finetune | BPE then byte | Does BPE pretraining bootstrap byte quality? |
+| `small_04` | CPU-1 COMPLETE + **raw bytes**, from scratch, **no teacher** | fineweb raw bytes | Do Qwen teacher logprobs in small_02 actually help? |
+
+**BPE vocab constraint:** Qwen's full 152K BPE vocab → 152K × 320 = 48.7M embedding parameters — larger than the entire 10M model. `small_01` uses a compact 4096-token vocabulary (top-4096 by frequency from `cpu1-ablation-dataset`). Embedding: ~1.3M params.
+
+**Training budget:** 2500 steps each (~1h on T4, ~200M effective tokens).
+`small_03` starts from the `small_01` checkpoint, replaces the BPE embedding with a fresh byte-patch embedding, then trains for 2500 byte steps — same byte-step budget as `small_02` for a fair comparison. Inspired by Bolmo's two-stage byteification procedure.
+
+### What the results answer
+
+| Comparison | Question |
+|---|---|
+| `small_01` vs `small_02` | BPE vs byte tokenization — perplexity, convergence speed |
+| `small_02` vs `small_03` | Pure byte vs BPE-bootstrapped byte — does warm-start help? |
+| `small_02` vs `small_04` | Byte with Qwen teacher probs vs raw bytes CE-only — do logprobs help? |
+| `small_01` → `small_03` | Quality gain from adapting a BPE model to byte-level |
+
+```bash
+python train.py --mode ablation --run small_01   # BPE baseline (~1h)
+python train.py --mode ablation --run small_02   # byte + teacher (~1h)
+python train.py --mode ablation --run small_03 --complement_ckpt checkpoints/small_01.pt
+python train.py --mode ablation --run small_04   # raw bytes, no teacher (~1h)
+```
 
 ---
 
@@ -263,7 +372,7 @@ Since `patch_size = 4`, the 235 TPS translates to generating **almost 1 KB of te
 ├── train.py              # Training loop — two modes:
 │                         #   default: 170M production model
 │                         #   --mode ablation --run run_XX: ablation run
-├── ablation.py           # Ablation system: BASE_CONFIG + 15 RUN_CONFIGS,
+├── ablation.py           # Ablation system: BASE_CONFIG + 10 progressive RUN_CONFIGS,
 │                         #   configurable model variants, analysis + LaTeX tables
 ├── create_dataset.py     # Full dataset pipeline: teacher logprob extraction,
 │                         #   BPE→byte marginalization, HuggingFace Hub upload
@@ -488,7 +597,7 @@ tqdm==4.67.3
 - **Dataset pipeline** — Teacher logprob extraction + BPE→byte marginalization + HF Hub upload (`create_dataset.py`)
 - **HF-mount** — Lazy NFS-based dataset access, no full download needed (`hf_mount.py`)
 - **Training** — AMP, gradient accumulation, distillation loss, both main and ablation modes in one script (`train.py`)
-- **Ablation system** — 15-run experimental design, configurable variants, shared dataset, LaTeX table generation (`ablation.py`)
+- **Ablation system** — 10 progressive runs + 3 small (10M) training-strategy runs, configurable variants, shared dataset, LaTeX table generation (`ablation.py`)
 - **CPU inference** — Multi-architecture engine with auto-detection (`ModelInfo`), INT8 packing, torch.compile, T-MAC LUT (`inference.py`)
 - **Evaluation suite** — 14 checks in 5 modules, multi-architecture adaptive, single engine load, fused benchmarks (`eval/`)
 - **Kaggle scripts** — Ready-to-run notebooks for dataset creation and training on T4 (`kaggle/`)
@@ -503,7 +612,7 @@ tqdm==4.67.3
 
 ### Pending
 
-- Run the 15 ablation experiments on Kaggle T4 and collect metrics
+- Run the 10 ablation experiments + 3 small training-strategy runs on Kaggle T4 and collect metrics
 - Scale winning ablation config to 170M and train on full dataset
 - ~~T-MAC C++ kernel integration (bitnet.cpp / llama.cpp)~~ ✅ **Done** (reached 235 TPS)
 

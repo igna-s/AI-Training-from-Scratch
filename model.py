@@ -1278,6 +1278,126 @@ def pack_model_for_int8_inference(model: CPU1ModelV2) -> dict:
     return packed
 
 
+# =============================================================================
+# 2-bit ternary packing — ~16x smaller checkpoints vs FP32
+# =============================================================================
+# Encoding: {-1, 0, 1} → {0b00, 0b01, 0b10}. 4 values per byte (2 bits each).
+# For 170M ternary params: 170MB (INT8) → 42.5MB (2-bit) + ~2MB FP16 extras ≈ 44MB total.
+# For 50M ablation: 200MB (FP32) → ~14MB total inference checkpoint.
+# =============================================================================
+
+def pack_ternary_2bit(weight: Tensor) -> tuple[Tensor, Tensor]:
+    """
+    Pack float32 ternary weight matrix into 2-bit uint8.
+
+    Quantizes weight → {-1,0,1} then encodes as {0,1,2} and packs
+    4 values per byte using 2-bit slots (bits 0-1, 2-3, 4-5, 6-7).
+
+    Returns:
+        packed: CPU uint8 tensor, shape (ceil(numel/4),)
+        scale:  CPU float32 scalar (mean absolute value before quantization)
+    """
+    scale = weight.abs().mean().float()
+    w = (weight.float() / (scale + 1e-8)).round().clamp(-1, 1)
+    enc = (w + 1).to(torch.uint8).flatten()       # {-1,0,1} → {0,1,2}
+
+    pad = (-enc.numel()) % 4
+    if pad:
+        enc = torch.cat([enc, enc.new_zeros(pad)])
+
+    packed = (
+        enc[0::4]
+        | (enc[1::4] << 2)
+        | (enc[2::4] << 4)
+        | (enc[3::4] << 6)
+    )
+    return packed.cpu(), scale.cpu()
+
+
+def unpack_2bit_to_float(packed: Tensor, scale: float, shape: tuple) -> Tensor:
+    """Unpack 2-bit packed ternary back to float32."""
+    n = 1
+    for s in shape:
+        n *= s
+    out = torch.empty(packed.numel() * 4, dtype=torch.float32)
+    for i in range(4):
+        out[i::4] = ((packed >> (2 * i)) & 0b11).float() - 1  # 0,1,2 → -1,0,1
+    return out[:n].reshape(shape) * scale
+
+
+def pack_model_compact(model: nn.Module) -> dict:
+    """
+    Build a compact state dict for saving/uploading.
+
+    - BitLinear.weight and BitEmbedding.weight → 2-bit packed uint8 (4 values/byte)
+    - Everything else (FPResidual, RMSNorm, scales, etc.) → bfloat16
+    - No optimizer state — for inference checkpoints only.
+
+    Size for 50M model:  ~14 MB  (vs ~200 MB FP32)
+    Size for 170M model: ~44 MB  (vs ~680 MB FP32)
+
+    Usage:
+        compact = pack_model_compact(model)
+        torch.save({'compact': compact, 'config': config, 'step': step}, path)
+
+    To load:
+        ckpt = torch.load(path, weights_only=True)
+        state = unpack_compact_state(ckpt['compact'])
+        model.load_state_dict(state)
+    """
+    # Collect names of ternary weight tensors
+    ternary_keys: set[str] = set()
+    for mod_name, module in model.named_modules():
+        if isinstance(module, (BitLinear, BitEmbedding)):
+            ternary_keys.add(f'{mod_name}.weight')
+
+    compact: dict = {}
+    for key, val in model.state_dict().items():
+        val = val.detach()
+        if key in ternary_keys:
+            packed, scale = pack_ternary_2bit(val)
+            compact[f'__2bit_data__{key}'] = packed
+            compact[f'__2bit_scale__{key}'] = scale
+            compact[f'__2bit_shape__{key}'] = list(val.shape)
+        elif val.is_floating_point():
+            compact[key] = val.to(torch.bfloat16).cpu()
+        else:
+            compact[key] = val.cpu()
+
+    return compact
+
+
+def unpack_compact_state(compact: dict) -> dict:
+    """
+    Reconstruct a full float32 state dict from pack_model_compact() output.
+    Call model.load_state_dict(unpack_compact_state(ckpt['compact'])).
+    """
+    # Gather metadata for packed keys
+    meta: dict[str, dict] = {}
+    regular: dict[str, Tensor] = {}
+
+    for key, val in compact.items():
+        if key.startswith('__2bit_data__'):
+            orig = key[len('__2bit_data__'):]
+            meta.setdefault(orig, {})['data'] = val
+        elif key.startswith('__2bit_scale__'):
+            orig = key[len('__2bit_scale__'):]
+            meta.setdefault(orig, {})['scale'] = val
+        elif key.startswith('__2bit_shape__'):
+            orig = key[len('__2bit_shape__'):]
+            meta.setdefault(orig, {})['shape'] = val
+        else:
+            regular[key] = val.float() if isinstance(val, Tensor) and val.is_floating_point() else val
+
+    state: dict = dict(regular)
+    for orig_key, m in meta.items():
+        state[orig_key] = unpack_2bit_to_float(
+            m['data'], float(m['scale']), tuple(m['shape'])
+        )
+
+    return state
+
+
 def compile_for_inference(model: CPU1ModelV2, aggressive: bool = True):
     """
     Aplicar torch.compile al modelo para inferencia.

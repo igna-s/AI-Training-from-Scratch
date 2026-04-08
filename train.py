@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch import Tensor
 
-from model import CPU1ModelV2, D_MODEL, VOCAB_SIZE, PATCH_SIZE
+from model import CPU1ModelV2, D_MODEL, VOCAB_SIZE, PATCH_SIZE, pack_model_compact
 
 
 # =============================================================================
@@ -1420,22 +1420,65 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
 # ============================================================
 
 def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
-                             metrics: dict, config: dict, step: int) -> str:
-    """Save ablation checkpoint locally and optionally to HuggingFace Hub."""
-    path = f"checkpoint_{run_name}_step{step}.pt"
+                             metrics: dict, config: dict, step: int,
+                             is_final: bool = False) -> str:
+    """
+    Save ablation checkpoint locally and optionally to HuggingFace Hub.
 
-    # Unwrap DataParallel si es necesario
+    Two formats:
+    - Intermediate (is_final=False): full resume checkpoint — model in BF16,
+      optimizer in BF16, needed to continue training after instance preemption.
+      ~2× smaller than FP32 (~300 MB for 50M vs ~600 MB).
+    - Final (is_final=True): inference-only compact checkpoint — ternary weights
+      packed to 2-bit (4 values/byte), rest in BF16, NO optimizer state.
+      ~14 MB for 50M, ~44 MB for 170M (16× smaller than FP32).
+    """
+    path = (
+        f"checkpoint_{run_name}_final.pt"
+        if is_final
+        else f"checkpoint_{run_name}_step{step}.pt"
+    )
+
     model_to_save = model.module if hasattr(model, 'module') else model
-    torch.save({
-        'model_state_dict': model_to_save.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'metrics': metrics,
-        'step': step,
-        'run_name': run_name,
-        'config': config,
-    }, path)
 
-    # Upload to Hub if configured
+    if is_final:
+        # Inference checkpoint: 2-bit packed weights, no optimizer state
+        torch.save({
+            'compact': pack_model_compact(model_to_save),
+            'metrics': metrics,
+            'step': step,
+            'run_name': run_name,
+            'config': config,
+            'format': 'compact_2bit',
+        }, path)
+        print(f"[Checkpoint] Final compact saved: {path} "
+              f"({os.path.getsize(path) / 1e6:.1f} MB)")
+    else:
+        # Resume checkpoint: BF16 model + BF16 optimizer (2× smaller than FP32)
+        model_bf16 = {
+            k: v.to(torch.bfloat16) if v.is_floating_point() else v
+            for k, v in model_to_save.state_dict().items()
+        }
+        opt_state = optimizer.state_dict()
+        # Optimizer momentum tensors to BF16 to halve their size
+        for group in opt_state.get('state', {}).values():
+            for key in ('exp_avg', 'exp_avg_sq'):
+                if key in group and group[key].is_floating_point():
+                    group[key] = group[key].to(torch.bfloat16)
+
+        torch.save({
+            'model_state_dict': model_bf16,
+            'optimizer_state_dict': opt_state,
+            'metrics': metrics,
+            'step': step,
+            'run_name': run_name,
+            'config': config,
+            'format': 'bf16',
+        }, path)
+        print(f"[Checkpoint] Resume checkpoint saved: {path} "
+              f"({os.path.getsize(path) / 1e6:.1f} MB)")
+
+    # Upload to Hub
     hub_repo = config.get('checkpoint_repo')
     if hub_repo:
         try:
@@ -1446,19 +1489,20 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
                 path_in_repo=f"ablation/{path}",
                 repo_id=hub_repo,
             )
-            print(f"[Checkpoint] Uploaded: {path}")
+            print(f"[Checkpoint] Uploaded to HF: {path}")
         except Exception as e:
             print(f"[Checkpoint] Hub upload failed: {e}")
 
-    # Disk cleanup: borrar checkpoints anteriores del mismo run (solo mantener el ultimo)
-    import glob as _glob
-    for old in _glob.glob(f"checkpoint_{run_name}_step*.pt"):
-        if old != path:
-            try:
-                os.remove(old)
-                print(f"[Checkpoint] Removed old: {old}")
-            except OSError:
-                pass
+    # Disk cleanup: keep only the latest resume checkpoint per run
+    if not is_final:
+        import glob as _glob
+        for old in _glob.glob(f"checkpoint_{run_name}_step*.pt"):
+            if old != path:
+                try:
+                    os.remove(old)
+                    print(f"[Checkpoint] Removed old: {old}")
+                except OSError:
+                    pass
 
     return path
 
@@ -1603,6 +1647,7 @@ def train_run(run_name: str, dry_run: bool = False,
     accum_steps = config['gradient_accumulation_steps']
     total_steps = config['total_steps']
     t_start = time.time()
+    last_ckpt_time = t_start
 
     while optim_step < total_steps:
         for batch in train_loader:
@@ -1712,20 +1757,25 @@ def train_run(run_name: str, dry_run: bool = False,
                               f"LR: {get_lr_from_config(optim_step, config):.2e} | "
                               f"Time: {elapsed:.0f}s")
 
-                # Save periodic checkpoint (first at step 10 to verify upload, then every save_every_steps)
-                save_interval = config['save_every_steps']
-                should_save = (optim_step == 10) or (optim_step > 0 and optim_step % save_interval == 0)
+                # Save periodic checkpoint: step 10 (smoke test), then every 25 min by wall time
+                now = time.time()
+                should_save = (
+                    (optim_step == 10)
+                    or (not dry_run and (now - last_ckpt_time) >= 25 * 60)
+                )
                 if should_save and not dry_run:
                     save_ablation_checkpoint(model, optimizer, run_name, {},
                                              config, optim_step)
+                    last_ckpt_time = now
 
     # Final evaluation (unwrap DataParallel)
     model_eval = model.module if hasattr(model, 'module') else model
     val_metrics = evaluate_run(model_eval, val_ds, config, device)
 
     if not dry_run:
+        # Final checkpoint: compact 2-bit inference format (no optimizer state, ~14MB for 50M)
         save_ablation_checkpoint(model, optimizer, run_name, val_metrics,
-                                 config, optim_step)
+                                 config, optim_step, is_final=True)
 
     # Save metrics JSON
     metrics_path = f"metrics_{run_name}.json"
