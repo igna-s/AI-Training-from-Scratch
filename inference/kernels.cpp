@@ -85,6 +85,126 @@ EXPORT void ternary_lut_matmul_omp(
 ) {
     int n_groups = d_in / group_size;
 
+    // Fast path para M==1 (comun en generacion): evita overhead de thread team
+    if (M == 1) {
+        const float* xm  = x;
+        float*       outm = output;
+        memset(outm, 0, d_out * sizeof(float));
+
+        // Single-threaded computation
+        static thread_local float tile_luts[TILE_G * 256];
+        static thread_local float decode_T[8 * 128];
+
+        for (int g_base = 0; g_base < n_groups; g_base += TILE_G) {
+            int g_end     = g_base + TILE_G < n_groups ? g_base + TILE_G : n_groups;
+            int tile_size = g_end - g_base;
+
+            // FASE 1: LUT computation (same as parallel path)
+            for (int g_local = 0; g_local < tile_size; g_local++) {
+                int          g     = g_base + g_local;
+                const float* x_grp = xm + g * group_size;
+                float*       lut_g = tile_luts + g_local * 256;
+
+                if (group_size == 4) {
+                    for (int i = 0; i < 4; i++) {
+                        for (int c = 0; c < 128; c++) {
+                            decode_T[i * 128 + c] = decode_table[c * 4 + i];
+                        }
+                    }
+                    memset(lut_g, 0, 128 * sizeof(float));
+                    for (int i = 0; i < 4; i++) {
+                        __m256 vxi     = _mm256_broadcast_ss(x_grp + i);
+                        const float* col = decode_T + i * 128;
+                        for (int c = 0; c < 128; c += 8) {
+                            __m256 vlut = _mm256_loadu_ps(lut_g + c);
+                            __m256 vcol = _mm256_loadu_ps(col   + c);
+                            _mm256_storeu_ps(lut_g + c,
+                                _mm256_fmadd_ps(vxi, vcol, vlut));
+                        }
+                    }
+                    const __m256 vneg = _mm256_set1_ps(-1.0f);
+                    for (int c = 0; c < 128; c += 8) {
+                        _mm256_storeu_ps(lut_g + 128 + c,
+                            _mm256_mul_ps(vneg, _mm256_loadu_ps(lut_g + c)));
+                    }
+                }
+            }
+
+            // FASE 2: Gather reduction (single-threaded, no #pragma omp for)
+            for (int j = 0; j < d_out - 1; j += 2) {
+                const uint8_t* w_row0 = w_packed + j       * n_groups;
+                const uint8_t* w_row1 = w_packed + (j + 1) * n_groups;
+
+                __m256 vsum0 = _mm256_setzero_ps();
+                __m256 vsum1 = _mm256_setzero_ps();
+                __m256i vbase = _mm256_set_epi32(
+                    7*256, 6*256, 5*256, 4*256, 3*256, 2*256, 1*256, 0
+                );
+                const __m256i vstep = _mm256_set1_epi32(8 * 256);
+
+                int g_local = 0;
+                for (; g_local <= tile_size - 8; g_local += 8) {
+                    int g_abs = g_base + g_local;
+                    __m128i w8_0  = _mm_loadl_epi64((const __m128i*)(w_row0 + g_abs));
+                    __m128i w8_1  = _mm_loadl_epi64((const __m128i*)(w_row1 + g_abs));
+                    __m256i w32_0 = _mm256_cvtepu8_epi32(w8_0);
+                    __m256i w32_1 = _mm256_cvtepu8_epi32(w8_1);
+                    __m256i vindex0 = _mm256_add_epi32(vbase, w32_0);
+                    __m256i vindex1 = _mm256_add_epi32(vbase, w32_1);
+                    __m256 vval0 = _mm256_i32gather_ps(tile_luts, vindex0, 4);
+                    __m256 vval1 = _mm256_i32gather_ps(tile_luts, vindex1, 4);
+                    vsum0 = _mm256_add_ps(vsum0, vval0);
+                    vsum1 = _mm256_add_ps(vsum1, vval1);
+                    vbase = _mm256_add_epi32(vbase, vstep);
+                }
+
+                float sum0 = _hsum256_ps(vsum0);
+                float sum1 = _hsum256_ps(vsum1);
+
+                for (; g_local < tile_size; g_local++) {
+                    int g_abs = g_base + g_local;
+                    sum0 += tile_luts[g_local * 256 + w_row0[g_abs]];
+                    sum1 += tile_luts[g_local * 256 + w_row1[g_abs]];
+                }
+
+                outm[j    ] += sum0;
+                outm[j + 1] += sum1;
+            }
+
+            if (d_out & 1) {
+                int j = d_out - 1;
+                const uint8_t* w_row = w_packed + j * n_groups;
+                __m256 vsum  = _mm256_setzero_ps();
+                __m256i vbase = _mm256_set_epi32(
+                    7*256, 6*256, 5*256, 4*256, 3*256, 2*256, 1*256, 0
+                );
+                const __m256i vstep = _mm256_set1_epi32(8 * 256);
+                int g_local = 0;
+                for (; g_local <= tile_size - 8; g_local += 8) {
+                    int g_abs = g_base + g_local;
+                    __m128i w8  = _mm_loadl_epi64((const __m128i*)(w_row + g_abs));
+                    __m256i w32 = _mm256_cvtepu8_epi32(w8);
+                    __m256i vindex = _mm256_add_epi32(vbase, w32);
+                    __m256 vval = _mm256_i32gather_ps(tile_luts, vindex, 4);
+                    vsum = _mm256_add_ps(vsum, vval);
+                    vbase = _mm256_add_epi32(vbase, vstep);
+                }
+                float sum = _hsum256_ps(vsum);
+                for (; g_local < tile_size; g_local++)
+                    sum += tile_luts[g_local * 256 + w_row[g_base + g_local]];
+                outm[j] += sum;
+            }
+        }
+
+        // Apply scale
+        for (int j = 0; j < d_out; j++) {
+            outm[j] *= w_scale;
+        }
+
+        return;  // Fast path done
+    }
+
+    // Slow path para M > 1: mantener codigo original con parallelization
     for (int m = 0; m < M; m++) {
         const float* xm  = x      + m * d_in;
         float*       outm = output + m * d_out;

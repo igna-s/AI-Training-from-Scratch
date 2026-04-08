@@ -1690,22 +1690,28 @@ def ternary_lut_matmul(
 
     # === FAST KERNEL (afanar de llama.cpp / kernels especificos en memoria) ===
     lib = _load_c_kernel()
-    if lib and x.is_contiguous():
-        # w_packed [d_out, n_groups] ya es Row-Major
-        w_C = w_packed.contiguous()
-        decode_c = decode_table.contiguous()
-        out_c = torch.empty((M, d_out), dtype=torch.float32, device=x.device)
+    if lib and lib is not False:  # Explicit check: lib is a valid library object
+        try:
+            # Asegurar contiguidad — critical para el kernel C
+            x_c = x.contiguous() if not x.is_contiguous() else x
+            w_C = w_packed.contiguous()
+            decode_c = decode_table.contiguous()
+            out_c = torch.empty((M, d_out), dtype=torch.float32, device=x.device)
 
-        lib.ternary_lut_matmul_omp(
-            ctypes.c_void_p(x.data_ptr()),
-            ctypes.c_void_p(w_C.data_ptr()),
-            ctypes.c_float(w_scale),
-            ctypes.c_void_p(decode_c.data_ptr()),
-            ctypes.c_void_p(out_c.data_ptr()),
-            ctypes.c_int(M), ctypes.c_int(d_in), ctypes.c_int(d_out), ctypes.c_int(group_size)
-        )
-        return out_c
+            lib.ternary_lut_matmul_omp(
+                ctypes.c_void_p(x_c.data_ptr()),
+                ctypes.c_void_p(w_C.data_ptr()),
+                ctypes.c_float(w_scale),
+                ctypes.c_void_p(decode_c.data_ptr()),
+                ctypes.c_void_p(out_c.data_ptr()),
+                ctypes.c_int(M), ctypes.c_int(d_in), ctypes.c_int(d_out), ctypes.c_int(group_size)
+            )
+            return out_c
+        except Exception as e:
+            # Fall back to PyTorch if kernel call fails
+            pass
     # =========================================================================
+
 
     # 1. Reshape activaciones a grupos: [M, n_groups, group_size]
     x_groups = x.float().reshape(M, n_groups, group_size)
