@@ -143,6 +143,57 @@ def _load_c_kernel():
             ]
             lib.fp32_gemv_avx2.restype = None
 
+        if hasattr(lib, 'ternary_i8_gemv_avx2'):
+            lib.ternary_i8_gemv_avx2.argtypes = [
+                ctypes.c_void_p,  # x  (int8)
+                ctypes.c_void_p,  # w  (int8)
+                ctypes.c_void_p,  # output (float32)
+                ctypes.c_int,     # d_in
+                ctypes.c_int,     # d_out
+                ctypes.c_float,   # scale
+            ]
+            lib.ternary_i8_gemv_avx2.restype = None
+
+        if hasattr(lib, 'ternary_i8_fused_gemv_avx2'):
+            lib.ternary_i8_fused_gemv_avx2.argtypes = [
+                ctypes.c_void_p,  # x  (float32)
+                ctypes.c_void_p,  # w  (int8)
+                ctypes.c_void_p,  # output (float32)
+                ctypes.c_int,     # d_in
+                ctypes.c_int,     # d_out
+                ctypes.c_float,   # w_scale
+            ]
+            lib.ternary_i8_fused_gemv_avx2.restype = None
+
+        if hasattr(lib, 'rms_norm_f32'):
+            lib.rms_norm_f32.argtypes = [
+                ctypes.c_void_p,  # x      (float32)
+                ctypes.c_void_p,  # weight (float32)
+                ctypes.c_void_p,  # out    (float32)
+                ctypes.c_int,     # D
+                ctypes.c_float,   # eps
+            ]
+            lib.rms_norm_f32.restype = None
+
+        if hasattr(lib, 'silu_f32'):
+            lib.silu_f32.argtypes = [
+                ctypes.c_void_p,  # x   (float32)
+                ctypes.c_void_p,  # out (float32)
+                ctypes.c_int,     # N
+            ]
+            lib.silu_f32.restype = None
+
+        if hasattr(lib, 'fused_mlgru_gates_avx2'):
+            lib.fused_mlgru_gates_avx2.argtypes = [
+                ctypes.c_void_p,  # f_raw (float32)
+                ctypes.c_void_p,  # c_raw (float32)
+                ctypes.c_void_p,  # g_raw (float32)
+                ctypes.c_void_p,  # h     (float32, in/out)
+                ctypes.c_void_p,  # out   (float32)
+                ctypes.c_int,     # D
+            ]
+            lib.fused_mlgru_gates_avx2.restype = None
+
         _TERNARY_C_KERNEL = lib
         thread_str = "OpenMP" if has_omp else "single-thread"
         print(f"  [C Kernel] kernels.cpp OK ({avx_str} + {thread_str}). "
@@ -298,29 +349,36 @@ def _bitlinear_optimized_forward(self, x: Tensor) -> Tensor:
     """
     Forward pass de BitLinear con pesos ternarios pre-computados.
 
-    Reemplaza el forward original que cuantiza pesos en cada llamada.
-    Los pesos ya estan pre-cuantizados a {-1, 0, 1} como float y
-    transpuestos para acceso column-major.
-
-    Beneficios vs forward original:
-    - Elimina abs().mean(), div, round, clamp de pesos (pre-computado)
-    - Pesos transpuestos y contiguos (2x menos cache miss)
-    - Compatible con torch.compile/inductor (ops float estandar)
+    M==1 decode (path critico):
+      - ternary_i8_fused_gemv_avx2: cuantizacion + GEMV todo en C, sin alloc Python
+    M>1 prefill:
+      - FP32 matmul fallback
     """
     original_shape = x.shape
-    x_2d = x.reshape(-1, x.shape[-1]).float()  # [M, d_in]
+    x_2d = x.reshape(-1, x.shape[-1])
+    M = x_2d.shape[0]
 
-    # Cuantizar activaciones a rango int8 per-token
+    # Fast path: M==1 con kernel fusionado (cuantizacion interna, cero allocs extra)
+    lib = _load_c_kernel()
+    if (M == 1 and lib and hasattr(lib, 'ternary_i8_fused_gemv_avx2')
+            and hasattr(self, 'weight_int8_gemv')):
+        x_f32 = x_2d[0].float().contiguous()
+        d_in  = x_f32.shape[0]
+        d_out = self.weight_int8_gemv.shape[0]
+        out1d = self._out_buf  # buffer pre-asignado, sin alloc por llamada
+        lib.ternary_i8_fused_gemv_avx2(
+            x_f32.data_ptr(), self.weight_int8_gemv.data_ptr(),
+            out1d.data_ptr(), d_in, d_out, self.weight_scale
+        )
+        out_shape = list(original_shape[:-1]) + [d_out]
+        return out1d.reshape(out_shape).to(x.dtype)
+
+    # Fallback: FP32 matmul (prefill M>1 o sin kernel C)
+    x_2d = x_2d.float()
     x_scale = x_2d.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / 127.0
     x_quant = (x_2d / x_scale).round().clamp(-128, 127)
-
-    # Matmul con pesos ternarios pre-computados ({-1., 0., 1.} float)
-    # weight_T_ternary: [d_in, d_out] transpuesto y contiguo
     out = x_quant @ self.weight_T_ternary
-
-    # Restaurar escala: output = (x_quant * x_scale / 127) @ (w_ternary * w_scale)
     out = out * (x_scale * self.weight_scale)
-
     out_shape = list(original_shape[:-1]) + [out.shape[-1]]
     return out.reshape(out_shape).to(x.dtype)
 
@@ -347,11 +405,15 @@ def pack_all_bitlinear_to_int8(model: nn.Module) -> dict:
             w_scale = w.float().abs().mean()
             w_ternary = (w.float() / (w_scale + 1e-8)).round().clamp(-1, 1)
 
-            # Float ternary para matmul (torch.compile compatible)
+            # Float ternary para matmul fallback (M>1) y torch.compile
             module.weight_T_ternary = w_ternary.float().contiguous()
-            # INT8 para futuro soporte nativo _int_mm
-            module.weight_T_int8 = w_ternary.to(torch.int8).contiguous()
+            # INT8 row-major [d_out, d_in] para ternary_i8_fused_gemv_avx2 (M==1 decode)
+            # w_ternary es [d_in, d_out] → .T → [d_out, d_in] contiguo
+            d_out_layer = w_ternary.shape[1]
+            module.weight_int8_gemv = w_ternary.to(torch.int8).T.contiguous()
             module.weight_scale = w_scale.item()
+            # Buffer de salida pre-asignado: evita torch.empty() en cada llamada decode
+            module._out_buf = torch.empty(d_out_layer, dtype=torch.float32)
             scales[name] = w_scale.item()
 
             # Liberar peso original y transpuesto para ahorrar RAM
@@ -363,6 +425,121 @@ def pack_all_bitlinear_to_int8(model: nn.Module) -> dict:
 
     print(f"[CPU opt] {len(scales)} capas BitLinear empaquetadas")
     return scales
+
+
+# ---------------------------------------------------------------------------
+# Element-wise op patches — replace slow PyTorch dispatches with C++ kernels
+# ---------------------------------------------------------------------------
+
+def _rms_norm_c_forward(self, x: Tensor) -> Tensor:
+    """RMSNorm via C++ kernel (rms_norm_f32). Single-token fast path."""
+    lib = _load_c_kernel()
+    if lib and hasattr(lib, 'rms_norm_f32') and x.dtype == torch.float32:
+        shape = x.shape
+        D = shape[-1]
+        x_c = x.contiguous()
+        N = x_c.numel() // D
+        out = torch.empty_like(x_c).view(N, D)
+        x_rows = x_c.view(N, D)
+        w_ptr = self._rms_weight_f32.data_ptr()
+        for i in range(N):
+            lib.rms_norm_f32(x_rows[i].data_ptr(), w_ptr, out[i].data_ptr(), D, self.eps)
+        return out.view(shape)
+    # Fallback
+    norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+    return x * norm * self.weight
+
+
+def _token_mixer_forward_one_token_fast(self, x: Tensor, h: Tensor):
+    """
+    MatMulFreeTokenMixer.forward_one_token with fused activation kernel.
+    Replaces: sigmoid(f), silu(c), sigmoid(g), lerp, mul → 1 C++ call.
+    """
+    import torch.nn.functional as _F
+    lib = _load_c_kernel()
+    x_3d = x.unsqueeze(1)
+    f_raw = self.forget_proj(x_3d).squeeze(1)
+    c_raw = self.cand_proj(x_3d).squeeze(1)
+    g_raw = self.output_proj(x_3d).squeeze(1)
+    fp_out = self.fp_residual(x_3d).squeeze(1)
+
+    if (lib and hasattr(lib, 'fused_mlgru_gates_avx2')
+            and f_raw.dtype == torch.float32 and h.dtype == torch.float32):
+        D = f_raw.shape[-1]
+        f_c = f_raw.contiguous().view(-1)
+        c_c = c_raw.contiguous().view(-1)
+        g_c = g_raw.contiguous().view(-1)
+        h_c = h.contiguous().view(-1)
+        o   = torch.empty(D, dtype=torch.float32)
+        lib.fused_mlgru_gates_avx2(
+            f_c.data_ptr(), c_c.data_ptr(), g_c.data_ptr(),
+            h_c.data_ptr(), o.data_ptr(), D
+        )
+        # h_c is now h_new (modified in-place by C++)
+        return o + fp_out.view(D), h_c.view_as(h)
+    # Fallback
+    f = torch.sigmoid(f_raw)
+    c = _F.silu(c_raw)
+    g = torch.sigmoid(g_raw)
+    h_new = torch.lerp(c, h, f)
+    return g * h_new + fp_out, h_new
+
+
+def _swiglu_fast_forward(self, x: Tensor) -> Tensor:
+    """SwiGLU.forward with C++ silu kernel on D_FF-element gate vector.
+    Real SwiGLU: gate=silu(gate_proj(x)), hidden=gate*up_proj(x)
+    """
+    import torch.nn.functional as _F
+    lib = _load_c_kernel()
+    gate_raw = self.gate_proj(x)
+    up       = self.up_proj(x)
+    if lib and hasattr(lib, 'silu_f32') and gate_raw.dtype == torch.float32:
+        gate_c = gate_raw.contiguous()
+        gate   = torch.empty_like(gate_c)
+        lib.silu_f32(gate_c.data_ptr(), gate.data_ptr(), gate_c.numel())
+        gate = gate.view(gate_raw.shape)
+    else:
+        gate = _F.silu(gate_raw)
+    hidden = gate * up
+    return self.down_proj(hidden) + self.down_fp_residual(hidden)
+
+
+def patch_activations_for_inference(model: nn.Module) -> int:
+    """
+    Monkey-patch RMSNorm, MatMulFreeTokenMixer, and SwiGLU instances to use
+    AVX2 C++ kernels instead of small PyTorch tensor ops.
+
+    Must be called AFTER pack_all_bitlinear_to_int8.
+    Returns number of modules patched.
+    """
+    from model import RMSNorm, SwiGLU
+    try:
+        from model import MatMulFreeTokenMixer
+    except ImportError:
+        MatMulFreeTokenMixer = None
+
+    lib = _load_c_kernel()
+    if not lib:
+        return 0
+
+    n = 0
+    for name, module in model.named_modules():
+        if isinstance(module, RMSNorm) and hasattr(lib, 'rms_norm_f32'):
+            module._rms_weight_f32 = module.weight.float().contiguous()
+            module.forward = types.MethodType(_rms_norm_c_forward, module)
+            n += 1
+        elif (MatMulFreeTokenMixer is not None
+              and isinstance(module, MatMulFreeTokenMixer)
+              and hasattr(lib, 'fused_mlgru_gates_avx2')):
+            module.forward_one_token = types.MethodType(
+                _token_mixer_forward_one_token_fast, module)
+            n += 1
+        elif isinstance(module, SwiGLU) and hasattr(lib, 'silu_f32'):
+            module.forward = types.MethodType(_swiglu_fast_forward, module)
+            n += 1
+
+    print(f"[CPU opt] {n} modulos parchados con kernels C++ (RMSNorm, MLGRU gates, SwiGLU)")
+    return n
 
 
 def alloc_hidden_states(
@@ -748,6 +925,7 @@ class CPU1InferenceEngine:
             transpose_weights_for_inference(model)
             align_all_weights(model)
             self.scales = pack_all_bitlinear_to_int8(model)
+            patch_activations_for_inference(model)
         else:
             align_all_weights(model)
             self.scales = {}
@@ -1253,6 +1431,32 @@ def _quantize_int8_dynamic(model: nn.Module) -> nn.Module:
     return model
 
 
+def _hf_sample_token(logits: Tensor, temperature: float, top_p: float) -> int:
+    """Sampling eficiente para loop autoregresivo manual.
+
+    - temperature <= 0.01 → argmax (greedy)
+    - top_p < 1.0        → nucleus sampling
+    """
+    if temperature <= 0.01:
+        return int(logits.argmax().item())
+
+    logits = logits / temperature
+
+    if top_p < 1.0:
+        probs = torch.softmax(logits, dim=-1)
+        sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+        cumsum = torch.cumsum(sorted_probs, dim=0)
+        # Mantener tokens hasta cubrir top_p de masa
+        cutoff = (cumsum - sorted_probs) < top_p
+        sorted_probs = sorted_probs * cutoff.float()
+        sorted_probs /= sorted_probs.sum()
+        chosen = int(torch.multinomial(sorted_probs, 1).item())
+        return int(sorted_idx[chosen].item())
+
+    probs = torch.softmax(logits, dim=-1)
+    return int(torch.multinomial(probs, 1).item())
+
+
 class HuggingFaceEngine:
     """
     Engine para modelos HuggingFace con interfaz eval-compatible.
@@ -1409,22 +1613,40 @@ class HuggingFaceEngine:
     def generate(self, prompt_bytes: bytes, max_bytes: int = 200,
                  temperature: float = 1.0, top_p: float = 0.9,
                  reset: bool = True) -> bytes:
-        """Generar texto usando tokenizer nativo."""
+        """Generar texto con loop autoregresivo manual (sin HF .generate overhead).
+
+        Estrategia:
+          1. Prefill: un forward sobre todos los tokens del prompt → KV cache
+          2. Decode: un forward por token nuevo, pasando past_key_values
+          Evita el overhead de Python en HF GenerationMixin (~30% del tiempo).
+        """
         text = prompt_bytes.decode('utf-8', errors='replace')
         input_ids = self._tokenizer.encode(text, return_tensors='pt')
+        max_new_tokens = max(1, max_bytes // 4)
+        hf_model = self._wrapped._hf
+        eos_id = self._tokenizer.eos_token_id
 
-        with torch.no_grad():
-            output_ids = self._wrapped._hf.generate(
-                input_ids,
-                max_new_tokens=max_bytes // 4,
-                temperature=max(temperature, 0.01),
-                top_p=top_p,
-                do_sample=temperature > 0,
-                pad_token_id=self._tokenizer.eos_token_id,
-            )
+        # --- Prefill ---
+        out = hf_model(input_ids, use_cache=True, return_dict=True)
+        past_kv = out.past_key_values
+        logits  = out.logits[:, -1, :]   # [1, vocab]
 
-        new_tokens = output_ids[0][input_ids.shape[1]:]
-        text_out = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+        generated = []
+        for _ in range(max_new_tokens):
+            # Sample
+            next_id = _hf_sample_token(logits[0], temperature, top_p)
+            generated.append(next_id)
+            if eos_id is not None and next_id == eos_id:
+                break
+
+            # Decode step: single token con KV cache
+            next_tok = torch.tensor([[next_id]], dtype=torch.long)
+            out  = hf_model(next_tok, past_key_values=past_kv,
+                            use_cache=True, return_dict=True)
+            past_kv = out.past_key_values
+            logits  = out.logits[:, -1, :]
+
+        text_out = self._tokenizer.decode(generated, skip_special_tokens=True)
         return text_out.encode('utf-8')[:max_bytes]
 
 
