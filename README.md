@@ -174,6 +174,10 @@ All ablation runs use CE training on `Cukinator/cpu1-ablation-dataset` (~37.5M t
 
 Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale training (~1B tokens for 50M params).
 
+> **Known behavior — shard offset on resume:** Each pipeline interruption causes a small gap of ~2 shards per stream (sequences written after the last checkpoint are skipped on resume). Across the full dataset this amounts to roughly **~3% data loss**, considered acceptable. `byte_marginalized` and `bpe_tokenized` track independent shard offsets (v2 checkpoint format) so they never drift relative to each other across restarts. The final dataset only needs a shard renumbering pass to close any filename gaps before training.
+
+> **Expected behavior — shard count difference between streams:** `byte_marginalized` always ends up with more shards than `bpe_tokenized`. Both use `SEQ_LEN = 5000`, but byte sequences cover 5000 patches × 4 bytes = 20 KB each, while BPE sequences cover 5000 tokens × ~3.5 bytes ≈ 17.5 KB each (FineWeb English average). The same corpus therefore produces ~3–4% more byte sequences than BPE sequences, which translates to a stable 3–5 shard difference at the end of the full dataset. This is structural and expected — each dataset has the number of shards that its encoding density warrants.
+
 ---
 
 ## Pipeline

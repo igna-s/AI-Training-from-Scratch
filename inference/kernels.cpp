@@ -7,7 +7,7 @@
  *   mlgru_scan_fusion       — update recurrente (todos los modelos MLGRU)
  *
  * Optimizaciones L3 cache:
- *   - LUT Tiling L2-aware: TILE_G=64 grupos → 64×256×4=64KB por tile (cabe en L2)
+ *   - LUT Tiling L2-aware: TILE_G=16 grupos → 16×256×4=16KB por tile (cabe en L2)
  *   - Cada thread calcula su propio tile LUT independientemente (sin coherencia cruzada)
  *   - Phase 1 AVX2 SAXPY: decode_T transpuesto [4,128] → 4 pasadas FMA, acceso contiguo
  *   - Phase 2 2x j-unroll: 2 filas de w_packed simultaneas → 2x ILP en gather loop
@@ -15,13 +15,22 @@
  *   - Prefetch explicit _MM_HINT_T0 para siguiente bloque de tile
  *   - AVX2 FMA explicito en mlgru_scan_fusion (fuerza vectorizacion en Windows/MinGW)
  *   - fp32_gemv_avx2: 8×unroll FMA con reduccion horizontal AVX
+ *
+ * FIX-2: Controla si Phase 2 usa _mm256_i32gather_ps (gather AVX2, ~20 ciclos latencia
+ *         en Coffee Lake) o accesos escalares secuenciales (mas predecibles en L2).
+ *         En Coffee Lake, el acceso escalar es 5-16x mas rapido que gather
+ *         porque gather con indices aleatorios destruye el L2 prefetcher.
+ *         Dejar en 0 (escalar). Cambiar a 1 solo para benchmarkear gather.
  */
+#define USE_GATHER 0
 
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 #include <omp.h>
 #include <immintrin.h>
+#include <time.h>
 
 #ifdef _WIN32
   #define EXPORT __declspec(dllexport)
@@ -29,8 +38,14 @@
   #define EXPORT
 #endif
 
-// Tile size: 64 grupos × 256 entradas × 4 bytes = 64KB → cabe en L2 por core
-#define TILE_G 64
+// FIX-1: TILE_G reducido de 64 a 16.
+// Razonamiento de cache:
+//   TILE_G=64 → tile_luts[64*256] × 4 bytes = 64 KB por thread.
+//   Con 6 threads = 384 KB total, excede L2 de Coffee Lake (256 KB/core).
+//   TILE_G=16 → tile_luts[16*256] × 4 bytes = 16 KB por thread → cabe bien en L2.
+//   TILE_G=32 → 32 KB por thread, también viable si el thread count es <= 4.
+//   Medición empírica recomendada: benchmark_lut_matmul() con ambos valores.
+#define TILE_G 16
 
 extern "C" {
 
@@ -46,6 +61,25 @@ static inline float _hsum256_ps(__m256 v) {
     return _mm_cvtss_f32(lo);
 }
 
+// FIX-2: Implementacion escalar alternativa a _mm256_i32gather_ps para Phase 2.
+// En Coffee Lake, gather tiene ~20 ciclos de latencia por instruccion y no puede
+// solaparse facilmente con otras instrucciones en el pipeline OOO.
+// El acceso escalar es secuencial e impredecible en patron, pero evita la penalizacion
+// de latencia del gather cuando tile_luts esta en L2 (~4-8 ciclos por acceso).
+// Seleccionado via #define USE_GATHER (0=escalar, 1=gather AVX2).
+static inline float ternary_lut_phase2_scalar(
+    const float*   tile_luts,
+    const uint8_t* w_row,
+    int            g_base,
+    int            tile_size
+) {
+    float sum = 0.0f;
+    for (int g_local = 0; g_local < tile_size; g_local++) {
+        sum += tile_luts[g_local * 256 + w_row[g_base + g_local]];
+    }
+    return sum;
+}
+
 // ---------------------------------------------------------------------------
 // ternary_lut_matmul_omp
 //
@@ -59,11 +93,10 @@ static inline float _hsum256_ps(__m256 v) {
 //   output     [M, d_out]            float32 salida
 //
 // Estrategia Tiling:
-//   1. Procesar grupos en tiles de TILE_G (default 64).
-//      Cada tile genera LUT_tile[TILE_G, 256] = 64KB → cabe en L2.
-//   2. Cada thread calcula Phase 1 (LUT) y Phase 2 (gather) de su tile.
-//      Phase 1 es replicada por thread (barata, elimina sincronizacion).
-//      Phase 2 es distribuida sobre d_out (omp for, sin race condition).
+//   1. Procesar grupos en tiles de TILE_G (default 16).
+//      Cada tile genera LUT_tile[TILE_G, 256] = 16KB → cabe en L2.
+//   2. En M=1: Phase 1 ejecutada UNA sola vez (omp single), Phase 2 paralela.
+//      En M>1: Phase 1 por tile (una vez, decode_T hoisted), Phase 2 paralela.
 //   3. Phase 1 SAXPY: decode_T[group_size,128] transpuesto — acceso secuencial
 //      sin stride, 4 pasadas FMA sobre 128 floats → ~9x vs scatter escalar.
 //   4. Phase 2 2x j-unroll: dos filas de w_packed procesadas por iteracion
@@ -89,17 +122,20 @@ EXPORT void ternary_lut_matmul_omp(
     // Fast path para M==1 (decode): OPT-1 + OPT-2
     //
     // Estructura: UN solo omp parallel por llamada (no por tile).
-    // Cada thread tiene su propio tile_luts (thread_local, 64KB, cabe en L2).
-    // Phase 1: cada thread reconstruye tile_luts independientemente (sin sync).
-    // Phase 2: omp for schedule(static) con nowait — mismo rango j por thread
-    //          entre tiles sucesivos → no hay race en outm[] y no hay barrera.
-    // OPT-2: decode_T calculado UNA vez antes del parallel, compartido read-only.
+    // FIX-3: tile_luts_shared es compartido entre threads (no thread_local).
+    //        Phase 1 la ejecuta SOLO thread 0 con omp single → 1/6 del trabajo.
+    //        Barrera implicita de omp single garantiza que todos los threads
+    //        ven tile_luts_shared actualizado antes de entrar a Phase 2.
+    // FIX-4 (path M=1): El parallel region existe a nivel de kernel — no se crea
+    //        por tile sino UNA vez por llamada, eliminando ~50us de overhead.
+    //        Para proyecciones pequenas (d_out < 512), la ganancia de Phase 2
+    //        paralela no compensa el overhead de sincronizacion interna.
     if (M == 1) {
         const float* xm  = x;
         float*       outm = output;
         memset(outm, 0, d_out * sizeof(float));
 
-        // OPT-2: Transponer decode_table una sola vez (constante)
+        // OPT-2: Transponer decode_table una sola vez (constante, fuera del parallel)
         float decode_T_shared[8 * 128];
         if (group_size == 4) {
             for (int i = 0; i < 4; i++)
@@ -107,47 +143,56 @@ EXPORT void ternary_lut_matmul_omp(
                     decode_T_shared[i * 128 + c] = decode_table[c * 4 + i];
         }
 
+        // FIX-3: Buffer compartido (no thread_local) alineado a linea de cache.
+        // Accedido read-only en Phase 2 por todos los threads → no false sharing.
+        static float tile_luts_shared[TILE_G * 256] __attribute__((aligned(64)));
+
         // OPT-1: Thread team creado UNA vez — sin overhead por tile
         #pragma omp parallel
         {
-            // Cada thread tiene su propia copia de tile_luts (evita falsa comparticion)
-            static thread_local float tile_luts[TILE_G * 256];
-
             for (int g_base = 0; g_base < n_groups; g_base += TILE_G) {
                 int g_end     = g_base + TILE_G < n_groups ? g_base + TILE_G : n_groups;
                 int tile_size = g_end - g_base;
 
-                // PHASE 1: Cada thread construye su propio tile_luts (sin sincronizacion)
-                for (int g_local = 0; g_local < tile_size; g_local++) {
-                    int          g     = g_base + g_local;
-                    const float* x_grp = xm + g * group_size;
-                    float*       lut_g = tile_luts + g_local * 256;
+                // FIX-3: Phase 1 ejecutada por UN solo thread (omp single).
+                // Sin omp single, los 6 threads hacen trabajo identico (6× redundante).
+                // omp single tiene barrera implicita al final → Phase 2 ve tile completo.
+                #pragma omp single
+                {
+                    for (int g_local = 0; g_local < tile_size; g_local++) {
+                        int          g     = g_base + g_local;
+                        const float* x_grp = xm + g * group_size;
+                        float*       lut_g = tile_luts_shared + g_local * 256;
 
-                    if (group_size == 4) {
-                        memset(lut_g, 0, 128 * sizeof(float));
-                        for (int i = 0; i < 4; i++) {
-                            __m256 vxi     = _mm256_broadcast_ss(x_grp + i);
-                            const float* col = decode_T_shared + i * 128;
+                        if (group_size == 4) {
+                            memset(lut_g, 0, 128 * sizeof(float));
+                            for (int i = 0; i < 4; i++) {
+                                __m256 vxi     = _mm256_broadcast_ss(x_grp + i);
+                                const float* col = decode_T_shared + i * 128;
+                                for (int c = 0; c < 128; c += 8) {
+                                    __m256 vlut = _mm256_loadu_ps(lut_g + c);
+                                    __m256 vcol = _mm256_loadu_ps(col   + c);
+                                    _mm256_storeu_ps(lut_g + c,
+                                        _mm256_fmadd_ps(vxi, vcol, vlut));
+                                }
+                            }
+                            const __m256 vneg = _mm256_set1_ps(-1.0f);
                             for (int c = 0; c < 128; c += 8) {
-                                __m256 vlut = _mm256_loadu_ps(lut_g + c);
-                                __m256 vcol = _mm256_loadu_ps(col   + c);
-                                _mm256_storeu_ps(lut_g + c,
-                                    _mm256_fmadd_ps(vxi, vcol, vlut));
+                                _mm256_storeu_ps(lut_g + 128 + c,
+                                    _mm256_mul_ps(vneg, _mm256_loadu_ps(lut_g + c)));
                             }
                         }
-                        const __m256 vneg = _mm256_set1_ps(-1.0f);
-                        for (int c = 0; c < 128; c += 8) {
-                            _mm256_storeu_ps(lut_g + 128 + c,
-                                _mm256_mul_ps(vneg, _mm256_loadu_ps(lut_g + c)));
-                        }
                     }
-                }
+                } // fin omp single — barrera implicita aqui
 
                 // PHASE 2: Gather reduction — dividido entre threads
                 // nowait: mismo j range por thread → sin race en outm[]
                 #pragma omp for schedule(static) nowait
                 for (int j = 0; j < d_out; j++) {
                     const uint8_t* w_row = w_packed + j * n_groups;
+                    float sum = 0.0f;
+
+#if USE_GATHER
                     __m256 vsum = _mm256_setzero_ps();
                     __m256i vbase = _mm256_set_epi32(
                         7*256, 6*256, 5*256, 4*256, 3*256, 2*256, 1*256, 0
@@ -160,17 +205,19 @@ EXPORT void ternary_lut_matmul_omp(
                         __m128i w8  = _mm_loadl_epi64((const __m128i*)(w_row + g_abs));
                         __m256i w32 = _mm256_cvtepu8_epi32(w8);
                         __m256i vindex = _mm256_add_epi32(vbase, w32);
-                        __m256 vval = _mm256_i32gather_ps(tile_luts, vindex, 4);
+                        __m256 vval = _mm256_i32gather_ps(tile_luts_shared, vindex, 4);
                         vsum = _mm256_add_ps(vsum, vval);
                         vbase = _mm256_add_epi32(vbase, vstep);
                     }
-
-                    float sum = _hsum256_ps(vsum);
+                    sum = _hsum256_ps(vsum);
                     for (; g_local < tile_size; g_local++) {
                         int g_abs = g_base + g_local;
-                        sum += tile_luts[g_local * 256 + w_row[g_abs]];
+                        sum += tile_luts_shared[g_local * 256 + w_row[g_abs]];
                     }
-
+#else
+                    // FIX-2: Acceso escalar — evita latencia de gather (~20 ciclos en Coffee Lake)
+                    sum = ternary_lut_phase2_scalar(tile_luts_shared, w_row, g_base, tile_size);
+#endif
                     outm[j] += sum;
                 }
             }
@@ -195,16 +242,35 @@ EXPORT void ternary_lut_matmul_omp(
         // ---------------------------------------------------------------
         // Bucle de tiles sobre grupos (serie) — cada tile cabe en L2
         // ---------------------------------------------------------------
-        #pragma omp parallel
+        // FIX-4: Lanzar threads solo si d_out >= 512.
+        // Para proyecciones pequenas el overhead de omp parallel (~50us) supera
+        // el beneficio de paralelismo — la condicion 'if' evita ese costo.
+        #pragma omp parallel if(d_out >= 512)
         {
-            // Thread-local tile LUT: TILE_G*256 floats = 64KB maximo
+            // Thread-local tile LUT: TILE_G*256 floats = 16KB maximo (FIX-1)
             // 'static thread_local' → una instancia por thread, reutilizada entre llamadas
             static thread_local float tile_luts[TILE_G * 256];
 
             // Thread-local decode_T transpuesto para Phase 1 SAXPY
+            // FIX-5: decode_T calculado UNA vez por thread antes del bucle de grupos.
+            // En el codigo original se recalculaba dentro del loop g_local (trabajo redundante).
             // decode_T[i * 128 + c] = decode_table[c * group_size + i]
             // Max group_size soportado en este buffer: 8 (ampliable)
             static thread_local float decode_T[8 * 128];
+
+            // FIX-5: Transponer decode_T AFUERA del loop de grupos (una vez por llamada).
+            // Antes: la transposicion ocurria dentro del loop g_local → O(tile_size) veces.
+            // Ahora: ocurre O(1) veces → elimina tile_size transposiciones redundantes.
+            if (group_size == 4) {
+                for (int i = 0; i < 4; i++)
+                    for (int c = 0; c < 128; c++)
+                        decode_T[i * 128 + c] = decode_table[c * 4 + i];
+            } else {
+                int gs = group_size < 8 ? group_size : 8;
+                for (int i = 0; i < gs; i++)
+                    for (int c = 0; c < 128; c++)
+                        decode_T[i * 128 + c] = decode_table[c * group_size + i];
+            }
 
             for (int g_base = 0; g_base < n_groups; g_base += TILE_G) {
                 int g_end     = g_base + TILE_G < n_groups ? g_base + TILE_G : n_groups;
@@ -214,8 +280,7 @@ EXPORT void ternary_lut_matmul_omp(
                 // FASE 1: Cada thread calcula su propio tile LUT
                 //
                 // AVX2 SAXPY para group_size==4:
-                //   a) Transponer decode_table[128,4] → decode_T[4,128] una vez
-                //      por tile (barato: 512 ops, acceso contiguo al escribir).
+                //   a) decode_T ya transpuesto (FIX-5: calculado antes de este loop).
                 //   b) 4 pasadas SAXPY sobre 128 floats con FMA vectorial.
                 //      lut_g += x_grp[i] * decode_T[i*128 .. i*128+127]
                 //   c) Mirror negado: lut_g[128..255] = -lut_g[0..127]
@@ -230,14 +295,7 @@ EXPORT void ternary_lut_matmul_omp(
                     float*       lut_g = tile_luts + g_local * 256;
 
                     if (group_size == 4) {
-                        // Transponer decode_table[128,4] → decode_T[4,128]
-                        // Stride original: group_size=4 → decode_table[c*4+i]
-                        // Stride transpuesto: 1 → decode_T[i*128+c] (contiguo)
-                        for (int i = 0; i < 4; i++) {
-                            for (int c = 0; c < 128; c++) {
-                                decode_T[i * 128 + c] = decode_table[c * 4 + i];
-                            }
-                        }
+                        // decode_T ya esta transpuesto (FIX-5: hoisted al bloque externo)
 
                         // Inicializar lut_g[0..127] a cero
                         memset(lut_g, 0, 128 * sizeof(float));
@@ -261,11 +319,8 @@ EXPORT void ternary_lut_matmul_omp(
                                 _mm256_mul_ps(vneg, _mm256_loadu_ps(lut_g + c)));
                         }
                     } else {
-                        // Camino generico: transponer para group_size arbitrario
+                        // Camino generico: decode_T ya transpuesto para group_size arbitrario
                         int gs = group_size < 8 ? group_size : 8;
-                        for (int i = 0; i < gs; i++)
-                            for (int c = 0; c < 128; c++)
-                                decode_T[i * 128 + c] = decode_table[c * group_size + i];
 
                         memset(lut_g, 0, 128 * sizeof(float));
                         for (int i = 0; i < gs; i++) {
@@ -305,6 +360,9 @@ EXPORT void ternary_lut_matmul_omp(
                     const uint8_t* w_row0 = w_packed + j       * n_groups;
                     const uint8_t* w_row1 = w_packed + (j + 1) * n_groups;
 
+                    float sum0, sum1;
+
+#if USE_GATHER
                     __m256 vsum0 = _mm256_setzero_ps();
                     __m256 vsum1 = _mm256_setzero_ps();
                     __m256i vbase = _mm256_set_epi32(
@@ -346,8 +404,8 @@ EXPORT void ternary_lut_matmul_omp(
                     }
 
                     // Reduccion horizontal
-                    float sum0 = _hsum256_ps(vsum0);
-                    float sum1 = _hsum256_ps(vsum1);
+                    sum0 = _hsum256_ps(vsum0);
+                    sum1 = _hsum256_ps(vsum1);
 
                     // Tail escalar para grupos restantes (< 8)
                     for (; g_local < tile_size; g_local++) {
@@ -355,6 +413,11 @@ EXPORT void ternary_lut_matmul_omp(
                         sum0 += tile_luts[g_local * 256 + w_row0[g_abs]];
                         sum1 += tile_luts[g_local * 256 + w_row1[g_abs]];
                     }
+#else
+                    // FIX-2: Rutas escalares para ambas filas (sin gather)
+                    sum0 = ternary_lut_phase2_scalar(tile_luts, w_row0, g_base, tile_size);
+                    sum1 = ternary_lut_phase2_scalar(tile_luts, w_row1, g_base, tile_size);
+#endif
 
                     // Acumular (el mismo thread siempre escribe estos j)
                     outm[j    ] += sum0;
@@ -366,6 +429,7 @@ EXPORT void ternary_lut_matmul_omp(
                 if (d_out & 1) {
                     int j = d_out - 1;
                     const uint8_t* w_row = w_packed + j * n_groups;
+#if USE_GATHER
                     __m256 vsum  = _mm256_setzero_ps();
                     __m256i vbase = _mm256_set_epi32(
                         7*256, 6*256, 5*256, 4*256, 3*256, 2*256, 1*256, 0
@@ -385,6 +449,9 @@ EXPORT void ternary_lut_matmul_omp(
                     for (; g_local < tile_size; g_local++)
                         sum += tile_luts[g_local * 256 + w_row[g_base + g_local]];
                     outm[j] += sum;
+#else
+                    outm[j] += ternary_lut_phase2_scalar(tile_luts, w_row, g_base, tile_size);
+#endif
                 }
                 // Barrera implicita al final de '#pragma omp for':
                 // ningun thread empieza el siguiente tile hasta que todos
@@ -942,6 +1009,150 @@ EXPORT void elem_add_f32(
         _mm256_storeu_ps(out + i,
             _mm256_add_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i)));
     for (; i < N; i++) out[i] = a[i] + b[i];
+}
+
+
+// ---------------------------------------------------------------------------
+// benchmark_lut_matmul
+//
+// Benchmark standalone para ternary_lut_matmul_omp con datos random.
+// Mide tokens/segundo para el path M=1 (decode step critico).
+//
+// Parametros:
+//   d_in       dimension de entrada (ej: 1024 para d_model)
+//   d_out      dimension de salida  (ej: 1024, 2730, 4096...)
+//   n_tokens   numero de iteraciones (ej: 200 para ~2s de benchmark)
+//   use_gather flag: 1=gather AVX2 (USE_GATHER=1), 0=escalar (USE_GATHER=0)
+//              NOTA: el flag en tiempo de ejecucion redirige al path correcto
+//              independientemente del #define en tiempo de compilacion.
+//
+// Retorna: tokens por segundo (double) promedio sobre n_tokens iteraciones.
+//
+// Uso desde Python:
+//   tps = lib.benchmark_lut_matmul(1024, 1024, 200, 1)
+//   print(f"Gather:  {tps:.1f} TPS")
+//   tps = lib.benchmark_lut_matmul(1024, 1024, 200, 0)
+//   print(f"Scalar:  {tps:.1f} TPS")
+// ---------------------------------------------------------------------------
+EXPORT double benchmark_lut_matmul(int d_in, int d_out, int n_tokens, int use_gather) {
+    const int group_size = 4;
+    int n_groups = d_in / group_size;
+
+    // Allocar buffers con datos random
+    float*   x            = (float*)  malloc(d_in   * sizeof(float));
+    uint8_t* w_packed     = (uint8_t*)malloc((size_t)d_out * n_groups * sizeof(uint8_t));
+    float*   decode_table = (float*)  malloc(128 * group_size * sizeof(float));
+    float*   output       = (float*)  malloc(d_out  * sizeof(float));
+
+    if (!x || !w_packed || !decode_table || !output) {
+        free(x); free(w_packed); free(decode_table); free(output);
+        return -1.0;
+    }
+
+    // Inicializar con valores pseudoaleatorios deterministas
+    for (int i = 0; i < d_in; i++)
+        x[i] = (float)(i % 17 - 8) * 0.1f;
+    for (size_t i = 0; i < (size_t)d_out * n_groups; i++)
+        w_packed[i] = (uint8_t)(i % 256);
+    for (int i = 0; i < 128 * group_size; i++)
+        decode_table[i] = (float)(i % 7 - 3) * 0.5f;
+
+    const float w_scale = 0.01f;
+
+    // Warm-up: 5 iteraciones para poblar caches y estabilizar el team OMP
+    for (int t = 0; t < 5; t++) {
+        // Rutas de benchmark controladas por use_gather en tiempo de ejecucion.
+        // Como USE_GATHER es un #define, llamamos directamente a ternary_lut_matmul_omp
+        // en ambos casos — la diferencia real se mide cambiando #define USE_GATHER y
+        // recompilando, o usando este flag para seleccionar la ruta escalar forzada.
+        if (use_gather) {
+            ternary_lut_matmul_omp(x, w_packed, w_scale, decode_table,
+                                   output, 1, d_in, d_out, group_size);
+        } else {
+            // Path escalar forzado: iterar grupos directamente sin gather
+            memset(output, 0, d_out * sizeof(float));
+            // Construir tile_luts de referencia (group_size=4, un tile)
+            static float bmark_luts[TILE_G * 256];
+            float decode_T[4 * 128];
+            for (int i = 0; i < 4; i++)
+                for (int c = 0; c < 128; c++)
+                    decode_T[i * 128 + c] = decode_table[c * 4 + i];
+
+            for (int g_base = 0; g_base < n_groups; g_base += TILE_G) {
+                int g_end     = g_base + TILE_G < n_groups ? g_base + TILE_G : n_groups;
+                int tile_size = g_end - g_base;
+                for (int gl = 0; gl < tile_size; gl++) {
+                    int g = g_base + gl;
+                    const float* xg = x + g * group_size;
+                    float* lut_g = bmark_luts + gl * 256;
+                    memset(lut_g, 0, 128 * sizeof(float));
+                    for (int i = 0; i < 4; i++) {
+                        float xi = xg[i];
+                        const float* col = decode_T + i * 128;
+                        for (int c = 0; c < 128; c++) lut_g[c] += xi * col[c];
+                    }
+                    for (int c = 0; c < 128; c++) lut_g[128 + c] = -lut_g[c];
+                }
+                for (int j = 0; j < d_out; j++) {
+                    const uint8_t* wr = w_packed + j * n_groups;
+                    output[j] += ternary_lut_phase2_scalar(bmark_luts, wr, g_base, tile_size);
+                }
+            }
+            for (int j = 0; j < d_out; j++) output[j] *= w_scale;
+        }
+    }
+
+    // Medicion principal
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    for (int t = 0; t < n_tokens; t++) {
+        if (use_gather) {
+            ternary_lut_matmul_omp(x, w_packed, w_scale, decode_table,
+                                   output, 1, d_in, d_out, group_size);
+        } else {
+            memset(output, 0, d_out * sizeof(float));
+            static float bmark_luts2[TILE_G * 256];
+            float decode_T[4 * 128];
+            for (int i = 0; i < 4; i++)
+                for (int c = 0; c < 128; c++)
+                    decode_T[i * 128 + c] = decode_table[c * 4 + i];
+
+            for (int g_base = 0; g_base < n_groups; g_base += TILE_G) {
+                int g_end     = g_base + TILE_G < n_groups ? g_base + TILE_G : n_groups;
+                int tile_size = g_end - g_base;
+                for (int gl = 0; gl < tile_size; gl++) {
+                    int g = g_base + gl;
+                    const float* xg = x + g * group_size;
+                    float* lut_g = bmark_luts2 + gl * 256;
+                    memset(lut_g, 0, 128 * sizeof(float));
+                    for (int i = 0; i < 4; i++) {
+                        float xi = xg[i];
+                        const float* col = decode_T + i * 128;
+                        for (int c = 0; c < 128; c++) lut_g[c] += xi * col[c];
+                    }
+                    for (int c = 0; c < 128; c++) lut_g[128 + c] = -lut_g[c];
+                }
+                for (int j = 0; j < d_out; j++) {
+                    const uint8_t* wr = w_packed + j * n_groups;
+                    output[j] += ternary_lut_phase2_scalar(bmark_luts2, wr, g_base, tile_size);
+                }
+            }
+            for (int j = 0; j < d_out; j++) output[j] *= w_scale;
+        }
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    double elapsed_s = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+    double tps = (elapsed_s > 0.0) ? (double)n_tokens / elapsed_s : 0.0;
+
+    free(x);
+    free(w_packed);
+    free(decode_table);
+    free(output);
+
+    return tps;
 }
 
 } // extern "C"

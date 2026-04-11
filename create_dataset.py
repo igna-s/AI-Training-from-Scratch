@@ -2955,7 +2955,9 @@ def _save_stream_checkpoint(api, repo_id: str, chunk_idx: int,
                             byte_carry: dict, bpe_carry: dict,
                             shard_offset: int = 0,
                             initial_byte_seq_offset: int = 0,
-                            initial_bpe_seq_offset: int = 0) -> None:
+                            initial_bpe_seq_offset: int = 0,
+                            byte_shard_offset: int = 0,
+                            bpe_shard_offset: int = 0) -> None:
     """Guarda checkpoint en HF Hub para poder retomar si se corta la sesion."""
     import pickle, io
     checkpoint = {
@@ -2965,6 +2967,8 @@ def _save_stream_checkpoint(api, repo_id: str, chunk_idx: int,
         'shard_offset': shard_offset,  # persisted so resume regenerates correct shard names
         'initial_byte_seq_offset': initial_byte_seq_offset,
         'initial_bpe_seq_offset': initial_bpe_seq_offset,
+        'byte_shard_offset': byte_shard_offset,   # per-stream offsets (v2 checkpoint)
+        'bpe_shard_offset': bpe_shard_offset,
     }
     # Metadata JSON
     buf = io.BytesIO(json.dumps(checkpoint).encode())
@@ -3258,6 +3262,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             total_byte_coverage = 0.0
             total_chunks = 0
             resume_from_chunk = 0
+            byte_shard_offset = shard_offset
+            bpe_shard_offset = shard_offset
 
             # Resume desde checkpoint si existe
             ckpt, carry = _load_stream_checkpoint(api, DATASET_REPO)
@@ -3265,11 +3271,21 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 resume_from_chunk = ckpt['last_completed_chunk'] + 1
                 byte_seq_offset = ckpt['byte_seq_offset']
                 bpe_seq_offset = ckpt['bpe_seq_offset']
-                # Restore shard_offset from checkpoint (overrides CLI arg if checkpoint exists)
-                if 'shard_offset' in ckpt:
+                # Restore per-stream shard offsets from checkpoint
+                if 'byte_shard_offset' in ckpt and 'bpe_shard_offset' in ckpt:
+                    # v2 checkpoint: per-stream offsets saved directly
+                    byte_shard_offset = ckpt['byte_shard_offset']
+                    bpe_shard_offset  = ckpt['bpe_shard_offset']
+                elif 'shard_offset' in ckpt:
+                    # v1 checkpoint: compute independently for each stream
+                    _ckpt_base = ckpt['shard_offset']
                     _init_byte = ckpt.get('initial_byte_seq_offset', 0)
-                    shard_offset = ckpt['shard_offset'] + (byte_seq_offset - _init_byte) // SEQS_PER_SHARD
-                    print(f"  [resume] shard_offset={shard_offset} (computed from checkpoint)")
+                    _init_bpe  = ckpt.get('initial_bpe_seq_offset', 0)
+                    byte_shard_offset = _ckpt_base + (byte_seq_offset - _init_byte) // SEQS_PER_SHARD
+                    bpe_shard_offset  = _ckpt_base + (bpe_seq_offset  - _init_bpe)  // SEQS_PER_SHARD
+                shard_offset = byte_shard_offset  # kept for backward compat references
+                print(f"  [resume] byte_shard_offset={byte_shard_offset}, "
+                      f"bpe_shard_offset={bpe_shard_offset}")
                 byte_carry = carry['byte']
                 bpe_carry = carry['bpe']
                 print(f"  [resume] Saltando chunks 0-{resume_from_chunk - 1}, "
@@ -3344,6 +3360,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                               f"in shards \u2192 skipping ~{_est_chunks_done} chunks")
 
                     shard_offset = _safe_offset
+                    byte_shard_offset = shard_offset
+                    bpe_shard_offset  = shard_offset
 
                     print(f"  [shard_scan] Recovered: byte_seqs={byte_seq_offset}, "
                           f"bpe_seqs={bpe_seq_offset}, shard_offset={shard_offset}, "
@@ -3475,9 +3493,9 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         action, payload = item
                         try:
                             if action == 'shards':
-                                _byte_dir, _bpe_dir, _byte_run, _bpe_run, _so = payload
-                                _n1 = _upload_sealed_shards(_byte_dir, api, DATASET_REPO, "byte_marginalized", _byte_run, _so)
-                                _n2 = _upload_sealed_shards(_bpe_dir, api, DATASET_REPO, "bpe_tokenized", _bpe_run, _so)
+                                _byte_dir, _bpe_dir, _byte_run, _bpe_run, _bso, _pso = payload
+                                _n1 = _upload_sealed_shards(_byte_dir, api, DATASET_REPO, "byte_marginalized", _byte_run, _bso)
+                                _n2 = _upload_sealed_shards(_bpe_dir, api, DATASET_REPO, "bpe_tokenized", _bpe_run, _pso)
                                 _upload_success_count[0] += _n1 + _n2
                                 gc.collect()  # free memory from uploaded shard data
                             elif action == 'final_shards':
@@ -3487,12 +3505,14 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                                 _upload_success_count[0] += _n1 + _n2
                                 gc.collect()
                             elif action == 'checkpoint':
-                                _ci, _bso, _pso, _bc, _pc, _so, _ibso, _ipso = payload
+                                _ci, _bso, _pso, _bc, _pc, _so, _ibso, _ipso, _byte_so, _bpe_so = payload
                                 _save_stream_checkpoint(api, DATASET_REPO, _ci,
                                                         _bso, _pso, _bc, _pc,
                                                         shard_offset=_so,
                                                         initial_byte_seq_offset=_ibso,
-                                                        initial_bpe_seq_offset=_ipso)
+                                                        initial_bpe_seq_offset=_ipso,
+                                                        byte_shard_offset=_byte_so,
+                                                        bpe_shard_offset=_bpe_so)
                         except Exception as _e:
                             _upload_fail_count[0] += 1
                             print(f"  [Upload] *** ERROR #{_upload_fail_count[0]} ***: {_e}",
@@ -3621,7 +3641,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         str(tmp_parquet), str(byte_dir),
                         seq_offset=byte_seq_offset, carry_state=byte_carry,
                         n_workers=_byte_workers,
-                        shard_offset=shard_offset,
+                        shard_offset=byte_shard_offset,
                         executor=_byte_pool,
                         initial_seq_offset=initial_byte_seq_offset)
                 except Exception as _e:
@@ -3633,7 +3653,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                         seq_offset=bpe_seq_offset, carry_state=bpe_carry,
                         n_workers=_bpe_workers,
                         executor=_bpe_pool,
-                        shard_offset=shard_offset,
+                        shard_offset=bpe_shard_offset,
                         initial_seq_offset=initial_bpe_seq_offset)
                 except Exception as _e:
                     _cpu_errs.append(("bpe", _e))
@@ -3666,7 +3686,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                     _upload_q.put(('shards', (byte_dir, bpe_dir,
                         byte_seq_offset - initial_byte_seq_offset,
                         bpe_seq_offset - initial_bpe_seq_offset,
-                        shard_offset)))
+                        byte_shard_offset, bpe_shard_offset)))
 
                 # S12: Per-chunk resource summary
                 _vram_msg = ""
@@ -3720,7 +3740,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                     _upload_q.put(('checkpoint', (
                         chunk_idx, byte_seq_offset, bpe_seq_offset,
                         byte_carry, bpe_carry, shard_offset,
-                        initial_byte_seq_offset, initial_bpe_seq_offset)))
+                        initial_byte_seq_offset, initial_bpe_seq_offset,
+                        byte_shard_offset, bpe_shard_offset)))
                     print(f"  [checkpoint] Triggered at shard {_current_shard} "
                           f"(every {CHECKPOINT_EVERY_SHARDS})")
 
@@ -3756,7 +3777,8 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             _upload_q.put(('checkpoint', (
                 chunk_idx, byte_seq_offset, bpe_seq_offset,
                 byte_carry, bpe_carry, shard_offset,
-                initial_byte_seq_offset, initial_bpe_seq_offset)))
+                initial_byte_seq_offset, initial_bpe_seq_offset,
+                byte_shard_offset, bpe_shard_offset)))
 
             # Signal upload worker to finish and wait
             _upload_q.put(None)  # sentinel
