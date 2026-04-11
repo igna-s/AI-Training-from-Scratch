@@ -3737,11 +3737,14 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
                 if (_current_shard >= _last_ckpt_shard[0] + CHECKPOINT_EVERY_SHARDS
                         and _current_shard > 0):
                     _last_ckpt_shard[0] = _current_shard
+                    # Compute CURRENT shard offsets so resume doesn't overwrite existing shards
+                    _ckpt_byte_shard = byte_shard_offset + (byte_seq_offset - initial_byte_seq_offset) // SEQS_PER_SHARD
+                    _ckpt_bpe_shard = bpe_shard_offset + (bpe_seq_offset - initial_bpe_seq_offset) // SEQS_PER_SHARD
                     _upload_q.put(('checkpoint', (
                         chunk_idx, byte_seq_offset, bpe_seq_offset,
                         byte_carry, bpe_carry, shard_offset,
                         initial_byte_seq_offset, initial_bpe_seq_offset,
-                        byte_shard_offset, bpe_shard_offset)))
+                        _ckpt_byte_shard, _ckpt_bpe_shard)))
                     print(f"  [checkpoint] Triggered at shard {_current_shard} "
                           f"(every {CHECKPOINT_EVERY_SHARDS})")
 
@@ -3773,12 +3776,14 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             # Queue final uploads for any remaining shards (including incomplete ones)
             _upload_q.put(('final_shards', (byte_dir, bpe_dir)))
 
-            # Queue final checkpoint
+            # Queue final checkpoint with CURRENT shard offsets
+            _final_byte_shard = byte_shard_offset + (byte_seq_offset - initial_byte_seq_offset) // SEQS_PER_SHARD
+            _final_bpe_shard = bpe_shard_offset + (bpe_seq_offset - initial_bpe_seq_offset) // SEQS_PER_SHARD
             _upload_q.put(('checkpoint', (
                 chunk_idx, byte_seq_offset, bpe_seq_offset,
                 byte_carry, bpe_carry, shard_offset,
                 initial_byte_seq_offset, initial_bpe_seq_offset,
-                byte_shard_offset, bpe_shard_offset)))
+                _final_byte_shard, _final_bpe_shard)))
 
             # Signal upload worker to finish and wait
             _upload_q.put(None)  # sentinel
