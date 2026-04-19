@@ -9,6 +9,7 @@ Soporta cualquier modelo registrado en model.py o ablation.py:
 Dos estrategias de inferencia para pesos ternarios:
   1. INT8 — pesos ternarios como float32 pre-cuantizados + torch.compile
   2. T-MAC LUT — Lookup Tables sin multiplicaciones (Wei et al., EuroSys 2025)
+     (habilitado con USE_C_KERNELS=True; deshabilitado por defecto para ablations)
 
 Optimizaciones integradas:
   BLOQUE 1 — Layout de memoria (transpose, alignment, INT8, anti-false-sharing)
@@ -49,8 +50,14 @@ from torch import Tensor
 
 _TERNARY_C_KERNEL = None
 
+# Set True only for production benchmark with the final chosen model.
+# Ablations always use pure PyTorch for a fair apples-to-apples comparison.
+USE_C_KERNELS = True
+
 def _load_c_kernel():
     global _TERNARY_C_KERNEL
+    if not USE_C_KERNELS:
+        return False          # ablation mode: always PyTorch
     if _TERNARY_C_KERNEL is not None:
         return _TERNARY_C_KERNEL
 

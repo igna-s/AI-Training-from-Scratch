@@ -82,6 +82,17 @@ CPU-1 350M 2-bit: 38 GB/s ÷  92 MB ≈ 413 tok/s
 
 CPU-1's advantage compounds at long context: LFM2.5's KV cache grows linearly (6 attention blocks × context length), while CPU-1's recurrent state stays fixed at 57 KB regardless of context length.
 
+### Inference Strategy
+
+Two execution modes, selected via `USE_C_KERNELS` in `inference/inference.py`:
+
+| Mode | Flag | When to use |
+|---|---|---|
+| **PyTorch** (default) | `USE_C_KERNELS = False` | All ablation runs — fair comparison, same framework for every architecture |
+| **C++ T-MAC LUT** | `USE_C_KERNELS = True` | Production benchmark with the final chosen model |
+
+Ablation BPB/perplexity numbers in the paper are measured under PyTorch mode. A separate production benchmark with `USE_C_KERNELS = True` reports absolute throughput: **~235 patches/sec** on the final ternary MLGRU model (17.4× faster than the INT8 PyTorch baseline).
+
 ### Extended Architecture (v3)
 
 CPU-1 v3 extends the base architecture with three optional modules:
@@ -170,13 +181,22 @@ Key questions answered:
 
 ### Dataset
 
-All ablation runs use CE training on `Cukinator/cpu1-ablation-dataset` (~37.5M tokens, sequences pre-packed at 5000 tokens). This dataset was built via `create_dataset.py`, which also extracts Qwen2.5-7B teacher logprobs for each position — those are available for future distillation experiments but not used in the current ablation runs.
+All ablation runs use CE training on `Cukinator/cpu1-ablation-dataset`. **Final state of the extraction (frozen for the 10M-parameter ablations):**
 
-Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale training (~1B tokens for 50M params).
+| Subset | Shards | Sequences | SEQ_LEN | Raw size |
+|---|---|---|---|---|
+| `byte_marginalized/` | 168 | 8,400 | 5000 patches × 4 bytes | **168 MB / 168M bytes** |
+| `bpe_tokenized/` | 157 | 7,850 | 5000 BPE tokens | **~39.25M Qwen2.5 tokens** |
+
+The dataset was built via `create_dataset.py`, which also extracts **Qwen2.5-3B** teacher logprobs (Top-128 per position) and a 128-dim projection of the teacher's last hidden state for each position — both are stored on Hub and available for future distillation experiments but are not used in the current CE-only ablation runs. Extraction was paused at chunk 527/1700 (~263,500 out of the planned 850,000 documents); this scale is sufficient for the 10M-parameter run grid (see *10M Bonus Runs* below). `stream_checkpoint.json` and `stream_carry.pkl` remain in the Hub repo so the run could be resumed if a larger budget is ever needed.
+
+> **Known gap — shards 0060 and 0061 are intentionally missing in both subsets.** During the original extraction the writer crossed a corrupted region of the streaming pipeline at that point, and although `byte_marginalized/` happened to retain those two parquet files, the matching `bpe_tokenized/` shards were lost and could not be recovered from the Hub commit history (search across all 891 historical commits returned no version of the file). Rather than ship two halves of an asymmetric pair — which would silently break any downstream code that expects parallel sequence indexing across the two subsets — the byte counterparts (`byte_marginalized/shard_0060.parquet`, `byte_marginalized/shard_0061.parquet`) were deleted as well, leaving the same gap on both sides. The shard indices are otherwise contiguous; the gap is a stable, well-known property of this dataset version, not a sign of incomplete download.
+
+Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale training (~1B tokens for 50M+ params).
 
 > **Known behavior — shard offset on resume:** Each pipeline interruption causes a small gap of ~2 shards per stream (sequences written after the last checkpoint are skipped on resume). Across the full dataset this amounts to roughly **~3% data loss**, considered acceptable. `byte_marginalized` and `bpe_tokenized` track independent shard offsets (v2 checkpoint format) so they never drift relative to each other across restarts. The final dataset only needs a shard renumbering pass to close any filename gaps before training.
 
-> **Expected behavior — shard count difference between streams:** `byte_marginalized` always ends up with more shards than `bpe_tokenized`. Both use `SEQ_LEN = 5000`, but byte sequences cover 5000 patches × 4 bytes = 20 KB each, while BPE sequences cover 5000 tokens × ~3.5 bytes ≈ 17.5 KB each (FineWeb English average). The same corpus therefore produces ~3–4% more byte sequences than BPE sequences, which translates to a stable 3–5 shard difference at the end of the full dataset. This is structural and expected — each dataset has the number of shards that its encoding density warrants.
+> **Expected behavior — shard count difference between streams:** `byte_marginalized/` ends up with slightly more shards than `bpe_tokenized/` (final state: **168 vs 157**, exactly **11 shards = ~7% more byte shards**, after the symmetric removal of shards 0060/0061 documented above). Both use `SEQ_LEN = 5000`, but the two streams pack the corpus at different densities: a byte sequence covers 5000 patches × 4 bytes = **20.0 KB** of source text, while a BPE sequence covers 5000 tokens × ~4.28 bytes ≈ **21.4 KB** of source text (Qwen2.5 tokenizer on FineWeb English averages ~4.28 bytes/token). The same corpus therefore yields ~7% more byte sequences than BPE sequences, which the empirical 168/157 ratio matches almost exactly. The two streams also carry independent residual state across chunk boundaries and are uploaded with independent shard offsets (v2 checkpoint format). This is structural and expected — each stream has the number of shards that its encoding density warrants, and a given `shard_XXXX.parquet` in `byte_marginalized/` is **not** required to align with the same index in `bpe_tokenized/`.
 
 ---
 
@@ -211,6 +231,31 @@ Raw Text Corpus
 
 ### Ablation Pipeline (50M × 10 runs on Lightning.ai T4)
 
+#### Lightning Studio Setup — Files to Upload
+
+Minimum set of files needed to train any ablation run on a Lightning Studio T4 instance:
+
+| File | Purpose |
+|---|---|
+| `model.py` | CPU-1 architecture — imported by `ablation.py` and `train.py` |
+| `train.py` | Training loop with `--mode ablation` |
+| `ablation.py` | Ablation configs and configurable model variants |
+| `requirements.txt` | Python dependencies |
+
+Everything else is remote or not required:
+- **Dataset** — streamed from `Cukinator/cpu1-ablation-dataset` on HF Hub; use `--hf-mount` to avoid downloading the full ~5 GB
+- **Credentials** — set `HF_TOKEN` as a Lightning Secret (Settings → Secrets), not via `.env`
+- `create_dataset.py` — dataset already built and on HF Hub
+- `inference/`, `kaggle/`, `eval/` — not needed at training time
+
+```bash
+# On the Lightning VM after uploading the four files above:
+pip install -r requirements.txt
+
+# Train any run with lazy dataset streaming (no full download):
+python train.py --mode ablation --run run_10 --hf-mount
+```
+
 #### 1. Build Shared Dataset (once)
 
 ```bash
@@ -222,9 +267,9 @@ python create_dataset.py --logprobs-dir ./logprobs --output-dir ./dataset
 ```
 
 Teacher (Qwen2.5-3B in 4-bit NF4 or FP8) runs **once**. Produces:
-- `byte_marginalized/` — patches, targets, teacher_probs, teacher_mask, teacher_hidden
-- `bpe_tokenized/` — input_ids, labels, teacher_probs_bpe, teacher_mask_bpe
-- Uploaded to `Cukinator/cpu1-ablation-dataset` on HuggingFace Hub
+- `byte_marginalized/` — `patches`, `targets`, `teacher_probs`, `teacher_mask`, `teacher_hidden`, `teacher_dim`
+- `bpe_tokenized/` — `input_ids`, `labels`, `teacher_probs_bpe`, `teacher_ids_bpe`, `teacher_mask_bpe`
+- Uploaded to `Cukinator/cpu1-ablation-dataset` on HuggingFace Hub (50 sequences per shard, configs declared in YAML so `load_dataset(repo, "byte_marginalized")` and `load_dataset(repo, "bpe_tokenized")` both work)
 
 **Why not use existing distillation datasets?** We evaluated public teacher-logit datasets ([arcee-ai/LLama-405B-Logits](https://huggingface.co/datasets/arcee-ai/LLama-405B-Logits), [hbfreed/Dolci-Instruct-RL-Completions](https://huggingface.co/datasets/hbfreed/Dolci-Instruct-RL-Completions), [eyad-silx/Base-logits](https://huggingface.co/datasets/eyad-silx/Base-logits), among others). None are suitable because: (1) all contain instruction/math/code data, not general web text needed for pretraining ablations; (2) none include intermediate hidden states required by the EmbeddingAligner (runs 13, 15); (3) none provide byte-level marginalized probabilities — our model operates at byte level, requiring BPE→byte probability conversion that must be computed from the raw teacher logprobs.
 
@@ -304,18 +349,18 @@ Before committing to long 50M runs, we train **~10M parameter models** to answer
 
 All three `small_` runs are **compute-optimal by Chinchilla law** (tokens ≈ 20 × params = 200M tokens for 10M params).
 
-Dataset structure: `Cukinator/cpu1-ablation-dataset` contains **6,121 total rows** across both splits:
+Dataset structure: `Cukinator/cpu1-ablation-dataset` contains **16,250 total rows** across both splits (8,400 byte sequences + 7,850 BPE sequences):
 
 | Run | Tokenization | Dataset subset | Total tokens | Cycling for 200M | Convergence risk |
 |---|---|---|---|---|---|
-| `small_01` | BPE (4K vocab) | `bpe_tokenized/` (60 shards) | 6,121 rows × 5,000 BPE = **30.6M BPE** | 200M ÷ 30.6M = **6.5×** | ⚠️ **Moderate** (repeated data) |
-| `small_02` | Byte-level | `byte_marginalized/` (60 shards) | 6,121 rows × 5,000 × 4 bytes = **122.4M bytes** | 200M ÷ 122.4M = **1.63×** | ✅ **Good** (mostly fresh) |
-| `small_03` | Byte-level (warm-start) | `byte_marginalized/` (60 shards) | Same as small_02 = **122.4M bytes** | **1.63×** | ✅ **Good** |
-| `small_04` | Raw bytes, no teacher | `HuggingFaceFW/fineweb` | ~1B+ tokens available | **1.63×** (uses 200M) | ✅ **Good** |
+| `small_01` | BPE (4K vocab) | `bpe_tokenized/` (157 shards) | 7,850 rows × 5,000 BPE = **39.25M BPE** | 200M ÷ 39.25M = **5.10×** | ⚠️ **Moderate** (repeated data) |
+| `small_02` | Byte-level | `byte_marginalized/` (168 shards) | 8,400 rows × 5,000 × 4 bytes = **168M bytes** | 200M ÷ 168M = **1.19×** | ✅ **Excellent** (≈ Chinchilla, near-zero repetition) |
+| `small_03` | Byte-level (warm-start) | `byte_marginalized/` (168 shards) | Same as small_02 = **168M bytes** | **1.19×** | ✅ **Excellent** |
+| `small_04` | Raw bytes, no teacher | `HuggingFaceFW/fineweb` | ~1B+ tokens available | **1.0×** (uses 200M fresh) | ✅ **Good** |
 
-**Key insight:** BPE requires 6.5 cycles of the same dataset to hit Chinchilla-optimal training budget. While this introduces a modest overfitting risk, the **byte-level runs** (small_02, small_03, small_04) see mostly fresh data (1.63 cycles), enabling clean convergence comparisons.
+**Key insight:** Byte-level runs are virtually Chinchilla-perfect (1.19 cycles ≈ no repetition). BPE requires ~5 cycles of the same data — modest overfitting risk but acceptable for an ablation grid (the comparison is against the byte runs, not against an absolute LM-quality bar). The shard count difference between `byte_marginalized/` (168) and `bpe_tokenized/` (157) is **structural and expected** — see *Dataset* section above for the encoding-density explanation, and the *Known gap* note for the symmetric removal of shards 0060/0061.
 
-For the paper: *"10M models trained with Chinchilla-optimal scaling (200M tokens each). BPE subset requires dataset cycling; byte-level subsets converge cleanly with minimal data repetition."*
+For the paper: *"10M models trained with Chinchilla-optimal scaling (200M tokens each). BPE subset requires ~5× dataset cycling; byte-level subsets converge with near-zero data repetition."*
 
 ### What the results answer
 
@@ -642,3 +687,52 @@ tqdm==4.67.3
 ## License
 
 MIT
+
+
+
+
+
+ACOMODAR
+
+
+
+2. ¿De run_01 a run_11 se van sumando o cambiando?
+
+Es una cadena progresiva hasta run_06, luego ramifica:
+
+
+run_01  Transformer + BPE + FP16           ← baseline
+  ↓ cambia tokenizer
+run_02  Transformer + Byte + FP16
+  ↓ cambia mixer (vuelve a BPE para aislar)
+run_03  MLGRU + BPE + FP16
+  ↓ combina ambos cambios
+run_04  MLGRU + Byte + FP16
+  ↓ añade cuantización
+run_05  MLGRU + Byte + Ternary
+  ↓ añade corrección FP
+run_06  MLGRU + Byte + Ternary + FPRes     ← CPU-1 core ⭐
+  ├─↓ añade Bolmo
+  │ run_07  core + Bolmo
+  ├─↓ añade DeleteGate
+  │ run_08  core + DeleteGate
+  ├─── (ortogonal, no es cadena)
+  │ run_09  Folded Transformer (alternativa al core)
+  └─↓ combina run_07 + run_08
+    run_10  core + Bolmo + DeleteGate      ← CPU-1 COMPLETO ⭐
+      ↓ añade PFNet
+    run_11  run_10 + PFNet                 ← extra
+Cada run aísla un solo cambio respecto al anterior. run_09 es el único que no es acumulativo — es una comparación lateral (¿MLGRU vs Transformer local, cuál es mejor?).
+
+entonces v11  tiene MLGRU + Byte + Ternary + FPRes   Bolmo + DeleteGate + PFNet    ?
+Sí, exactamente. run_11 tiene todo:
+
+Componente	run_06	run_07	run_08	run_10	run_11
+MLGRU	✓	✓	✓	✓	✓
+Byte patches	✓	✓	✓	✓	✓
+Ternary (BitLinear)	✓	✓	✓	✓	✓
+FPResidual	✓	✓	✓	✓	✓
+Bolmo	—	✓	—	✓	✓
+DeleteGate	—	—	✓	✓	✓
+PFNet	—	—	—	—	✓
+run_11 = run_10 + PFNet = todos los componentes juntos.

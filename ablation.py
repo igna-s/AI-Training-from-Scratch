@@ -88,6 +88,11 @@ BASE_CONFIG = {
     # Training signal — CE only for all ablation runs
     'training_signal': 'ce_only',
 
+    # Loss hyperparameters (used by compute_loss in train.py)
+    'temperature': 4.0,
+    'alpha_kl':    0.9,
+    'alpha_ce':    0.1,
+
     # Dataset
     'dataset_repo':     'Cukinator/cpu1-ablation-dataset',
     'seq_len':          5000,

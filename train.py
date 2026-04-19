@@ -1530,7 +1530,14 @@ def train_run(run_name: str, dry_run: bool = False,
     if n_gpus > 0:
         torch.cuda.set_device(0)
 
+    # Full seeding — same as create_dataset.py (SEED=42)
+    import random as _random
+    import numpy as _np
+    _random.seed(config['seed'])
+    _np.random.seed(config['seed'])
     torch.manual_seed(config['seed'])
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config['seed'])
     device = torch.device('cpu') if dry_run else torch.device('cuda:0')
 
     # Optimizaciones globales GPU (T4)

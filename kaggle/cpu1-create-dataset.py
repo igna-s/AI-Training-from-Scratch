@@ -108,8 +108,7 @@ from create_dataset import build_full_dataset
 build_full_dataset(
     n_docs=850_000,     # 850k docs x ~600 tok/doc => ~100k seqs de 5000 tok
     stream_to_hub=True, # chunk-by-chunk a HF Hub; checkpointing automatico al Hub
-    chunk_size=3000,    # 3000 docs/chunk: less per-chunk overhead, GPU stays busy longer.
-                        # ~6-8 MB parquet per chunk in /tmp. Safe on 57GB disk.
+    chunk_size=500,     # 500 docs/chunk; ~1-2 GB RAM por chunk (seguro en 13 GB Kaggle)
     shard_offset=0,     # dataset limpio -> desde shard_0000
 )
 
