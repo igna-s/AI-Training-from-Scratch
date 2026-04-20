@@ -12,7 +12,7 @@ Architecture constraint: 1.58-bit weights, no activation×activation matmul at i
 Usage:
     from ablation import get_run_config, build_ablation_model, RUN_CONFIGS
 
-    config = get_run_config("run_10")
+    config = get_run_config("run_09")
     model = build_ablation_model(config)
 """
 
@@ -47,7 +47,7 @@ from model import (
 # =============================================================================
 
 # ============================================================
-# Base config shared by ALL 10 runs (50M params)
+# Base config shared by ALL runs (50M params)
 # ============================================================
 #
 # Architecture constraint:
@@ -115,31 +115,38 @@ BASE_CONFIG = {
 #
 #   run_01  Transformer + BPE + FP16            (absolute baseline)
 #     ↓ swap tokenizer
-#   run_02  Transformer + Byte + FP16           (+byte patches)
-#     ↓ swap mixer
-#   run_03  MLGRU + BPE + FP16                 (+MatMul-free mixer)
-#     ↓ combine both
-#   run_04  MLGRU + Byte + FP16                (+MLGRU AND byte)
+#   run_02  Transformer + Byte + FP16           (+byte patches, same mixer)
+#     ↓ swap mixer + keep byte
+#   run_03  MLGRU + Byte + FP16                (+MatMul-free mixer AND byte)
 #     ↓ quantize
-#   run_05  MLGRU + Byte + Ternary             (+1.58-bit weights)
+#   run_04  MLGRU + Byte + Ternary             (+1.58-bit weights)
 #     ↓ correct
-#   run_06  MLGRU + Byte + Ternary + FPRes      (+FPResidual) ← CPU-1 core
+#   run_05  MLGRU + Byte + Ternary + FPRes      (+FPResidual) ← CPU-1 core
 #     ↓ branch: add components
-#   run_07  CPU-1 core + Bolmo                  (+dynamic byte patches)
-#   run_08  CPU-1 core + DeleteGate             (+state elimination)
-#   run_09  Folded Transformer + Byte + Ternary (alternative: local attn)
-#   run_10  CPU-1 core + Bolmo + DeleteGate     ← CPU-1 COMPLETE ⭐
+#   run_06  CPU-1 core + Bolmo                  (+dynamic byte patches)
+#   run_07  CPU-1 core + DeleteGate             (+state elimination)
+#   run_08  Folded Transformer + Byte + Ternary (alternative: local attn)
+#   run_09  CPU-1 core + Bolmo + DeleteGate     ← CPU-1 COMPLETE ⭐
+#   run_10  CPU-1 COMPLETE + PFNet              ← +cache-resident MLP
+#   run_11  CPU-1 COMPLETE + per-channel decay  ← +learnable forgetting per dim
+#   run_12  CPU-1 COMPLETE + state reset        ← structural forgetting, 0 params
+#   run_17  CPU-1 COMPLETE + TIDE exit          ← +per-token early exit (post-train)
 #
 # Key questions:
 #   run_01 → run_02 : Does byte-level hurt a FP16 Transformer?
-#   run_01 → run_03 : Is MLGRU better than Transformer (BPE, FP16)?
-#   run_03 → run_04 : Do byte patches help MLGRU?
-#   run_04 → run_05 : Does ternary hurt MLGRU+byte?
-#   run_05 → run_06 : Does FPResidual recover ternary quality loss?
-#   run_06 → run_07 : Does Bolmo improve over fixed patches?
-#   run_06 → run_08 : Does DeleteGate preserve quality while pruning?
-#   run_06 vs run_09 : CPU-1 core vs best local-attention Transformer
-#   run_06 → run_10 : Full CPU-1 vs core — cost of all extras combined
+#   run_01 → run_03 : Transformer+BPE vs MLGRU+Byte — mixer AND tokenization combined
+#   run_02 → run_03 : Does MLGRU improve over Transformer at byte level?
+#   run_03 → run_04 : Does ternary hurt MLGRU+byte?
+#   run_04 → run_05 : Does FPResidual recover ternary quality loss?
+#   run_05 → run_06 : Does Bolmo improve over fixed patches?
+#   run_05 → run_07 : Does DeleteGate preserve quality while pruning?
+#   run_05 vs run_08 : CPU-1 core vs best local-attention Transformer
+#   run_05 → run_09 : Full CPU-1 vs core — cost of all extras combined
+#   run_09 → run_10 : Does PFNet improve quality without hurting inference speed?
+#   run_09 → run_11 : Does per-channel learnable decay improve over fixed gate?
+#   run_09 → run_12 : Does periodic state reset improve long-sequence generalization?
+#   run_11 vs run_12 : Learned dissipation vs structural forgetting — which wins?
+#   run_09 → run_17 : Does TIDE early exit reduce CPU-1 FLOPs without quality loss?
 
 RUN_CONFIGS = {
     # ------------------------------------------------------------------
@@ -169,22 +176,9 @@ RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # run_03: +MLGRU (swap mixer, back to BPE for clean isolation)
+    # run_03: MLGRU + byte (both components together)
     # ------------------------------------------------------------------
     'run_03': {
-        'name':         'mlgru_bpe_fp16',
-        'token_mixer':  'mlgru',
-        'tokenization': 'bpe',
-        'quantization': 'fp16',
-        'fp_residual':  False,
-        'description':  '+MLGRU — MatMul-free token mixer on BPE. Isolates mixer vs run_01.',
-        'cites':        ['MatMul-free LM (Zhu et al., 2024)'],
-    },
-
-    # ------------------------------------------------------------------
-    # run_04: MLGRU + byte (both components together)
-    # ------------------------------------------------------------------
-    'run_04': {
         'name':         'mlgru_byte_fp16',
         'token_mixer':  'mlgru',
         'tokenization': 'byte',
@@ -195,9 +189,9 @@ RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # run_05: +ternary weights
+    # run_04: +ternary weights
     # ------------------------------------------------------------------
-    'run_05': {
+    'run_04': {
         'name':         'mlgru_byte_ternary',
         'token_mixer':  'mlgru',
         'tokenization': 'byte',
@@ -208,9 +202,9 @@ RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # run_06: +FPResidual → CPU-1 core architecture
+    # run_05: +FPResidual → CPU-1 core architecture
     # ------------------------------------------------------------------
-    'run_06': {
+    'run_05': {
         'name':         'mlgru_byte_ternary_fpres',
         'token_mixer':  'mlgru',
         'tokenization': 'byte',
@@ -218,16 +212,16 @@ RUN_CONFIGS = {
         'fp_residual':  True,
         'description':  (
             '+FPResidual — low-rank FP16 correction alongside ternary weights. '
-            'run_05 → run_06 answers: does FPResidual recover ternary quality loss? '
+            'run_04 → run_05 answers: does FPResidual recover ternary quality loss? '
             'This is the CPU-1 core architecture.'
         ),
         'cites':        ['Slender-Mamba (Yu et al., 2025)', 'BitNet b1.58'],
     },
 
     # ------------------------------------------------------------------
-    # run_07: CPU-1 core + Bolmo (dynamic byte patches)
+    # run_06: CPU-1 core + Bolmo (dynamic byte patches)
     # ------------------------------------------------------------------
-    'run_07': {
+    'run_06': {
         'name':         'mlgru_byte_ternary_fpres_bolmo',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
@@ -236,15 +230,15 @@ RUN_CONFIGS = {
         'use_boundary_predictor': True,
         'description':  (
             '+Bolmo — dynamic byte patches aligned to word boundaries. '
-            'CPU-1 core + boundary predictor. run_06 → run_07: fixed vs dynamic patches.'
+            'CPU-1 core + boundary predictor. run_05 → run_06: fixed vs dynamic patches.'
         ),
         'cites':        ['BLT (Pagnoni et al., 2024)'],
     },
 
     # ------------------------------------------------------------------
-    # run_08: CPU-1 core + DeleteGate (state elimination)
+    # run_07: CPU-1 core + DeleteGate (state elimination)
     # ------------------------------------------------------------------
-    'run_08': {
+    'run_07': {
         'name':         'mlgru_byte_ternary_fpres_deletegate',
         'token_mixer':  'mlgru',
         'tokenization': 'byte',
@@ -253,18 +247,18 @@ RUN_CONFIGS = {
         'use_delete_gate': True,
         'description':  (
             '+DeleteGate — MrT5-style state elimination at midpoint (~40%). '
-            'CPU-1 core + delete gate. run_06 → run_08: quality vs speed tradeoff.'
+            'CPU-1 core + delete gate. run_05 → run_07: quality vs speed tradeoff.'
         ),
         'cites':        ['MrT5 (Pagliardini et al., 2024)'],
     },
 
     # ------------------------------------------------------------------
-    # run_09: alternative — Folded Transformer (local sliding-window)
+    # run_08: alternative — Folded Transformer (local sliding-window)
     # Not part of the build-up chain; compares a CPU-friendly attention
-    # baseline against the CPU-1 core (run_06) at the same parameter budget.
+    # baseline against the CPU-1 core (run_05) at the same parameter budget.
     # window_size=128 patches = 512 bytes of context per position.
     # ------------------------------------------------------------------
-    'run_09': {
+    'run_08': {
         'name':         'folded_transformer_byte_ternary',
         'token_mixer':  'transformer',
         'tokenization': 'byte',
@@ -274,7 +268,7 @@ RUN_CONFIGS = {
         'description':  (
             'Folded Transformer — ternary sliding-window attention over byte patches. '
             'O(N·128) vs O(N²). Alternative to MLGRU. '
-            'run_06 vs run_09: MLGRU core vs best local-attention Transformer.'
+            'run_05 vs run_08: MLGRU core vs best local-attention Transformer.'
         ),
         'cites':        [
             'Longformer (Beltagy et al., 2020)',
@@ -283,9 +277,9 @@ RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # run_10: CPU-1 COMPLETE — all components together
+    # run_09: CPU-1 COMPLETE — all components together
     # ------------------------------------------------------------------
-    'run_10': {
+    'run_09': {
         'name':         'cpu1_complete',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
@@ -308,7 +302,7 @@ RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # run_11: CPU-1 COMPLETE + PFNet (cache-resident nonlinear residual)
+    # run_10: CPU-1 COMPLETE + PFNet (cache-resident nonlinear residual)
     # ------------------------------------------------------------------
     # PFNet adds a small 2-layer ternary MLP (pfnet_hidden=32) as a residual
     # branch per block. At 50M (d_model=512, 12 layers):
@@ -319,7 +313,7 @@ RUN_CONFIGS = {
     # a direct nonlinear pathway that MLGRU structurally cannot express.
     # Question: does PFNet improve quality without hurting inference speed?
     # ------------------------------------------------------------------
-    'run_11': {
+    'run_10': {
         'name':         'cpu1_pfnet',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
@@ -340,6 +334,127 @@ RUN_CONFIGS = {
             'Slender-Mamba (Yu et al., 2025)',
         ],
     },
+
+    # ------------------------------------------------------------------
+    # run_11: CPU-1 COMPLETE + Per-Channel Learnable Decay (RWKV / HGRN2-style)
+    # ------------------------------------------------------------------
+    # MLGRU's forget gate f is a scalar shared across all hidden dims.
+    # This run adds d_model learnable log-decay scalars (one per channel):
+    #   decay[i] = exp(-softplus(log_decay[i]))   ∈ (0, 1)
+    #   h_t[i]   = decay[i] * f_t * h_{t-1}[i] + (1 - decay[i] * f_t) * c_t[i]
+    # Bottom-layer channels can learn fast decay (local context), top-layer
+    # channels slow decay (long-range dependencies) — emerging automatically.
+    # Parameter cost: n_layers × d_model scalars = 12 × 512 = 6144 floats (~12KB).
+    # Inference cost: one element-wise multiply per step — negligible.
+    # Question: does per-channel memory dissipation improve quality vs fixed f?
+    # Inspired by: RWKV time-decay W[i], HGRN2 layer-wise decay bounds.
+    # ------------------------------------------------------------------
+    'run_11': {
+        'name':         'cpu1_decay_learned',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'mlgru_per_channel_decay': True,   # adds n_layers × d_model log-decay params
+        'description':  (
+            'CPU-1 COMPLETE + per-channel learnable decay in MLGRU (RWKV/HGRN2-style). '
+            'Each hidden dim has its own decay rate — d_model × n_layers scalars total (~12KB). '
+            'run_09 → run_11: does data-driven per-channel forgetting improve quality?'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'BLT (Pagnoni et al., 2024)',
+            'MrT5 (Pagliardini et al., 2024)',
+            'RWKV (Peng et al., 2023)',
+            'HGRN2 (Qin et al., 2024)',
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # run_12: CPU-1 COMPLETE + Periodic State Reset (Stuffed Mamba / zero-param)
+    # ------------------------------------------------------------------
+    # "Stuffed Mamba" (arXiv 2410.07145) shows that oversized recurrent states
+    # accumulate unbounded context, causing the model to "forget" to forget —
+    # degrading performance on long sequences. The fix: periodic state reset.
+    # Implementation: every `state_reset_period` tokens, multiply h_t by a
+    # cosine-decayed scalar → 0 (full reset). Zero new parameters.
+    # At reset_period=512 (= 2 × patch_size × context_len): the model sees a
+    # clean slate at document boundaries, preventing state bleed across docs.
+    # Question: does structural forgetting at fixed intervals help vs run_09?
+    #   If yes → long-sequence quality matters even at 50M
+    #   If no  → state accumulation is benign at this scale
+    # ------------------------------------------------------------------
+    'run_12': {
+        'name':         'cpu1_decay_reset',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'state_reset_period': 512,   # reset h_t to 0 every N tokens (zero params)
+        'description':  (
+            'CPU-1 COMPLETE + periodic MLGRU state reset every 512 tokens (Stuffed Mamba-style). '
+            'Zero extra parameters — pure structural forgetting heuristic. '
+            'run_09 → run_12: does forced forgetting at doc boundaries improve generalization?'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'BLT (Pagnoni et al., 2024)',
+            'MrT5 (Pagliardini et al., 2024)',
+            'Stuffed Mamba (anonymous, 2024)',
+        ],
+    },
+
+    # ------------------------------------------------------------------
+    # run_17: CPU-1 COMPLETE + TIDE per-token early exit (post-training)
+    # ------------------------------------------------------------------
+    # TIDE (Token-Informed Depth Execution, arXiv 2603.21365) observes that most
+    # tokens "converge" well before the final layer — their representation stops
+    # changing significantly. A tiny 2-layer MLP classifier per block (d_model →
+    # 64 → 1) is calibrated post-training on 2K wikitext samples (< 3 min on GPU)
+    # to predict "has this token converged?" NO retraining of the base model.
+    # At inference: converged tokens skip remaining layers → lower FLOPs, same
+    # model weights, same quality (99% decode quality on DeepSeek R1 Distill 8B).
+    #
+    # For CPU-1 @ 50M (d_model=512, 12 layers):
+    #   Exit classifiers: 12 × (512 × 64 + 64 + 64 + 1) ≈ 394K params (~800KB)
+    #   Calibration only — these params are NOT trained via backprop with the model
+    #   Expected: most "the", "of", "." tokens exit at layer 4-6 → 40-50% FLOPs saved
+    #
+    # Question: does TIDE early exit reduce CPU-1 inference FLOPs while preserving
+    # byte-level perplexity? Especially relevant for CPU deployment where every
+    # layer saves ~3ms at 50M scale.
+    # ------------------------------------------------------------------
+    'run_17': {
+        'name':         'cpu1_tide_exit',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_boundary_predictor': True,
+        'use_delete_gate':        True,
+        'use_tide_exit':          True,   # per-layer exit classifiers, post-training calibration
+        'tide_bottleneck':        64,     # hidden dim of exit MLP (d_model → 64 → 1)
+        'tide_threshold':         0.9,    # cosine-sim threshold for "converged" decision
+        'description':  (
+            'CPU-1 COMPLETE + TIDE per-token early exit (TIDE, arXiv 2603.21365). '
+            'Tiny post-training MLP classifiers (~800KB) per layer predict token convergence. '
+            'No base model retraining — calibrated on 2K samples. '
+            'run_09 → run_17: does adaptive depth reduce CPU-1 FLOPs without quality loss?'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'BLT (Pagnoni et al., 2024)',
+            'MrT5 (Pagliardini et al., 2024)',
+            'TIDE (Jaber et al., 2026)',
+        ],
+    },
 }
 
 
@@ -358,12 +473,13 @@ RUN_CONFIGS = {
 # FPResidual + Bolmo + DeleteGate). Only the TRAINING STRATEGY varies.
 #
 # Key question: which data strategy produces the best byte-level model?
-#   small_01  CPU-1 COMPLETE + compact BPE (4K vocab) from scratch
-#   small_02  CPU-1 COMPLETE + byte from scratch
-#   small_03  CPU-1 COMPLETE + complement (BPE warm-start → byte finetune)
+#   run_13  CPU-1 COMPLETE + compact BPE (4K vocab) from scratch
+#   run_14  CPU-1 COMPLETE + byte from scratch
+#   run_15  CPU-1 COMPLETE + complement (BPE warm-start → byte finetune)
+#   run_16  CPU-1 COMPLETE + raw bytes, no teacher
 #
 # BPE vocab constraint: full 152K Qwen vocab → 152K × 320 = 48.7M params, larger
-#   than the entire 10M model. small_01 uses top-4096 tokens by frequency from
+#   than the entire 10M model. run_13 uses top-4096 tokens by frequency from
 #   cpu1-ablation-dataset (bpe_tokenized/ split). Embedding: 4096 × 320 ≈ 1.3M params.
 #
 # Architecture: d_model=320, n_layers=8, d_ff=853 → ~10M params
@@ -372,8 +488,8 @@ RUN_CONFIGS = {
 #   8 blocks: 9.0M | embedding+heads: 0.35M | total ≈ 10M
 #
 # Training: 2500 steps each (~1h on T4, 200M effective tokens).
-#   small_03 starts from small_01 checkpoint and continues for 2500 byte steps —
-#   same byte-step budget as small_02, but with BPE warm-start on top.
+#   run_15 starts from run_13 checkpoint and continues for 2500 byte steps —
+#   same byte-step budget as run_14, but with BPE warm-start on top.
 #
 # "Complement" mode: run 10M first to find best design choices in <1h each,
 #   then only scale up the winners to 50M — saves ~3h per eliminated run.
@@ -396,13 +512,13 @@ SMALL_BASE_CONFIG = {
 
 SMALL_RUN_CONFIGS = {
     # ------------------------------------------------------------------
-    # small_01: CPU-1 COMPLETE + compact BPE (4K vocab) from scratch
+    # run_13: CPU-1 COMPLETE + compact BPE (4K vocab) from scratch
     # ------------------------------------------------------------------
     # BPE at 10M: uses top-4096 tokens by frequency from cpu1-ablation-dataset
     # (bpe_tokenized/ split). Full 152K Qwen vocab is impossible at this scale.
     # BoundaryPredictor disabled — BPE tokens carry their own subword boundaries.
     # ------------------------------------------------------------------
-    'small_01': {
+    'run_13': {
         'name':                   'small_cpu1_bpe',
         'token_mixer':            'mlgru',
         'tokenization':           'bpe',
@@ -417,9 +533,9 @@ SMALL_RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # small_02: CPU-1 COMPLETE + byte-level from scratch
+    # run_14: CPU-1 COMPLETE + byte-level from scratch
     # ------------------------------------------------------------------
-    'small_02': {
+    'run_14': {
         'name':                   'small_cpu1_byte',
         'token_mixer':            'mlgru',
         'tokenization':           'byte_dynamic',
@@ -434,14 +550,14 @@ SMALL_RUN_CONFIGS = {
     },
 
     # ------------------------------------------------------------------
-    # small_03: CPU-1 COMPLETE + complement (BPE warm-start → byte finetune)
+    # run_15: CPU-1 COMPLETE + complement (BPE warm-start → byte finetune)
     # ------------------------------------------------------------------
-    # Starts from small_01 checkpoint. The BPE embedding layer is discarded and
+    # Starts from run_13 checkpoint. The BPE embedding layer is discarded and
     # replaced with a fresh BytePatchEmbeddingV2; all other weights carry over.
     # Then continues training on byte data for 2500 steps (same byte budget as
-    # small_02). Inspired by Bolmo's two-stage subword→byte byteification.
+    # run_14). Inspired by Bolmo's two-stage subword→byte byteification.
     # ------------------------------------------------------------------
-    'small_03': {
+    'run_15': {
         'name':                   'small_cpu1_complement',
         'token_mixer':            'mlgru',
         'tokenization':           'byte_dynamic',
@@ -449,23 +565,23 @@ SMALL_RUN_CONFIGS = {
         'fp_residual':            True,
         'use_boundary_predictor': True,
         'use_delete_gate':        True,
-        'complement_from':        'small_01',   # load weights, swap embedding
-        'description':            'CPU-1 COMPLETE @ 10M, complement: BPE warm-start (small_01) '
+        'complement_from':        'run_13',   # load weights, swap embedding
+        'description':            'CPU-1 COMPLETE @ 10M, complement: BPE warm-start (run_13) '
                                   '→ byte finetune. Does BPE pretraining bootstrap byte quality?',
         'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
     },
 
     # ------------------------------------------------------------------
-    # small_04: CPU-1 COMPLETE + raw bytes, NO teacher (pure CE, no Qwen)
+    # run_16: CPU-1 COMPLETE + raw bytes, NO teacher (pure CE, no Qwen)
     # ------------------------------------------------------------------
     # Streams raw UTF-8 bytes directly from HuggingFaceFW/fineweb — no teacher
     # forward pass, no logprobs, no teacher_mask. Pure CE loss on byte patches.
-    # Answers: do Qwen teacher logprobs (in small_02) actually help, or does
+    # Answers: do Qwen teacher logprobs (in run_14) actually help, or does
     # training on raw bytes alone reach the same quality?
     # Uses a separate dataset path (raw fineweb bytes) so it's truly independent
     # of the cpu1-ablation-dataset pipeline.
     # ------------------------------------------------------------------
-    'small_04': {
+    'run_16': {
         'name':                   'small_cpu1_raw_bytes',
         'token_mixer':            'mlgru',
         'tokenization':           'byte_dynamic',
@@ -476,7 +592,7 @@ SMALL_RUN_CONFIGS = {
         'raw_bytes_only':         True,    # skip teacher columns, stream raw fineweb bytes
         'dataset_repo':           'HuggingFaceFW/fineweb',
         'description':            'CPU-1 COMPLETE @ 10M, raw bytes from scratch, zero teacher. '
-                                  'Do Qwen logprobs in small_02 actually help vs pure CE on raw bytes?',
+                                  'Do Qwen logprobs in run_14 actually help vs pure CE on raw bytes?',
         'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
     },
 }
@@ -492,8 +608,8 @@ def get_run_config(run_name: str) -> dict:
             f"Unknown run: {run_name}. Available: {list(ALL_RUN_CONFIGS.keys())}"
         )
     run = ALL_RUN_CONFIGS[run_name]
-    # 10M runs use SMALL_BASE_CONFIG, 50M runs use BASE_CONFIG
-    base = SMALL_BASE_CONFIG if run_name.startswith('small_') else BASE_CONFIG
+    # 10M runs (run_13+) use SMALL_BASE_CONFIG, 50M runs (run_01-run_12) use BASE_CONFIG
+    base = SMALL_BASE_CONFIG if run_name in SMALL_RUN_CONFIGS else BASE_CONFIG
     merged = {**base}
     merged['use_ternary'] = run['quantization'] == 'ternary'
     fp_residual = run.get('fp_residual', False)
@@ -932,6 +1048,17 @@ class AblationModel(nn.Module):
                 h_pre_norm, teacher_hidden, teacher_mask,
             )
 
+        # BoundaryPredictor — predict word boundaries from raw bytes (training only)
+        if self.use_boundary and self.training and self.tokenization == 'byte_dynamic':
+            # x: [B, S, 4] → [B, S*4] raw bytes
+            raw_bytes = x.reshape(x.shape[0], -1).long()
+            boundary_probs = self.boundary_predictor.forward_train(raw_bytes)  # [B, S*4]
+            # Natural boundary targets: space (32), newline (10), UTF-8 multibyte start (≥192)
+            targets = ((raw_bytes == 32) | (raw_bytes == 10) | (raw_bytes >= 192)).float()
+            extra_losses['boundary'] = F.binary_cross_entropy(
+                boundary_probs, targets
+            )
+
         return logits, new_states, extra_losses
 
     def count_parameters(self) -> dict:
@@ -991,7 +1118,7 @@ def load_all_metrics(metrics_dir: str = ".") -> dict[str, dict]:
 
 def generate_text_table(results: dict[str, dict]) -> str:
     """Generate a text table for terminal display."""
-    proposed = results.get('run_10', {})
+    proposed = results.get('run_09', {})
     proposed_tps = proposed.get('tokens_per_sec_cpu', 1)
 
     header = (
@@ -1103,32 +1230,29 @@ def generate_comparison_summary(results: dict[str, dict]) -> str:
     lines.append("1. Byte patches — tokenization effect on FP16 Transformer:")
     lines.append(_compare("  run_01 (BPE) vs run_02 (Byte)", 'run_01', 'run_02'))
 
-    lines.append("2. MLGRU vs Transformer — mixer effect (BPE, FP16):")
-    lines.append(_compare("  run_01 (Transformer) vs run_03 (MLGRU)", 'run_01', 'run_03'))
+    lines.append("2. MLGRU+Byte vs Transformer+Byte — mixer effect at byte level:")
+    lines.append(_compare("  run_02 (Transformer+Byte) vs run_03 (MLGRU+Byte)", 'run_02', 'run_03'))
 
-    lines.append("3. Byte patches on MLGRU:")
-    lines.append(_compare("  run_03 (BPE) vs run_04 (Byte)", 'run_03', 'run_04'))
+    lines.append("3. Ternary quantization cost on MLGRU+Byte:")
+    lines.append(_compare("  run_03 (FP16) vs run_04 (Ternary)", 'run_03', 'run_04'))
 
-    lines.append("4. Ternary quantization cost on MLGRU+Byte:")
-    lines.append(_compare("  run_04 (FP16) vs run_05 (Ternary)", 'run_04', 'run_05'))
+    lines.append("4. FPResidual correction on MLGRU+Byte+Ternary (→ CPU-1 core):")
+    lines.append(_compare("  run_04 (no FPRes) vs run_05 (FPRes)", 'run_04', 'run_05'))
 
-    lines.append("5. FPResidual correction on MLGRU+Byte+Ternary (→ CPU-1 core):")
-    lines.append(_compare("  run_05 (no FPRes) vs run_06 (FPRes)", 'run_05', 'run_06'))
+    lines.append("5. Bolmo — dynamic patches on CPU-1 core:")
+    lines.append(_compare("  run_05 (fixed) vs run_06 (Bolmo)", 'run_05', 'run_06'))
 
-    lines.append("6. Bolmo — dynamic patches on CPU-1 core:")
-    lines.append(_compare("  run_06 (fixed) vs run_07 (Bolmo)", 'run_06', 'run_07'))
+    lines.append("6. DeleteGate — state elimination on CPU-1 core:")
+    lines.append(_compare("  run_05 (no gate) vs run_07 (DeleteGate)", 'run_05', 'run_07'))
 
-    lines.append("7. DeleteGate — state elimination on CPU-1 core:")
-    lines.append(_compare("  run_06 (no gate) vs run_08 (DeleteGate)", 'run_06', 'run_08'))
+    lines.append("7. CPU-1 core vs Folded Transformer (MLGRU vs local-attn):")
+    lines.append(_compare("  run_05 (MLGRU) vs run_08 (Folded Transformer)", 'run_05', 'run_08'))
 
-    lines.append("8. CPU-1 core vs Folded Transformer (MLGRU vs local-attn):")
-    lines.append(_compare("  run_06 (MLGRU) vs run_09 (Folded Transformer)", 'run_06', 'run_09'))
+    lines.append("8. CPU-1 COMPLETE vs CPU-1 core:")
+    lines.append(_compare("  run_05 (core) vs run_09 (complete)", 'run_05', 'run_09'))
 
-    lines.append("9. CPU-1 COMPLETE vs CPU-1 core:")
-    lines.append(_compare("  run_06 (core) vs run_10 (complete)", 'run_06', 'run_10'))
-
-    lines.append("10. Full CPU-1 COMPLETE vs absolute baseline:")
-    lines.append(_compare("  run_01 (FP16 Transformer) vs run_10 (CPU-1 Complete)", 'run_01', 'run_10'))
+    lines.append("9. Full CPU-1 COMPLETE vs absolute baseline:")
+    lines.append(_compare("  run_01 (FP16 Transformer) vs run_09 (CPU-1 Complete)", 'run_01', 'run_09'))
 
     return "\n".join(lines)
 

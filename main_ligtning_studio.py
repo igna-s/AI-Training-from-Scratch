@@ -26,19 +26,21 @@ RUNS_TO_TRAIN = [
     "run_04",
     "run_05",
     "run_06",
-    "run_07",
-    "run_08",   # dos fases (DeleteGate)
-    "run_09",
-    "run_10",   # dos fases (DeleteGate)
-    "run_11",
-    # "small_01",
-    # "small_02",
-    # "small_03",
-    # "small_04",
+    "run_07",   # dos fases (DeleteGate)
+    "run_08",
+    "run_09",   # dos fases (DeleteGate)
+    "run_10",
+    "run_11",   # per-channel learnable decay (RWKV/HGRN2)
+    "run_12",   # periodic state reset (Stuffed Mamba, zero params)
+    "run_17",   # TIDE per-token early exit (post-training calibration)
+    # "run_13",
+    # "run_14",
+    # "run_15",
+    # "run_16",
 ]
 
 # Runs con DeleteGate que necesitan dos fases
-TWO_PHASE_RUNS = {"run_08", "run_10"}
+TWO_PHASE_RUNS = {"run_07", "run_09"}
 
 # ============================================================
 # PASO 0: Instalar dependencias

@@ -6,7 +6,7 @@ Two modes:
      python train.py --dry-run --total-steps 10
 
   2. Ablation training: unified loop for all 15 ablation runs.
-     python train.py --mode ablation --run run_10 --dry_run
+     python train.py --mode ablation --run run_09 --dry_run
 """
 
 import os
@@ -986,7 +986,7 @@ def test_lr_schedule():
 # Ablation: Dataset loaders
 # =============================================================================
 
-from ablation import BASE_CONFIG, RUN_CONFIGS, get_run_config, build_ablation_model
+from ablation import BASE_CONFIG, RUN_CONFIGS, ALL_RUN_CONFIGS, get_run_config, build_ablation_model
 
 # ============================================================
 # Dataset loaders
@@ -1709,6 +1709,9 @@ def train_run(run_name: str, dry_run: bool = False,
                 if 'emb_align' in extra_losses and extra_losses['emb_align'] is not None:
                     ea = extra_losses['emb_align']
                     loss = loss + config.get('lambda_align', 0.3) * (ea.mean() if ea.dim() > 0 else ea)
+                if 'boundary' in extra_losses:
+                    bp = extra_losses['boundary']
+                    loss = loss + 0.1 * (bp.mean() if bp.dim() > 0 else bp)
                 loss = loss / accum_steps
 
             if use_amp:
@@ -1807,14 +1810,14 @@ if __name__ == "__main__":
 
     # If first arg is --mode ablation or --run, use ablation entry point
     if len(sys.argv) > 1 and ('--mode' in sys.argv or '--run' in sys.argv):
-        from ablation import RUN_CONFIGS
+        from ablation import ALL_RUN_CONFIGS
         parser = argparse.ArgumentParser(
             description="Train one ablation run for CPU-1"
         )
         parser.add_argument('--mode', type=str, default='ablation',
                             choices=['train', 'ablation'])
         parser.add_argument('--run', required=True,
-                            choices=list(RUN_CONFIGS.keys()),
+                            choices=list(ALL_RUN_CONFIGS.keys()),
                             help="Which run to train")
         parser.add_argument('--dry_run', action='store_true',
                             help="Use random data on CPU (for testing)")
