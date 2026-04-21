@@ -1296,4 +1296,252 @@ EXPORT void decode_layer_fused_2bit(
 }
 
 
+
+// ===========================================================================
+// BitNet MAD — column-interleaved 2-bit layout
+//
+// Layout W_mad: [ceil(d_out/4), ceil(d_in/32), 32] bytes
+//   byte[k]: bit[7:6]=row0, bit[5:4]=row1, bit[3:2]=row2, bit[1:0]=row3
+//   Encoding: 01=+1, 10=-1, 00=0
+//
+// 1 activation load covers 4 output rows simultaneously → 4× IPC vs row-major.
+// OMP: single #pragma omp parallel per layer (3 GEMV groups inside), no fork/join.
+// ===========================================================================
+
+EXPORT void pack_ternary_to_2bit_mad(
+    const int8_t* w_int8,
+    uint8_t*      w_mad,
+    int d_out, int d_in
+) {
+    auto enc = [](int8_t v) -> uint8_t {
+        return (v > 0) ? 1u : (v < 0) ? 2u : 0u;
+    };
+    int nrg = (d_out + 3) / 4;
+    int ncb = (d_in  + 31) / 32;
+    for (int rg = 0; rg < nrg; rg++) {
+        int r0=rg*4, r1=rg*4+1, r2=rg*4+2, r3=rg*4+3;
+        for (int cb = 0; cb < ncb; cb++) {
+            for (int k = 0; k < 32; k++) {
+                int col = cb*32 + k;
+                uint8_t b = 0;
+                if (col < d_in) {
+                    uint8_t q0 = (r0<d_out) ? enc(w_int8[r0*d_in+col]) : 0;
+                    uint8_t q1 = (r1<d_out) ? enc(w_int8[r1*d_in+col]) : 0;
+                    uint8_t q2 = (r2<d_out) ? enc(w_int8[r2*d_in+col]) : 0;
+                    uint8_t q3 = (r3<d_out) ? enc(w_int8[r3*d_in+col]) : 0;
+                    b = (q0<<6)|(q1<<4)|(q2<<2)|q3;
+                }
+                w_mad[rg*(ncb*32) + cb*32 + k] = b;
+            }
+        }
+    }
+}
+
+// vpshufb LUT decode: 7 instructions vs 16 of shift/mask/sub approach.
+//   hi4 = (byte>>4)&0xF → bits[7:4] → row0 code=hi4[3:2], row1 code=hi4[1:0]
+//   lo4 = byte&0xF      → bits[3:0] → row2 code=lo4[3:2], row3 code=lo4[1:0]
+#ifdef __GNUC__
+__attribute__((target("avx2")))
+#endif
+static void gemv_2bit_mad_chunk(
+    const int8_t*  x_i8,
+    const uint8_t* W_mad,
+    int32_t*       acc,      // local [(rg_end-rg_start)*4], zeroed by caller
+    int d_in, int d_out,
+    int rg_start, int rg_end
+) {
+    const __m128i lut_hi_h = _mm_set_epi8(0,0,0,0,-1,-1,-1,-1,1,1,1,1,0,0,0,0);
+    const __m128i lut_lo_h = _mm_set_epi8(0,-1,1,0,0,-1,1,0,0,-1,1,0,0,-1,1,0);
+    const __m256i lut_hi   = _mm256_broadcastsi128_si256(lut_hi_h);
+    const __m256i lut_lo   = _mm256_broadcastsi128_si256(lut_lo_h);
+    const __m256i m0f      = _mm256_set1_epi8(0x0F);
+    const __m256i one16    = _mm256_set1_epi16(1);
+    const int ncb          = (d_in + 31) / 32;
+    const int stride_rg    = ncb * 32;
+
+    for (int rg = rg_start; rg < rg_end; rg++) {
+        const uint8_t* Wg = W_mad + (ptrdiff_t)rg * stride_rg;
+        int local = (rg - rg_start) * 4;
+        __m256i vacc0=_mm256_setzero_si256(), vacc1=_mm256_setzero_si256();
+        __m256i vacc2=_mm256_setzero_si256(), vacc3=_mm256_setzero_si256();
+
+        int col = 0;
+        for (; col <= d_in-32; col += 32) {
+            __m256i yq8 = _mm256_loadu_si256((const __m256i*)(x_i8+col));
+            __m256i xb  = _mm256_loadu_si256((const __m256i*)(Wg+col));
+            __m256i hi4 = _mm256_and_si256(_mm256_srli_epi16(xb,4), m0f);
+            __m256i lo4 = _mm256_and_si256(xb, m0f);
+            __m256i ws0 = _mm256_shuffle_epi8(lut_hi, hi4);
+            __m256i ws1 = _mm256_shuffle_epi8(lut_lo, hi4);
+            __m256i ws2 = _mm256_shuffle_epi8(lut_hi, lo4);
+            __m256i ws3 = _mm256_shuffle_epi8(lut_lo, lo4);
+            __m256i p0=_mm256_sign_epi8(yq8,ws0), p1=_mm256_sign_epi8(yq8,ws1);
+            __m256i p2=_mm256_sign_epi8(yq8,ws2), p3=_mm256_sign_epi8(yq8,ws3);
+            #define MAD_MADD(vacc, p) do { \
+                vacc=_mm256_add_epi32(vacc,_mm256_madd_epi16( \
+                    _mm256_cvtepi8_epi16(_mm256_castsi256_si128(p)),one16)); \
+                vacc=_mm256_add_epi32(vacc,_mm256_madd_epi16( \
+                    _mm256_cvtepi8_epi16(_mm256_extracti128_si256(p,1)),one16)); \
+            } while(0)
+            MAD_MADD(vacc0,p0); MAD_MADD(vacc1,p1);
+            MAD_MADD(vacc2,p2); MAD_MADD(vacc3,p3);
+            #undef MAD_MADD
+        }
+
+        #define MAD_HRED(v) ({ \
+            __m128i _lo=_mm256_castsi256_si128(v), _hi=_mm256_extracti128_si256(v,1); \
+            __m128i _s=_mm_add_epi32(_lo,_hi); \
+            _s=_mm_hadd_epi32(_s,_s); _s=_mm_hadd_epi32(_s,_s); \
+            _mm_cvtsi128_si32(_s); \
+        })
+        if (rg*4+0<d_out) acc[local+0]+=MAD_HRED(vacc0);
+        if (rg*4+1<d_out) acc[local+1]+=MAD_HRED(vacc1);
+        if (rg*4+2<d_out) acc[local+2]+=MAD_HRED(vacc2);
+        if (rg*4+3<d_out) acc[local+3]+=MAD_HRED(vacc3);
+        #undef MAD_HRED
+
+        // scalar tail for d_in % 32 != 0
+        auto dec=[](uint8_t b)->int{ return (b==1)?1:(b==2)?-1:0; };
+        for (; col < d_in; col++) {
+            int8_t xi=x_i8[col]; uint8_t b=Wg[col];
+            if (rg*4+0<d_out) acc[local+0]+=(int32_t)xi*dec((b>>6)&3);
+            if (rg*4+1<d_out) acc[local+1]+=(int32_t)xi*dec((b>>4)&3);
+            if (rg*4+2<d_out) acc[local+2]+=(int32_t)xi*dec((b>>2)&3);
+            if (rg*4+3<d_out) acc[local+3]+=(int32_t)xi*dec((b>>0)&3);
+        }
+    }
+}
+
+EXPORT void gemv_2bit_mad_omp(
+    const int8_t*  x_i8,
+    const uint8_t* W_mad,
+    float*         output,
+    int d_in, int d_out, float cs
+) {
+    const int nrg = (d_out + 3) / 4;
+    #pragma omp parallel
+    {
+        static thread_local int32_t _acc_tl[MAX_D_FF];
+        int nt=omp_get_num_threads(), tid=omp_get_thread_num();
+        int rg_per=(nrg+nt-1)/nt, rg_s=tid*rg_per;
+        int rg_e=(rg_s+rg_per<nrg)?rg_s+rg_per:nrg;
+        if (rg_s < rg_e) {
+            memset(_acc_tl, 0, (rg_e-rg_s)*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(x_i8, W_mad, _acc_tl, d_in, d_out, rg_s, rg_e);
+            int j_s=rg_s*4, j_e=(rg_e*4<d_out)?rg_e*4:d_out;
+            for (int j=j_s; j<j_e; j++) output[j]=(float)_acc_tl[j-j_s]*cs;
+        }
+    }
+}
+
+// Single omp parallel region per layer — no fork/join between GEMVs.
+// Pattern: single(norm+quantize) → parallel(GEMVs) → barrier → repeat.
+EXPORT void decode_layer_fused_2bit_mad(
+    const float*   x_in,    float*         x_out,  float* h,
+    const float*   norm1_w, const float*   norm2_w, float norm_eps,
+    const uint8_t* W_forget, float s_forget,
+    const uint8_t* W_cand,   float s_cand,
+    const uint8_t* W_out,    float s_out,
+    const uint8_t* W_gate,   float s_gate,
+    const uint8_t* W_up,     float s_up,
+    const uint8_t* W_down,   float s_down,
+    int d_model, int d_ff
+) {
+    static thread_local float  _xn1[MAX_D_MODEL], _xn2[MAX_D_MODEL];
+    static thread_local int8_t _xi1[MAX_D_MODEL], _xi2[MAX_D_MODEL];
+    static thread_local float  _fraw[MAX_D_MODEL], _craw[MAX_D_MODEL], _graw[MAX_D_MODEL];
+    static thread_local float  _xmid[MAX_D_MODEL];
+    static thread_local float  _gater[MAX_D_FF], _upr[MAX_D_FF], _hid_mad[MAX_D_FF];
+    static thread_local int8_t _hi8_mad[MAX_D_FF];
+    static thread_local float  _ffno_mad[MAX_D_MODEL];
+    static thread_local float  _cs_mad[6];
+
+    const int nrg_m  = (d_model+3)/4;
+    const int nrg_ff = (d_ff   +3)/4;
+
+    #pragma omp parallel
+    {
+        static thread_local int32_t _acc_tl[MAX_D_FF];
+        int nt=omp_get_num_threads(), tid=omp_get_thread_num();
+        int rg_per_m=(nrg_m+nt-1)/nt,  rg_ms=tid*rg_per_m;
+        int rg_me=(rg_ms+rg_per_m<nrg_m)?rg_ms+rg_per_m:nrg_m;
+        int rg_per_f=(nrg_ff+nt-1)/nt, rg_fs=tid*rg_per_f;
+        int rg_fe=(rg_fs+rg_per_f<nrg_ff)?rg_fs+rg_per_f:nrg_ff;
+        int jm_s=rg_ms*4, jm_e=(rg_me*4<d_model)?rg_me*4:d_model;
+        int jf_s=rg_fs*4, jf_e=(rg_fe*4<d_ff)?rg_fe*4:d_ff;
+
+        #pragma omp single
+        {
+            rms_norm_inline(x_in, norm1_w, _xn1, d_model, norm_eps);
+            float xs1 = quantize_x_avx2(_xn1, _xi1, d_model);
+            _cs_mad[0]=xs1*s_forget; _cs_mad[1]=xs1*s_cand; _cs_mad[2]=xs1*s_out;
+        }
+
+        if (rg_ms < rg_me) {
+            int lrg = rg_me-rg_ms;
+            memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(_xi1,W_forget,_acc_tl,d_model,d_model,rg_ms,rg_me);
+            for(int j=jm_s;j<jm_e;j++) _fraw[j]=(float)_acc_tl[j-jm_s]*_cs_mad[0];
+            memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(_xi1,W_cand,_acc_tl,d_model,d_model,rg_ms,rg_me);
+            for(int j=jm_s;j<jm_e;j++) _craw[j]=(float)_acc_tl[j-jm_s]*_cs_mad[1];
+            memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(_xi1,W_out,_acc_tl,d_model,d_model,rg_ms,rg_me);
+            for(int j=jm_s;j<jm_e;j++) _graw[j]=(float)_acc_tl[j-jm_s]*_cs_mad[2];
+        }
+
+        #pragma omp barrier
+
+        #pragma omp single
+        {
+            for(int i=0;i<d_model;i++){
+                float f=1.f/(1.f+expf(-_fraw[i]));
+                float c=_craw[i]/(1.f+expf(-_craw[i]));
+                float g=1.f/(1.f+expf(-_graw[i]));
+                float hn=c+f*(h[i]-c);
+                h[i]=hn; _xmid[i]=x_in[i]+g*hn;
+            }
+            rms_norm_inline(_xmid, norm2_w, _xn2, d_model, norm_eps);
+            float xs2=quantize_x_avx2(_xn2, _xi2, d_model);
+            _cs_mad[3]=xs2*s_gate; _cs_mad[4]=xs2*s_up;
+        }
+
+        if (rg_fs < rg_fe) {
+            int lrg = rg_fe-rg_fs;
+            memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(_xi2,W_gate,_acc_tl,d_model,d_ff,rg_fs,rg_fe);
+            for(int j=jf_s;j<jf_e;j++) _gater[j]=(float)_acc_tl[j-jf_s]*_cs_mad[3];
+            memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(_xi2,W_up,_acc_tl,d_model,d_ff,rg_fs,rg_fe);
+            for(int j=jf_s;j<jf_e;j++) _upr[j]=(float)_acc_tl[j-jf_s]*_cs_mad[4];
+        }
+
+        #pragma omp barrier
+
+        #pragma omp single
+        {
+            int i=0;
+            for(;i<=d_ff-8;i+=8)
+                _mm256_storeu_ps(_hid_mad+i, _mm256_mul_ps(
+                    _avx2_silu_ps(_mm256_loadu_ps(_gater+i)),
+                    _mm256_loadu_ps(_upr+i)));
+            for(;i<d_ff;i++) _hid_mad[i]=_gater[i]/(1.f+expf(-_gater[i]))*_upr[i];
+            float hs=quantize_x_avx2(_hid_mad, _hi8_mad, d_ff);
+            _cs_mad[5]=hs*s_down;
+        }
+
+        if (rg_ms < rg_me) {
+            int lrg = rg_me-rg_ms;
+            memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+            gemv_2bit_mad_chunk(_hi8_mad,W_down,_acc_tl,d_ff,d_model,rg_ms,rg_me);
+            for(int j=jm_s;j<jm_e;j++) _ffno_mad[j]=(float)_acc_tl[j-jm_s]*_cs_mad[5];
+        }
+
+        #pragma omp barrier
+
+        #pragma omp for schedule(static) nowait
+        for(int i=0;i<d_model;i++) x_out[i]=_xmid[i]+_ffno_mad[i];
+    }
+}
+
 } // extern "C"

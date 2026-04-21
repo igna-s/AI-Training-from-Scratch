@@ -49,6 +49,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 _TERNARY_C_KERNEL = None
+_MAD_KERNEL = None
 
 # Set True only for production benchmark with the final chosen model.
 # Ablations always use pure PyTorch for a fair apples-to-apples comparison.
@@ -259,17 +260,51 @@ def _load_c_kernel():
                 ctypes.c_int,      # d_ff
             ]
             lib.decode_layer_fused_2bit.restype = None
+        # MAD (BitNet column-interleaved) — merged into kernels.dll
+        if hasattr(lib, 'pack_ternary_to_2bit_mad'):
+            lib.pack_ternary_to_2bit_mad.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int,
+            ]
+            lib.pack_ternary_to_2bit_mad.restype = None
+
+        if hasattr(lib, 'gemv_2bit_mad_omp'):
+            lib.gemv_2bit_mad_omp.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_float,
+            ]
+            lib.gemv_2bit_mad_omp.restype = None
+
+        if hasattr(lib, 'decode_layer_fused_2bit_mad'):
+            lib.decode_layer_fused_2bit_mad.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_void_p, ctypes.c_float,
+                ctypes.c_int, ctypes.c_int,
+            ]
+            lib.decode_layer_fused_2bit_mad.restype = None
         # ───────────────────────────────────────────────────────────────────
 
         _TERNARY_C_KERNEL = lib
         thread_str = "OpenMP" if has_omp else "single-thread"
-        print(f"  [C Kernel] kernels.cpp OK ({avx_str} + {thread_str}). "
-              f"LUT-tiling L2-aware, AVX2 gather, mlgru fusion activos.")
+        print(f"  [C Kernel] kernels.dll OK ({avx_str} + {thread_str})")
     except Exception as e:
-        print(f"  [C Kernel] Modulo C++ omitido (fallback a PyTorch): {e}")
+        print(f"  [C Kernel] Error cargando kernels.dll (fallback a PyTorch): {e}")
         _TERNARY_C_KERNEL = False
 
     return _TERNARY_C_KERNEL
+
+
+def _load_mad_kernel():
+    """MAD kernels are merged into kernels.dll — delegates to _load_c_kernel."""
+    return _load_c_kernel()
+
+
 from model import (
     CPU1ModelV2,
     CPU1BlockV2,
@@ -813,6 +848,174 @@ def forward_with_fused_layers_2bit(
 
     return x_flat.view(1, d_model), states_buf
 
+
+# ===========================================================================
+# BitNet MAD — column-interleaved 2-bit kernel
+# ===========================================================================
+
+def pack_all_bitlinear_to_2bit_mad(model: nn.Module) -> dict:
+    """
+    Empaquetar pesos ternarios en BitNet MAD column-interleaved layout.
+
+    Reduce footprint de 163MB (int8) a ~41MB (2-bit). El layout cruzado
+    permite que 1 lectura de activacion contribuya a 4 filas simultanéamente,
+    eliminando el cuello de botella de instrucciones del layout row-major.
+
+    Requiere kernels.dll cargado.
+    Almacena en cada BitLinear:
+        weight_2bit_mad:  uint8 tensor de tamaño ((d_out+3)//4)*ncb*32
+        weight_scale:     float
+        weight_d_in:      int
+    """
+    lib = _load_mad_kernel()
+    if not lib:
+        print("[MAD] kernels.dll no disponible — fallback a int8")
+        return pack_all_bitlinear_to_int8(model)
+
+    scales = {}
+    n = 0
+    for name, module in model.named_modules():
+        in_main_proj = 'blocks.' in name and 'pfnet.' not in name
+        if isinstance(module, BitLinear) and hasattr(module, 'weight_T') and in_main_proj:
+            w = module.weight_T          # [d_in, d_out]
+            w_scale = w.float().abs().mean()
+            w_int8 = (w.float() / (w_scale + 1e-8)).round().clamp(-1, 1).to(torch.int8)
+
+            # Transponer a row-major [d_out, d_in] para el kernel MAD
+            w_int8_row = w_int8.T.contiguous()   # [d_out, d_in]
+            d_out, d_in = w_int8_row.shape
+            ncb = (d_in + 31) // 32
+            mad_size = ((d_out + 3) // 4) * ncb * 32
+
+            packed = torch.zeros(mad_size, dtype=torch.uint8)
+            lib.pack_ternary_to_2bit_mad(
+                ctypes.c_void_p(w_int8_row.data_ptr()),
+                ctypes.c_void_p(packed.data_ptr()),
+                ctypes.c_int(d_out),
+                ctypes.c_int(d_in),
+            )
+
+            module.weight_2bit_mad = packed.contiguous()
+            module.weight_scale    = w_scale.item()
+            module.weight_d_in     = d_in
+
+            del module.weight_T
+            module.weight = nn.Parameter(torch.empty(0), requires_grad=False)
+
+            scales[name] = w_scale.item()
+            n += 1
+
+    ram_mb = sum(
+        m.weight_2bit_mad.numel()
+        for _, m in model.named_modules()
+        if hasattr(m, 'weight_2bit_mad')
+    ) / 1e6
+    print(f"[MAD] {n} capas empaquetadas (MAD 2-bit) · footprint: {ram_mb:.1f} MB en RAM")
+    return scales
+
+
+def prepare_fused_layer_data_2bit_mad(model: nn.Module, eps: float = 1e-6) -> list[dict]:
+    """
+    Pre-extraer punteros de pesos MAD por bloque para decode_layer_fused_2bit_mad.
+    Llama DESPUES de pack_all_bitlinear_to_2bit_mad.
+    """
+    raw = model._orig_mod if hasattr(model, '_orig_mod') else model
+    layer_data = []
+
+    for i, block in enumerate(raw.blocks):
+        mixer = block.token_mixer
+        ffn   = block.ffn
+
+        norm1_w = getattr(block.norm1, '_rms_weight_f32', block.norm1.weight.float().contiguous())
+        norm2_w = getattr(block.norm2, '_rms_weight_f32', block.norm2.weight.float().contiguous())
+
+        def _wm(module):
+            if hasattr(module, 'weight_2bit_mad'):
+                return module.weight_2bit_mad.contiguous(), float(module.weight_scale)
+            raise RuntimeError(f"{module.__class__.__name__} no tiene weight_2bit_mad — "
+                               "llama pack_all_bitlinear_to_2bit_mad primero")
+
+        Wf, sf = _wm(mixer.forget_proj)
+        Wc, sc = _wm(mixer.cand_proj)
+        Wo, so = _wm(mixer.output_proj)
+        Wg, sg = _wm(ffn.gate_proj)
+        Wu, su = _wm(ffn.up_proj)
+        Wd, sd = _wm(ffn.down_proj)
+
+        fp_mix  = mixer.fp_residual
+        fp_down = ffn.down_fp_residual
+        pfnet   = block.pfnet if hasattr(block, 'pfnet') else None
+
+        layer_data.append({
+            'norm1_w': norm1_w, 'norm2_w': norm2_w, 'eps': eps,
+            'Wf': Wf, 'sf': sf, 'Wc': Wc, 'sc': sc, 'Wo': Wo, 'so': so,
+            'Wg': Wg, 'sg': sg, 'Wu': Wu, 'su': su, 'Wd': Wd, 'sd': sd,
+            'fp_mix': fp_mix, 'fp_down': fp_down, 'pfnet': pfnet,
+        })
+
+    ram_mb = sum(
+        ld['Wf'].numel() + ld['Wc'].numel() + ld['Wo'].numel() +
+        ld['Wg'].numel() + ld['Wu'].numel() + ld['Wd'].numel()
+        for ld in layer_data
+    ) / 1e6
+    print(f"[MAD] prepare_fused_layer_data_2bit_mad: {len(layer_data)} capas · "
+          f"pesos en RAM: {ram_mb:.1f} MB")
+    return layer_data
+
+
+@torch.inference_mode()
+def forward_with_fused_layers_2bit_mad(
+    x: Tensor,
+    hidden_states: list,
+    layer_data: list,
+    d_model: int,
+    d_ff: int,
+    states_buf: list,
+) -> tuple[Tensor, list]:
+    """
+    Forward pass completo con decode_layer_fused_2bit_mad (BitNet MAD layout).
+
+    Igual que forward_with_fused_layers_2bit pero usando el kernel MAD que
+    procesa 4 filas x 32 cols por iteracion SIMD — mayor IPC que row-major.
+    """
+    lib = _load_mad_kernel()
+    if not lib:
+        raise RuntimeError("kernels.dll no disponible — recompilar")
+
+    x_flat = x.view(-1).float().contiguous()
+    x_out  = torch.empty(d_model, dtype=torch.float32)
+
+    for i, ld in enumerate(layer_data):
+        h = hidden_states[i].view(-1).float().contiguous()
+
+        lib.decode_layer_fused_2bit_mad(
+            ctypes.c_void_p(x_flat.data_ptr()),
+            ctypes.c_void_p(x_out.data_ptr()),
+            ctypes.c_void_p(h.data_ptr()),
+            ctypes.c_void_p(ld['norm1_w'].data_ptr()),
+            ctypes.c_void_p(ld['norm2_w'].data_ptr()),
+            ctypes.c_float(ld['eps']),
+            ctypes.c_void_p(ld['Wf'].data_ptr()), ctypes.c_float(ld['sf']),
+            ctypes.c_void_p(ld['Wc'].data_ptr()), ctypes.c_float(ld['sc']),
+            ctypes.c_void_p(ld['Wo'].data_ptr()), ctypes.c_float(ld['so']),
+            ctypes.c_void_p(ld['Wg'].data_ptr()), ctypes.c_float(ld['sg']),
+            ctypes.c_void_p(ld['Wu'].data_ptr()), ctypes.c_float(ld['su']),
+            ctypes.c_void_p(ld['Wd'].data_ptr()), ctypes.c_float(ld['sd']),
+            ctypes.c_int(d_model),
+            ctypes.c_int(d_ff),
+        )
+
+        # FPResidual mixer (FP32, rank=8, trivial)
+        x_3d = x_flat.view(1, 1, d_model)
+        x_out.add_(ld['fp_mix'](x_3d).squeeze())
+
+        if ld['pfnet'] is not None:
+            x_out.add_(ld['pfnet'](x_3d).squeeze())
+
+        states_buf[i] = h.view(1, d_model)
+        x_flat = x_out.clone()
+
+    return x_flat.view(1, d_model), states_buf
 
 
 # Element-wise op patches — replace slow PyTorch dispatches with C++ kernels

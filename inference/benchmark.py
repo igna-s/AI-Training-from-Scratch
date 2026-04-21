@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-benchmark_packed.py — Benchmark realista con checkpoint simulado entrenado.
+benchmark.py — Benchmark realista con checkpoint simulado entrenado.
 
-3 modos comparables:
+4 modos comparables:
   int8_python  — INT8 packing + Python layer loop (baseline)
   int8_fused   — INT8 packing + decode_layer_fused (1 ctypes call/capa)
-  2bit_fused   — 2-bit packing (41MB RAM) + decode_layer_fused
+  2bit_fused   — 2-bit row-major (41MB RAM) + decode_layer_fused_2bit
+  mad_fused    — 2-bit MAD column-interleaved (41MB RAM) + decode_layer_fused_2bit_mad
 
 Uso:
-    python inference/benchmark_packed.py                   # 170M, todos los modos
-    python inference/benchmark_packed.py --mode int8_fused # solo un modo
-    python inference/benchmark_packed.py --d_model 512 --n_layers 12  # 50M ablacion
+    python inference/benchmark.py                   # 170M, todos los modos
+    python inference/benchmark.py --mode mad_fused  # solo MAD
+    python inference/benchmark.py --d_model 512 --n_layers 12  # 50M ablacion
 """
 
 import sys
@@ -30,15 +31,19 @@ _inf_mod.USE_C_KERNELS = True
 
 from inference.inference import (
     _load_c_kernel,
+    _load_mad_kernel,
     transpose_weights_for_inference,
     align_all_weights,
     pack_all_bitlinear_to_int8,
     pack_all_bitlinear_to_2bit,
+    pack_all_bitlinear_to_2bit_mad,
     patch_activations_for_inference,
     prepare_fused_layer_data,
     prepare_fused_layer_data_2bit,
+    prepare_fused_layer_data_2bit_mad,
     forward_with_fused_layers,
     forward_with_fused_layers_2bit,
+    forward_with_fused_layers_2bit_mad,
     forward_with_prefetch,
     alloc_hidden_states,
     configure_cpu_threads,
@@ -219,6 +224,50 @@ def bench_2bit_fused(config, n_patches, n_warmup):
     return _run_benchmark(run, reset, n_patches, n_warmup)
 
 
+# ── MODO 4: mad_fused — BitNet MAD 2-bit + decode_layer_fused_2bit_mad ───────
+def bench_mad_fused(config, n_patches, n_warmup):
+    print("\n[Mode: mad_fused -- MAD column-interleaved 2-bit + decode_layer_fused_2bit_mad]")
+    lib = _load_mad_kernel()
+    if not lib:
+        print("  kernels_mad.dll no disponible — recompilar")
+        return None
+
+    model = CPU1ModelV2(config).eval()
+    quantize_model_to_ternary(model)
+    transpose_weights_for_inference(model)
+    align_all_weights(model)
+    pack_all_bitlinear_to_2bit_mad(model)
+    patch_activations_for_inference(model)
+    configure_cpu_threads(config.get("n_threads"))
+
+    d_model  = config["d_model"]
+    d_ff     = config["d_ff"]
+    n_layers = config["n_layers"]
+    dummy    = torch.zeros(1, 1, 4, dtype=torch.long)
+    layer_data = prepare_fused_layer_data_2bit_mad(model)
+    hs  = _reset_states(n_layers, d_model)
+    sb  = list(hs)
+
+    mad_mb = sum(
+        m.weight_2bit_mad.numel()
+        for _, m in model.named_modules()
+        if hasattr(m, 'weight_2bit_mad')
+    ) / 1e6
+    print(f"  Pesos MAD 2-bit en RAM: {mad_mb:.1f} MB")
+
+    def run():
+        nonlocal hs, sb
+        x = model.patch_embedding(dummy).squeeze(1)
+        x, hs = forward_with_fused_layers_2bit_mad(x, hs, layer_data, d_model, d_ff, sb)
+
+    def reset():
+        nonlocal hs, sb
+        hs = _reset_states(n_layers, d_model)
+        sb = list(hs)
+
+    return _run_benchmark(run, reset, n_patches, n_warmup)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
@@ -230,7 +279,7 @@ def main():
     parser.add_argument("--n_patches", type=int, default=200)
     parser.add_argument("--warmup",    type=int, default=8)
     parser.add_argument("--mode",      type=str, default="all",
-                        choices=["all", "int8_python", "int8_fused", "2bit_fused"])
+                        choices=["all", "int8_python", "int8_fused", "2bit_fused", "mad_fused"])
     args = parser.parse_args()
 
     d_ff = args.d_ff if args.d_ff > 0 else int(args.d_model * 8 / 3 // 128 * 128)
@@ -249,7 +298,7 @@ def main():
     print("=" * 65)
 
     results = {}
-    modes = ["int8_python", "int8_fused", "2bit_fused"] if args.mode == "all" else [args.mode]
+    modes = ["int8_python", "int8_fused", "2bit_fused", "mad_fused"] if args.mode == "all" else [args.mode]
 
     for mode in modes:
         if mode == "int8_python":
@@ -258,6 +307,10 @@ def main():
             r = bench_int8_fused(config, args.n_patches, args.warmup)
         elif mode == "2bit_fused":
             r = bench_2bit_fused(config, args.n_patches, args.warmup)
+        elif mode == "mad_fused":
+            r = bench_mad_fused(config, args.n_patches, args.warmup)
+        else:
+            r = None
         if r:
             results[mode] = r
 
