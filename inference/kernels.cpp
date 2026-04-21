@@ -192,53 +192,118 @@ static void gemv_i8_block(
 // x se cuantiza internamente (igual que ternary_i8_fused_gemv_avx2).
 // w_2bit: [d_out, (d_in+3)/4] uint8 — pesos 2-bit packed, row-major.
 // ===========================================================================
+
+// ===========================================================================
+// gemv_2bit_row — AVX2 con shuffle-LUT (sin stack alloc en el inner loop)
+//
+// Decodifica 2-bit pesos {00→0, 01→+1, 10→-1} a int8 y multiplica con x_i8.
+//
+// Técnica: usar _mm256_shuffle_epi8 como LUT de 16 entradas para convertir
+// nibbles de 4 bits (2 pesos cada uno) a pares de int8 directamente.
+// Procesa 16 pesos por iteración (4 bytes de w_2bit = 8 nibbles × 2 pesos).
+// Cero allocaciones en stack, cero branches dentro del loop.
+// ===========================================================================
 #ifdef __GNUC__
 __attribute__((target("avx2,fma")))
 #endif
 static inline int32_t gemv_2bit_row(
-    const int8_t* x_i8,   // [d_in] cuantizado
-    const uint8_t* wj_2b, // [(d_in+3)/4] pesos 2-bit packed
+    const int8_t*  x_i8,   // [d_in] cuantizado int8
+    const uint8_t* wj_2b,  // [(d_in+3)/4] pesos 2-bit packed
     int d_in
 ) {
-    int32_t sum = 0;
+    // Tabla LUT para 16 nibbles posibles (4 bits = 2 pesos de 2 bits cada uno)
+    // nibble = bits[3:2] | bits[1:0]  → {peso1, peso0}
+    // peso = 00→0, 01→+1, 10→-1, 11→0
+    // LUT[nibble] = (int8_t){peso0, peso1} como int16 little-endian
+    // Para shuffle: índice 0..15, resultado 2 bytes (lo=peso0, hi=peso1)
+    // LUT entradas (lo byte = peso del bit[1:0], hi byte = peso del bit[3:2]):
+    //  0b0000=0 → (0, 0)=0x0000
+    //  0b0001=1 → (+1,0)=0x0001
+    //  0b0010=2 → (-1,0)=0x00FF
+    //  0b0011=3 → (0, 0)=0x0000 [inválido, tratado como 0]
+    //  0b0100=4 → (0,+1)=0x0100
+    //  0b0101=5 → (+1,+1)=0x0101
+    //  0b0110=6 → (-1,+1)=0x01FF
+    //  0b0111=7 → (0,+1)=0x0100 [inválido lo, sólo hi]
+    //  0b1000=8 → (0,-1)=0xFF00
+    //  0b1001=9 → (+1,-1)=0xFF01
+    //  0b1010=10→ (-1,-1)=0xFFFF
+    //  0b1011=11→ (0,-1)=0xFF00
+    //  0b1100=12→ (0, 0)=0x0000 [inválido]
+    //  ... etc.
+    // Nota: int8_t -1 = 0xFF en complemento a 2
+    // Tabla de 32 bytes (lo de cada par, luego hi de cada par) para shuffle_epi8:
+    const __m128i lut_lo = _mm_set_epi8(
+        // índices 8..15 (hi nibble)
+        (int8_t)0,  (int8_t)1,  (int8_t)-1, (int8_t)0,
+        (int8_t)0,  (int8_t)1,  (int8_t)-1, (int8_t)0,
+        // índices 0..7 (lo nibble)
+        (int8_t)0,  (int8_t)1,  (int8_t)-1, (int8_t)0,
+        (int8_t)0,  (int8_t)1,  (int8_t)-1, (int8_t)0
+    );
+    const __m128i lut_hi = _mm_set_epi8(
+        (int8_t)-1, (int8_t)-1, (int8_t)-1, (int8_t)-1,
+        (int8_t)1,  (int8_t)1,  (int8_t)1,  (int8_t)1,
+        (int8_t)0,  (int8_t)0,  (int8_t)0,  (int8_t)0,
+        (int8_t)0,  (int8_t)0,  (int8_t)0,  (int8_t)0
+    );
+    const __m128i mask_lo_nibble = _mm_set1_epi8(0x0F);
+    const __m256i vones16 = _mm256_set1_epi16(1);
+    __m256i vacc = _mm256_setzero_si256();
+
     int i = 0;
-
-    // Procesar 32 pesos a la vez (8 bytes de w_2bit, 32 pesos)
-    // AVX2: podemos hacer 32 pesos en paralelo con unpacking
-    // Para simplicidad y evitar AVX2 gather sobre bits, usamos loop escalar
-    // pero muy tight: solo 4 loads de byte por 16 elementos x
+    // Procesar 16 pesos por iteración (4 bytes = 8 nibbles × 2 pesos)
     for (; i <= d_in - 16; i += 16, wj_2b += 4) {
-        // 4 bytes encoden 16 pesos de 2 bits
-        uint8_t b0 = wj_2b[0], b1 = wj_2b[1], b2 = wj_2b[2], b3 = wj_2b[3];
+        // 4 bytes de pesos → 8 nibbles (un nibble = 2 pesos de 2 bits)
+        __m128i raw4 = _mm_cvtsi32_si128(*(const uint32_t*)wj_2b);
 
-        // Decodificar 16 pesos: cada byte tiene 4 pesos en bits [7:6],[5:4],[3:2],[1:0]
-        // Peso k: bits 2k+1:2k del byte k/4
-        // Mapeo: 00→0, 01→+1, 10→-1, 11→0 (seguro)
-        // Evitar branch: w = (code==1) - (code==2)
-        // codigo en 2 bits: code = (byte >> (2*(k&3))) & 3
+        // Separar nibble bajo (bits[3:0]) y nibble alto (bits[7:4]) de cada byte
+        __m128i lo_nibble = _mm_and_si128(raw4, mask_lo_nibble);          // 4 nibbles bajos
+        __m128i hi_nibble = _mm_and_si128(_mm_srli_epi16(raw4, 4), mask_lo_nibble); // 4 nibbles altos
 
-        // Inlining manual para 16 pesos
-        const uint8_t bytes4[4] = {b0, b1, b2, b3};
-        for (int k = 0; k < 4; k++) {
-            uint8_t b = bytes4[k];
-            int8_t c0 = (int8_t)((b >> 0) & 3); sum += x_i8[i+k*4+0] * ((c0==1)-(c0==2));
-            int8_t c1 = (int8_t)((b >> 2) & 3); sum += x_i8[i+k*4+1] * ((c1==1)-(c1==2));
-            int8_t c2 = (int8_t)((b >> 4) & 3); sum += x_i8[i+k*4+2] * ((c2==1)-(c2==2));
-            int8_t c3 = (int8_t)((b >> 6) & 3); sum += x_i8[i+k*4+3] * ((c3==1)-(c3==2));
-        }
+        // Intercalar: [lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3]
+        __m128i interleaved = _mm_unpacklo_epi8(lo_nibble, hi_nibble);    // 8 nibbles ordenados
+
+        // LUT lookup usando shuffle: convierte cada nibble al peso del bit bajo (pos 0 del par)
+        __m128i w_lo = _mm_shuffle_epi8(lut_lo, interleaved);  // peso de bits[1:0] de cada nibble
+        // LUT lookup para el bit alto (pos 1 del par)
+        __m128i w_hi = _mm_shuffle_epi8(lut_hi, interleaved);  // peso de bits[3:2] de cada nibble
+
+        // Intercalar para obtener [w0,w1,w2,...,w15] en orden
+        __m128i weights_lo = _mm_unpacklo_epi8(w_lo, w_hi);    // pesos 0..7
+        __m128i weights_hi = _mm_unpackhi_epi8(w_lo, w_hi);    // pesos 8..15
+
+        // Unir en un __m256i: 16 pesos int8 ordenados
+        __m256i vw = _mm256_set_m128i(weights_hi, weights_lo);
+
+        // Cargar 16 activaciones int8
+        __m256i vact = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(x_i8+i)));
+
+        // Multiplicar: vact (int16) * vw (int16) → acum int32
+        // Convertir vw de int8 a int16 para madd
+        __m256i vw16 = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(vw));
+        vacc = _mm256_add_epi32(vacc, _mm256_madd_epi16(vact, vw16));
     }
-    // Tail (hasta 15 elementos)
-    for (; i < d_in; i++, wj_2b += (i%4==0?0:0)) {
-        // Posicion del peso i en el stream 2-bit
-        uint8_t code = (wj_2b[0] >> (2*(i&3))) & 3;
-        sum += x_i8[i] * ((code==1)-(code==2));
-        if ((i & 3) == 3) wj_2b++;
+
+    // Reducir
+    __m128i lo128 = _mm256_castsi256_si128(vacc);
+    __m128i hi128 = _mm256_extracti128_si256(vacc, 1);
+    __m128i s4    = _mm_add_epi32(lo128, hi128);
+    s4 = _mm_hadd_epi32(s4, s4);
+    s4 = _mm_hadd_epi32(s4, s4);
+    int32_t sum = _mm_cvtsi128_si32(s4);
+
+    // Tail escalar
+    for (; i < d_in; i++) {
+        int byte_i  = i >> 2;
+        int shift   = (i & 3) << 1;
+        uint8_t code = (wj_2b[byte_i - (d_in/16*4)] >> shift) & 3;
+        sum += (int32_t)x_i8[i] * ((code==1) ? 1 : (code==2) ? -1 : 0);
     }
     return sum;
 }
 
-// Kernel escalable con AVX2: desempaqueta 16 pesos por iteracion del loop principal
-// usando shifts y AND, luego MADD con x_i8
+
 #ifdef __GNUC__
 __attribute__((target("avx2,fma")))
 #endif
@@ -856,6 +921,204 @@ EXPORT double benchmark_lut_matmul(int d_in, int d_out, int n_tokens, int use_ga
     double tps=el>0.0?(double)n_tokens/el:0.;
     free(x);free(w_packed);free(decode_table);free(output);
     return tps;
+}
+
+
+// ===========================================================================
+// decode_layer_fused_2bit
+//
+// Identico a decode_layer_fused pero con pesos empaquetados a 2 bits.
+//
+// Reduccion de bandwidth por capa:
+//   INT8:  6 matrices × ~1024² B = ~6 MB  de pesos por capa a leer
+//   2-bit: 6 matrices × ~256  KB = ~1.5MB por capa → 4× menor bandwidth
+//
+// Para 14 capas de 170M:
+//   INT8:  14 × 11.6 MB = 163 MB total a leer por patch → 38/163  = 233 patch/s teórico
+//   2-bit: 14 × 2.9  MB = 40.6 MB total               → 38/40.6 = 936 patch/s teórico
+//
+// Firma compatible con decode_layer_fused excepto que W_* son uint8* 2-bit.
+// w_*_rows = (d_in+3)/4 bytes por fila.
+//
+// FPResidual y PFNet se manejan en Python igualmente (son FP32, triviales).
+
+// Helper: gemv_2bit_block — GEMV 2-bit para un rango de filas
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void gemv_2bit_block(
+    const int8_t* x_i8,    // [d_in] cuantizado
+    const uint8_t* W_2b,   // [d_out, (d_in+3)/4] pesos 2-bit
+    float* out,            // [d_out]
+    int d_in, int j_start, int j_end, float cs
+) {
+    int bytes_per_row = (d_in + 3) / 4;
+    for (int j = j_start; j < j_end; j++) {
+        const uint8_t* wj = W_2b + (ptrdiff_t)j * bytes_per_row;
+        out[j] = (float)gemv_2bit_row(x_i8, wj, d_in) * cs;
+    }
+}
+
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+EXPORT void decode_layer_fused_2bit(
+    const float*   x_in,          // [d_model]
+    float*         x_out,         // [d_model] output
+    float*         h,             // [d_model] hidden MLGRU (in/out)
+    const float*   norm1_w,       // [d_model]
+    const float*   norm2_w,       // [d_model]
+    float          norm_eps,
+    const uint8_t* W_forget, float s_forget,   // [d_model, (d_model+3)/4]
+    const uint8_t* W_cand,   float s_cand,
+    const uint8_t* W_out,    float s_out,
+    const uint8_t* W_gate,   float s_gate,     // [d_ff, (d_model+3)/4]
+    const uint8_t* W_up,     float s_up,
+    const uint8_t* W_down,   float s_down,     // [d_model, (d_ff+3)/4]
+    int d_model,
+    int d_ff
+) {
+    // Buffers thread_local (0 malloc/call)
+    static thread_local float  _xn1[MAX_D_MODEL];
+    static thread_local int8_t _xi1[MAX_D_MODEL];
+    static thread_local float  _fraw[MAX_D_MODEL];
+    static thread_local float  _craw[MAX_D_MODEL];
+    static thread_local float  _graw[MAX_D_MODEL];
+    static thread_local float  _mout[MAX_D_MODEL];
+    static thread_local float  _xmid[MAX_D_MODEL];
+    static thread_local float  _xn2[MAX_D_MODEL];
+    static thread_local int8_t _xi2[MAX_D_MODEL];
+    static thread_local float  _gater[MAX_D_FF];
+    static thread_local float  _upr[MAX_D_FF];
+    static thread_local float  _hid[MAX_D_FF];
+    static thread_local int8_t _hi8[MAX_D_FF];
+    static thread_local float  _ffno[MAX_D_MODEL];
+
+    // PASO 1: RMSNorm1
+    rms_norm_inline(x_in, norm1_w, _xn1, d_model, norm_eps);
+
+    // PASO 2: Cuantizar x una vez para las 3 GEMVs del mixer
+    float xs1   = quantize_x_avx2(_xn1, _xi1, d_model);
+    float cs_f  = xs1 * s_forget;
+    float cs_c  = xs1 * s_cand;
+    float cs_o  = xs1 * s_out;
+
+    // PASO 3-5: GEMVs mixer en parallel OMP, dividir 3*d_model filas
+    #pragma omp parallel
+    {
+        int nthreads = omp_get_num_threads();
+        int tid      = omp_get_thread_num();
+        int total3   = 3 * d_model;
+        int chunk    = (total3 + nthreads - 1) / nthreads;
+        int jS       = tid * chunk;
+        int jE       = jS + chunk < total3 ? jS + chunk : total3;
+
+        int bpr_m = (d_model + 3) / 4;  // bytes por fila para matrices d_model×d_model
+
+        for (int j = jS; j < jE; j++) {
+            if (j < d_model) {
+                const uint8_t* wj = W_forget + (ptrdiff_t)j * bpr_m;
+                _fraw[j] = (float)gemv_2bit_row(_xi1, wj, d_model) * cs_f;
+            } else if (j < 2*d_model) {
+                int jj = j - d_model;
+                const uint8_t* wj = W_cand + (ptrdiff_t)jj * bpr_m;
+                _craw[jj] = (float)gemv_2bit_row(_xi1, wj, d_model) * cs_c;
+            } else {
+                int jj = j - 2*d_model;
+                const uint8_t* wj = W_out + (ptrdiff_t)jj * bpr_m;
+                _graw[jj] = (float)gemv_2bit_row(_xi1, wj, d_model) * cs_o;
+            }
+        }
+    } // barrier
+
+    // PASO 6: fused MLGRU gates + residual (AVX2, identico a decode_layer_fused)
+    {
+        int i = 0;
+        for (; i <= d_model-8; i+=8) {
+            __m256 vf_r = _mm256_loadu_ps(_fraw+i);
+            __m256 vc_r = _mm256_loadu_ps(_craw+i);
+            __m256 vg_r = _mm256_loadu_ps(_graw+i);
+            __m256 vh   = _mm256_loadu_ps(h+i);
+            __m256 vx   = _mm256_loadu_ps(x_in+i);
+            __m256 vf = _avx2_sigmoid_ps(vf_r);
+            __m256 vc = _avx2_silu_ps(vc_r);
+            __m256 vg = _avx2_sigmoid_ps(vg_r);
+            __m256 vhn = _mm256_fmadd_ps(vf, _mm256_sub_ps(vh, vc), vc);
+            __m256 vm  = _mm256_mul_ps(vg, vhn);
+            _mm256_storeu_ps(h+i, vhn);
+            _mm256_storeu_ps(_mout+i, vm);
+            _mm256_storeu_ps(_xmid+i, _mm256_add_ps(vx, vm));
+        }
+        for (; i < d_model; i++) {
+            float f  = 1.f/(1.f+expf(-_fraw[i]));
+            float c  = _craw[i]/(1.f+expf(-_craw[i]));
+            float g  = 1.f/(1.f+expf(-_graw[i]));
+            float hn = c + f*(h[i]-c);
+            h[i] = hn; _mout[i] = g*hn; _xmid[i] = x_in[i]+_mout[i];
+        }
+    }
+
+    // PASO 7: RMSNorm2
+    rms_norm_inline(_xmid, norm2_w, _xn2, d_model, norm_eps);
+
+    // PASO 8: Cuantizar para gate/up
+    float xs2     = quantize_x_avx2(_xn2, _xi2, d_model);
+    float cs_gate = xs2 * s_gate;
+    float cs_up   = xs2 * s_up;
+
+    // PASO 9-10: GEMVs gate+up en parallel OMP
+    int bpr_m = (d_model + 3) / 4;  // bytes por fila W_gate/W_up [d_ff x d_model]
+    #pragma omp parallel
+    {
+        int nthreads = omp_get_num_threads();
+        int tid      = omp_get_thread_num();
+        int total2   = 2 * d_ff;
+        int chunk    = (total2 + nthreads - 1) / nthreads;
+        int jS       = tid * chunk;
+        int jE       = jS + chunk < total2 ? jS + chunk : total2;
+
+        for (int j = jS; j < jE; j++) {
+            if (j < d_ff) {
+                const uint8_t* wj = W_gate + (ptrdiff_t)j * bpr_m;
+                _gater[j] = (float)gemv_2bit_row(_xi2, wj, d_model) * cs_gate;
+            } else {
+                int jj = j - d_ff;
+                const uint8_t* wj = W_up + (ptrdiff_t)jj * bpr_m;
+                _upr[jj] = (float)gemv_2bit_row(_xi2, wj, d_model) * cs_up;
+            }
+        }
+    } // barrier
+
+    // PASO 11: silu(gate)*up → hidden, cuantizar
+    {
+        int i = 0;
+        for (; i <= d_ff-8; i+=8) {
+            __m256 vg = _mm256_loadu_ps(_gater+i);
+            __m256 vu = _mm256_loadu_ps(_upr+i);
+            _mm256_storeu_ps(_hid+i, _mm256_mul_ps(_avx2_silu_ps(vg), vu));
+        }
+        for (; i < d_ff; i++) _hid[i] = _gater[i]/(1.f+expf(-_gater[i])) * _upr[i];
+    }
+
+    int bpr_ff = (d_ff + 3) / 4;   // bytes por fila W_down [d_model x d_ff]
+    float hs   = quantize_x_avx2(_hid, _hi8, d_ff);
+    float cs_down = hs * s_down;
+
+    // PASO 12: down GEMV paralelo (2-bit)
+    #pragma omp parallel for schedule(static)
+    for (int j = 0; j < d_model; j++) {
+        const uint8_t* wj = W_down + (ptrdiff_t)j * bpr_ff;
+        _ffno[j] = (float)gemv_2bit_row(_hi8, wj, d_ff) * cs_down;
+    }
+
+    // PASO 13: x_out = x_mid + ffn_out
+    {
+        int i = 0;
+        for (; i <= d_model-8; i+=8)
+            _mm256_storeu_ps(x_out+i,
+                _mm256_add_ps(_mm256_loadu_ps(_xmid+i), _mm256_loadu_ps(_ffno+i)));
+        for (; i < d_model; i++) x_out[i] = _xmid[i] + _ffno[i];
+    }
 }
 
 } // extern "C"

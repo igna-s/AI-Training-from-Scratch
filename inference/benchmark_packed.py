@@ -36,7 +36,9 @@ from inference.inference import (
     pack_all_bitlinear_to_2bit,
     patch_activations_for_inference,
     prepare_fused_layer_data,
+    prepare_fused_layer_data_2bit,
     forward_with_fused_layers,
+    forward_with_fused_layers_2bit,
     forward_with_prefetch,
     alloc_hidden_states,
     configure_cpu_threads,
@@ -174,62 +176,40 @@ def bench_int8_fused(config, n_patches, n_warmup):
 
 # ── MODO 3: 2bit_fused — 2-bit + decode_layer_fused ─────────────────────────
 def bench_2bit_fused(config, n_patches, n_warmup):
-    print("\n[Mode: 2bit_fused — 2-bit packed (44MB RAM) + decode_layer_fused]")
+    print("\n[Mode: 2bit_fused -- 2-bit packed (41MB RAM) + decode_layer_fused_2bit]")
     lib = _load_c_kernel()
-    if not lib or not hasattr(lib, 'pack_ternary_to_2bit') or not hasattr(lib, 'decode_layer_fused'):
-        print("  Kernels 2-bit no disponibles en kernels.dll — saltando")
+    if not lib or not hasattr(lib, 'decode_layer_fused_2bit'):
+        print("  decode_layer_fused_2bit no disponible -- asegurate de recompilar kernels.dll")
         return None
 
     model = CPU1ModelV2(config).eval()
     quantize_model_to_ternary(model)
     transpose_weights_for_inference(model)
     align_all_weights(model)
-
-    # 2-bit packing: 41MB en RAM
-    scales_2bit = pack_all_bitlinear_to_2bit(model)
-
-    # Para decode_layer_fused necesitamos weight_int8_gemv — construirlo desde weight_2bit
-    # Nota: decode_layer_fused toma int8, no 2-bit directamente
-    # → El modo 2-bit usa ternary_2bit_fused_gemv_avx2 para cada GEMV individual
-    # Por ahora usamos int8 para decode_layer_fused pero con pesos ya de 2bit→expandidos
-    # WORKAROUND: empaquetar también a int8 para el kernel fused
-    # (La ganancia de RAM no aplica en este prototipo, pero la arquitectura está lista)
-    # TODO: extender decode_layer_fused para aceptar 2-bit nativamente
-    print("  NOTA: decode_layer_fused acepta int8. Expandiendo 2-bit -> int8 para este benchmark.")
-    print("        El kernel ternary_2bit_fused_gemv_avx2 ya existe para uso directo.")
-
-    # Volver a crear el modelo con int8 para el fused kernel
-    model2 = CPU1ModelV2(config).eval()
-    quantize_model_to_ternary(model2)
-    transpose_weights_for_inference(model2)
-    align_all_weights(model2)
-    pack_all_bitlinear_to_int8(model2)
-    patch_activations_for_inference(model2)
+    scales = pack_all_bitlinear_to_2bit(model)
+    # patch_activations para que FPResidual y PFNet tengan sus buffers
+    patch_activations_for_inference(model)
     configure_cpu_threads(config.get("n_threads"))
 
     d_model  = config["d_model"]
     d_ff     = config["d_ff"]
     n_layers = config["n_layers"]
     dummy    = torch.zeros(1, 1, 4, dtype=torch.long)
-    layer_data = prepare_fused_layer_data(model2)
+    layer_data = prepare_fused_layer_data_2bit(model)
     hs  = _reset_states(n_layers, d_model)
     sb  = list(hs)
 
-    # Tamaño real si se usara 2-bit completo
-    bit2_mb = sum(scales_2bit) if isinstance(scales_2bit, list) else sum(
+    bit2_mb = sum(
         m.weight_2bit.numel()
         for _, m in model.named_modules()
         if hasattr(m, 'weight_2bit')
     ) / 1e6
-
-    print(f"  Pesos 2-bit en RAM (modelo 1): {bit2_mb:.1f} MB (referencia)")
+    print(f"  Pesos 2-bit en RAM: {bit2_mb:.1f} MB")
 
     def run():
         nonlocal hs, sb
-        x = model2.patch_embedding(dummy).squeeze(1)
-        x, hs = forward_with_fused_layers(
-            model2, x, hs, layer_data, d_model, d_ff, sb
-        )
+        x = model.patch_embedding(dummy).squeeze(1)
+        x, hs = forward_with_fused_layers_2bit(x, hs, layer_data, d_model, d_ff, sb)
 
     def reset():
         nonlocal hs, sb

@@ -240,6 +240,25 @@ def _load_c_kernel():
                 ctypes.c_float,    # w_scale
             ]
             lib.ternary_2bit_fused_gemv_avx2.restype = None
+
+        if hasattr(lib, 'decode_layer_fused_2bit'):
+            lib.decode_layer_fused_2bit.argtypes = [
+                ctypes.c_void_p,   # x_in    [d_model] float32
+                ctypes.c_void_p,   # x_out   [d_model] float32
+                ctypes.c_void_p,   # h       [d_model] float32 in/out
+                ctypes.c_void_p,   # norm1_w [d_model] float32
+                ctypes.c_void_p,   # norm2_w [d_model] float32
+                ctypes.c_float,    # norm_eps
+                ctypes.c_void_p, ctypes.c_float,   # W_forget 2-bit, s_forget
+                ctypes.c_void_p, ctypes.c_float,   # W_cand,  s_cand
+                ctypes.c_void_p, ctypes.c_float,   # W_out,   s_out
+                ctypes.c_void_p, ctypes.c_float,   # W_gate,  s_gate
+                ctypes.c_void_p, ctypes.c_float,   # W_up,    s_up
+                ctypes.c_void_p, ctypes.c_float,   # W_down,  s_down
+                ctypes.c_int,      # d_model
+                ctypes.c_int,      # d_ff
+            ]
+            lib.decode_layer_fused_2bit.restype = None
         # ───────────────────────────────────────────────────────────────────
 
         _TERNARY_C_KERNEL = lib
@@ -502,7 +521,14 @@ def pack_all_bitlinear_to_2bit(model: nn.Module) -> dict:
     scales = {}
     n = 0
     for name, module in model.named_modules():
-        if isinstance(module, BitLinear) and hasattr(module, 'weight_T'):
+        # Solo empaquetar las 6 proyecciones principales por bloque:
+        # token_mixer.{forget,cand,output}_proj y ffn.{gate,up,down}_proj
+        # Excluir: pfnet (224KB total, L2-resident, usa forward estandar)
+        #          patch_embedding y byte_heads (FP32 path)
+        in_main_proj = (
+            'blocks.' in name and 'pfnet.' not in name
+        )
+        if isinstance(module, BitLinear) and hasattr(module, 'weight_T') and in_main_proj:
             w = module.weight_T          # [d_in, d_out]
             w_scale = w.float().abs().mean()
             w_ternary_fp = (w.float() / (w_scale + 1e-8)).round().clamp(-1, 1)
@@ -683,7 +709,112 @@ def forward_with_fused_layers(
     return x_flat.view(1, d_model), states_buf
 
 
-# ---------------------------------------------------------------------------
+def prepare_fused_layer_data_2bit(model: nn.Module, eps: float = 1e-6) -> list[dict]:
+    """
+    Como prepare_fused_layer_data pero extrae weight_2bit en vez de weight_int8_gemv.
+    Llama DESPUES de pack_all_bitlinear_to_2bit y patch_activations_for_inference.
+    """
+    raw = model._orig_mod if hasattr(model, '_orig_mod') else model
+    layer_data = []
+
+    for i, block in enumerate(raw.blocks):
+        mixer = block.token_mixer
+        ffn   = block.ffn
+
+        norm1_w = getattr(block.norm1, '_rms_weight_f32', block.norm1.weight.float().contiguous())
+        norm2_w = getattr(block.norm2, '_rms_weight_f32', block.norm2.weight.float().contiguous())
+
+        def _w2(module):
+            if hasattr(module, 'weight_2bit'):
+                return module.weight_2bit.contiguous(), float(module.weight_scale)
+            raise RuntimeError(f"Modulo {module.__class__.__name__} no tiene weight_2bit — "
+                               "llama pack_all_bitlinear_to_2bit primero")
+
+        Wf, sf = _w2(mixer.forget_proj)
+        Wc, sc = _w2(mixer.cand_proj)
+        Wo, so = _w2(mixer.output_proj)
+        Wg, sg = _w2(ffn.gate_proj)
+        Wu, su = _w2(ffn.up_proj)
+        Wd, sd = _w2(ffn.down_proj)
+
+        fp_mix  = mixer.fp_residual
+        fp_down = ffn.down_fp_residual
+        pfnet   = block.pfnet if hasattr(block, 'pfnet') else None
+
+        layer_data.append({
+            'norm1_w': norm1_w, 'norm2_w': norm2_w, 'eps': eps,
+            'Wf': Wf, 'sf': sf, 'Wc': Wc, 'sc': sc, 'Wo': Wo, 'so': so,
+            'Wg': Wg, 'sg': sg, 'Wu': Wu, 'su': su, 'Wd': Wd, 'sd': sd,
+            'fp_mix': fp_mix, 'fp_down': fp_down, 'pfnet': pfnet,
+        })
+
+    ram_mb = sum(
+        ld['Wf'].numel() + ld['Wc'].numel() + ld['Wo'].numel() +
+        ld['Wg'].numel() + ld['Wu'].numel() + ld['Wd'].numel()
+        for ld in layer_data
+    ) / 1e6
+    print(f"[CPU opt] prepare_fused_layer_data_2bit: {len(layer_data)} capas · "
+          f"pesos en RAM: {ram_mb:.1f} MB (2-bit)")
+    return layer_data
+
+
+@torch.inference_mode()
+def forward_with_fused_layers_2bit(
+    x: Tensor,
+    hidden_states: list,
+    layer_data: list,
+    d_model: int,
+    d_ff: int,
+    states_buf: list,
+) -> tuple[Tensor, list]:
+    """
+    Forward pass completo con decode_layer_fused_2bit (41MB de pesos en RAM).
+
+    Cada capa hace 1 ctypes call que lee 2-bit packed weights directamente,
+    sin expandir a int8. Bandwidth: 40.6MB/patch teorico vs 163MB/patch en int8.
+    """
+    lib = _load_c_kernel()
+    if not lib or not hasattr(lib, 'decode_layer_fused_2bit'):
+        raise RuntimeError("decode_layer_fused_2bit no disponible en kernels.dll — recompilar")
+
+    x_flat = x.view(-1).float().contiguous()
+    x_out  = torch.empty(d_model, dtype=torch.float32)
+
+    for i, ld in enumerate(layer_data):
+        h = hidden_states[i].view(-1).float().contiguous()
+
+        lib.decode_layer_fused_2bit(
+            ctypes.c_void_p(x_flat.data_ptr()),
+            ctypes.c_void_p(x_out.data_ptr()),
+            ctypes.c_void_p(h.data_ptr()),
+            ctypes.c_void_p(ld['norm1_w'].data_ptr()),
+            ctypes.c_void_p(ld['norm2_w'].data_ptr()),
+            ctypes.c_float(ld['eps']),
+            ctypes.c_void_p(ld['Wf'].data_ptr()), ctypes.c_float(ld['sf']),
+            ctypes.c_void_p(ld['Wc'].data_ptr()), ctypes.c_float(ld['sc']),
+            ctypes.c_void_p(ld['Wo'].data_ptr()), ctypes.c_float(ld['so']),
+            ctypes.c_void_p(ld['Wg'].data_ptr()), ctypes.c_float(ld['sg']),
+            ctypes.c_void_p(ld['Wu'].data_ptr()), ctypes.c_float(ld['su']),
+            ctypes.c_void_p(ld['Wd'].data_ptr()), ctypes.c_float(ld['sd']),
+            ctypes.c_int(d_model),
+            ctypes.c_int(d_ff),
+        )
+
+        # FPResidual mixer (FP32, rank=8, trivial)
+        x_3d = x_flat.view(1, 1, d_model)
+        x_out.add_(ld['fp_mix'](x_3d).squeeze())
+
+        # PFNet (si existe)
+        if ld['pfnet'] is not None:
+            x_out.add_(ld['pfnet'](x_3d).squeeze())
+
+        states_buf[i] = h.view(1, d_model)
+        x_flat = x_out.clone()
+
+    return x_flat.view(1, d_model), states_buf
+
+
+
 # Element-wise op patches — replace slow PyTorch dispatches with C++ kernels
 # ---------------------------------------------------------------------------
 
