@@ -194,6 +194,187 @@ static void gemv_i8_block(
 // ===========================================================================
 
 // ===========================================================================
+// gemv_2bit_tiled_avx2
+//
+// STRIP-MINING: procesa TILE filas de salida simultáneamente.
+//
+// Por qué esto importa (gap de 16× entre teórico y actual):
+//   - gemv_2bit_row procesa 1 fila a la vez → 1024 streams de cache simultáneos
+//   - Hardware prefetcher tolera ~20 streams → cache miss latency domina
+//   - Con TILE=8: activaciones cargadas 1 vez, reusadas para 8 filas
+//     → 8× mejor intensidad aritmética → prefetcher puede seguir
+//
+// Técnica de T-MAC / bitnet.cpp:
+//   inner loop: 1 carga de activaciones × TILE lecturas de pesos
+//   → activación vive en registro, TILE streams de pesos (manejable por HW)
+//
+// Layout: W_2bit[d_out, bpr] row-major, bpr=(d_in+3)/4 bytes por fila
+// ===========================================================================
+
+#define TILE_J 8   // filas procesadas simultáneamente — múltiplo de 8
+
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void gemv_2bit_tiled_avx2(
+    const int8_t*  x_i8,     // [d_in]  activaciones cuantizadas
+    const uint8_t* W_2bit,   // [d_out, bpr]  pesos 2-bit row-major
+    int32_t*       acc,      // [d_out]  acumuladores (caller inicializa a 0)
+    int d_in, int d_out
+) {
+    const int bpr = (d_in + 3) / 4;
+
+    // LUT shuffle: convierte nibble (4 bits = 2 pesos) a par de int8 {-1,0,+1}
+    // lut_lo: peso del bit[1:0] de cada nibble
+    // lut_hi: pero del bit[3:2] de cada nibble
+    const __m128i lut_lo = _mm_set_epi8(
+        (int8_t)0,(int8_t)1,(int8_t)-1,(int8_t)0,
+        (int8_t)0,(int8_t)1,(int8_t)-1,(int8_t)0,
+        (int8_t)0,(int8_t)1,(int8_t)-1,(int8_t)0,
+        (int8_t)0,(int8_t)1,(int8_t)-1,(int8_t)0
+    );
+    const __m128i lut_hi = _mm_set_epi8(
+        (int8_t)-1,(int8_t)-1,(int8_t)-1,(int8_t)-1,
+        (int8_t)1, (int8_t)1, (int8_t)1, (int8_t)1,
+        (int8_t)0, (int8_t)0, (int8_t)0, (int8_t)0,
+        (int8_t)0, (int8_t)0, (int8_t)0, (int8_t)0
+    );
+    const __m128i mask_nibble = _mm_set1_epi8(0x0F);
+
+    // ── Loop TILED: TILE_J filas a la vez ────────────────────────────────
+    int j0 = 0;
+    for (; j0 <= d_out - TILE_J; j0 += TILE_J) {
+        // Punteros a las TILE_J filas de pesos
+        const uint8_t* wrow[TILE_J];
+        for (int t = 0; t < TILE_J; t++)
+            wrow[t] = W_2bit + (ptrdiff_t)(j0+t) * bpr;
+
+        // Prefetch primera línea de cada fila
+        for (int t = 0; t < TILE_J; t++)
+            __builtin_prefetch(wrow[t], 0, 1);
+
+        // Acumuladores int32 por fila (TILE_J × 8 = 64 valores en registros)
+        __m256i vacc0 = _mm256_setzero_si256();
+        __m256i vacc1 = _mm256_setzero_si256();
+        __m256i vacc2 = _mm256_setzero_si256();
+        __m256i vacc3 = _mm256_setzero_si256();
+        __m256i vacc4 = _mm256_setzero_si256();
+        __m256i vacc5 = _mm256_setzero_si256();
+        __m256i vacc6 = _mm256_setzero_si256();
+        __m256i vacc7 = _mm256_setzero_si256();
+
+        // Bucle interno: avanza 16 pesos (4 bytes) por iteración
+        int i = 0;
+        for (; i <= d_in - 16; i += 16) {
+            // Prefetch a +128 bytes adelante (da tiempo al HW prefetcher)
+            for (int t = 0; t < TILE_J; t++)
+                __builtin_prefetch(wrow[t] + (i/4) + 32, 0, 1);
+
+            // Cargar 16 activaciones int8 ONCE → reusar para las 8 filas
+            __m128i vx8 = _mm_loadu_si128((const __m128i*)(x_i8 + i));
+            __m256i vact = _mm256_cvtepi8_epi16(vx8);  // 16 × int16
+
+            // Macro inline: decoder 4 bytes de pesos → 16 int16 weights, luego madd
+            #define DECODE_AND_MADD(t, vacc_t)                                  \
+            {                                                                    \
+                __m128i r4 = _mm_cvtsi32_si128(*(const uint32_t*)(wrow[t] + i/4)); \
+                __m128i lo = _mm_and_si128(r4, mask_nibble);                    \
+                __m128i hi = _mm_and_si128(_mm_srli_epi16(r4, 4), mask_nibble); \
+                __m128i iv = _mm_unpacklo_epi8(lo, hi);                         \
+                __m128i wlo = _mm_shuffle_epi8(lut_lo, iv);                     \
+                __m128i whi = _mm_shuffle_epi8(lut_hi, iv);                     \
+                __m128i wt_lo = _mm_unpacklo_epi8(wlo, whi);                    \
+                __m128i wt_hi = _mm_unpackhi_epi8(wlo, whi);                    \
+                __m256i vw = _mm256_set_m128i(wt_hi, wt_lo);                    \
+                __m256i vw16 = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(vw)); \
+                vacc_t = _mm256_add_epi32(vacc_t,                               \
+                    _mm256_madd_epi16(vact, vw16));                              \
+            }
+
+            DECODE_AND_MADD(0, vacc0)
+            DECODE_AND_MADD(1, vacc1)
+            DECODE_AND_MADD(2, vacc2)
+            DECODE_AND_MADD(3, vacc3)
+            DECODE_AND_MADD(4, vacc4)
+            DECODE_AND_MADD(5, vacc5)
+            DECODE_AND_MADD(6, vacc6)
+            DECODE_AND_MADD(7, vacc7)
+            #undef DECODE_AND_MADD
+        }
+
+        // Reducción horizontal: 256-bit acc → scalar int32
+        #define HREDUCE(vacc_t, idx)                                      \
+        {                                                                  \
+            __m128i lo128 = _mm256_castsi256_si128(vacc_t);               \
+            __m128i hi128 = _mm256_extracti128_si256(vacc_t, 1);          \
+            __m128i s = _mm_add_epi32(lo128, hi128);                      \
+            s = _mm_hadd_epi32(s, s); s = _mm_hadd_epi32(s, s);          \
+            acc[j0 + idx] += _mm_cvtsi128_si32(s);                       \
+        }
+        HREDUCE(vacc0,0) HREDUCE(vacc1,1) HREDUCE(vacc2,2) HREDUCE(vacc3,3)
+        HREDUCE(vacc4,4) HREDUCE(vacc5,5) HREDUCE(vacc6,6) HREDUCE(vacc7,7)
+        #undef HREDUCE
+
+        // Tail escalar para elementos sobrantes (si d_in % 16 != 0)
+        for (int t = 0; t < TILE_J; t++) {
+            for (int ii = i; ii < d_in; ii++) {
+                int byte_b = ii / 4, shift = (ii & 3) * 2;
+                uint8_t code = (wrow[t][byte_b] >> shift) & 3;
+                acc[j0+t] += (int32_t)x_i8[ii] * ((code==1)?1:(code==2)?-1:0);
+            }
+        }
+    }
+
+    // ── Loop ESCALAR para filas restantes (j0 .. d_out-1) ────────────────
+    for (; j0 < d_out; j0++) {
+        const uint8_t* wj = W_2bit + (ptrdiff_t)j0 * bpr;
+        int32_t s = 0;
+        for (int i = 0; i < d_in; i++) {
+            int byte_b = i / 4;
+            uint8_t code = (wj[byte_b] >> ((i & 3)*2)) & 3;
+            s += (int32_t)x_i8[i] * ((code==1)?1:(code==2)?-1:0);
+        }
+        acc[j0] += s;
+    }
+}
+
+// Wrapper con OMP paralelo sobre filas (para GEMVs grandes como d_ff)
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void gemv_2bit_omp(
+    const int8_t*  x_i8,
+    const uint8_t* W_2bit,
+    float*         output,
+    int d_in, int d_out, float cs
+) {
+    // Cada thread procesa un bloque de filas alineado a TILE_J
+    int nt = omp_get_max_threads();
+    int chunk = ((d_out / nt + TILE_J - 1) / TILE_J) * TILE_J;
+
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        int j_start = tid * chunk;
+        int j_end   = j_start + chunk < d_out ? j_start + chunk : d_out;
+        if (j_start >= d_out) goto done;
+
+        {
+            // Acumulador local
+            static thread_local int32_t _acc_buf[MAX_D_MODEL > MAX_D_FF ? MAX_D_MODEL : MAX_D_FF];
+            int rows = j_end - j_start;
+            memset(_acc_buf, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(x_i8, W_2bit + (ptrdiff_t)j_start * ((d_in+3)/4),
+                                 _acc_buf, d_in, rows);
+            for (int j = 0; j < rows; j++)
+                output[j_start + j] = (float)_acc_buf[j] * cs;
+        }
+        done:;
+    }
+}
+
+
+// ===========================================================================
 // gemv_2bit_row — AVX2 con shuffle-LUT (sin stack alloc en el inner loop)
 //
 // Decodifica 2-bit pesos {00→0, 01→+1, 10→-1} a int8 y multiplica con x_i8.
@@ -946,45 +1127,28 @@ EXPORT double benchmark_lut_matmul(int d_in, int d_out, int n_tokens, int use_ga
 #ifdef __GNUC__
 __attribute__((target("avx2,fma")))
 #endif
-static void gemv_2bit_block(
-    const int8_t* x_i8,    // [d_in] cuantizado
-    const uint8_t* W_2b,   // [d_out, (d_in+3)/4] pesos 2-bit
-    float* out,            // [d_out]
-    int d_in, int j_start, int j_end, float cs
-) {
-    int bytes_per_row = (d_in + 3) / 4;
-    for (int j = j_start; j < j_end; j++) {
-        const uint8_t* wj = W_2b + (ptrdiff_t)j * bytes_per_row;
-        out[j] = (float)gemv_2bit_row(x_i8, wj, d_in) * cs;
-    }
-}
-
-#ifdef __GNUC__
-__attribute__((target("avx2,fma")))
-#endif
 EXPORT void decode_layer_fused_2bit(
-    const float*   x_in,          // [d_model]
-    float*         x_out,         // [d_model] output
-    float*         h,             // [d_model] hidden MLGRU (in/out)
-    const float*   norm1_w,       // [d_model]
-    const float*   norm2_w,       // [d_model]
+    const float*   x_in,
+    float*         x_out,
+    float*         h,
+    const float*   norm1_w,
+    const float*   norm2_w,
     float          norm_eps,
-    const uint8_t* W_forget, float s_forget,   // [d_model, (d_model+3)/4]
+    const uint8_t* W_forget, float s_forget,
     const uint8_t* W_cand,   float s_cand,
     const uint8_t* W_out,    float s_out,
-    const uint8_t* W_gate,   float s_gate,     // [d_ff, (d_model+3)/4]
+    const uint8_t* W_gate,   float s_gate,
     const uint8_t* W_up,     float s_up,
-    const uint8_t* W_down,   float s_down,     // [d_model, (d_ff+3)/4]
+    const uint8_t* W_down,   float s_down,
     int d_model,
     int d_ff
 ) {
-    // Buffers thread_local (0 malloc/call)
+    // Buffers compartidos (thread 0 escribe, todos leen después de barriers)
     static thread_local float  _xn1[MAX_D_MODEL];
     static thread_local int8_t _xi1[MAX_D_MODEL];
     static thread_local float  _fraw[MAX_D_MODEL];
     static thread_local float  _craw[MAX_D_MODEL];
     static thread_local float  _graw[MAX_D_MODEL];
-    static thread_local float  _mout[MAX_D_MODEL];
     static thread_local float  _xmid[MAX_D_MODEL];
     static thread_local float  _xn2[MAX_D_MODEL];
     static thread_local int8_t _xi2[MAX_D_MODEL];
@@ -994,131 +1158,142 @@ EXPORT void decode_layer_fused_2bit(
     static thread_local int8_t _hi8[MAX_D_FF];
     static thread_local float  _ffno[MAX_D_MODEL];
 
-    // PASO 1: RMSNorm1
-    rms_norm_inline(x_in, norm1_w, _xn1, d_model, norm_eps);
+    // Escales compartidos entre threads (necesitan ser visibles tras omp single)
+    static thread_local float _cs[6];   // [cs_f, cs_c, cs_o, cs_gate, cs_up, cs_down]
+    static thread_local float _hs_down; // para cs_down
 
-    // PASO 2: Cuantizar x una vez para las 3 GEMVs del mixer
-    float xs1   = quantize_x_avx2(_xn1, _xi1, d_model);
-    float cs_f  = xs1 * s_forget;
-    float cs_c  = xs1 * s_cand;
-    float cs_o  = xs1 * s_out;
+    const int bpr_m  = (d_model + 3) / 4;
+    const int bpr_ff = (d_ff    + 3) / 4;
 
-    // PASO 3-5: GEMVs mixer en parallel OMP, dividir 3*d_model filas
+    // ── ÚNICA REGIÓN OMP: 1 fork-join por capa en lugar de 5 ────────────────
     #pragma omp parallel
     {
-        int nthreads = omp_get_num_threads();
-        int tid      = omp_get_thread_num();
-        int total3   = 3 * d_model;
-        int chunk    = (total3 + nthreads - 1) / nthreads;
-        int jS       = tid * chunk;
-        int jE       = jS + chunk < total3 ? jS + chunk : total3;
+        // Calcular partición de este thread (alineada a TILE_J)
+        int nt  = omp_get_num_threads();
+        int tid = omp_get_thread_num();
 
-        int bpr_m = (d_model + 3) / 4;  // bytes por fila para matrices d_model×d_model
+        // Chunk de filas para las GEMVs de d_model salidas
+        int chunk_m = ((d_model / nt + TILE_J - 1) / TILE_J) * TILE_J;
+        int jm_s = tid * chunk_m;
+        int jm_e = jm_s + chunk_m < d_model ? jm_s + chunk_m : d_model;
 
-        for (int j = jS; j < jE; j++) {
-            if (j < d_model) {
-                const uint8_t* wj = W_forget + (ptrdiff_t)j * bpr_m;
-                _fraw[j] = (float)gemv_2bit_row(_xi1, wj, d_model) * cs_f;
-            } else if (j < 2*d_model) {
-                int jj = j - d_model;
-                const uint8_t* wj = W_cand + (ptrdiff_t)jj * bpr_m;
-                _craw[jj] = (float)gemv_2bit_row(_xi1, wj, d_model) * cs_c;
-            } else {
-                int jj = j - 2*d_model;
-                const uint8_t* wj = W_out + (ptrdiff_t)jj * bpr_m;
-                _graw[jj] = (float)gemv_2bit_row(_xi1, wj, d_model) * cs_o;
+        // Chunk de filas para las GEMVs de d_ff salidas
+        int chunk_ff = ((d_ff / nt + TILE_J - 1) / TILE_J) * TILE_J;
+        int jf_s = tid * chunk_ff;
+        int jf_e = jf_s + chunk_ff < d_ff ? jf_s + chunk_ff : d_ff;
+
+        // Acumulador local para este thread
+        static thread_local int32_t _acc_tl[MAX_D_FF];
+
+        // ── PASO 1-2: RMSNorm + cuantizar (serial, thread 0) ────────────────
+        #pragma omp single
+        {
+            rms_norm_inline(x_in, norm1_w, _xn1, d_model, norm_eps);
+            float xs1 = quantize_x_avx2(_xn1, _xi1, d_model);
+            _cs[0] = xs1 * s_forget;
+            _cs[1] = xs1 * s_cand;
+            _cs[2] = xs1 * s_out;
+        }
+        // implicit barrier after omp single
+
+        // ── PASO 3-5: forget + cand + out (fused en paralelo por filas) ────────
+        // Cada thread calcula su chunk de filas para LAS 3 MATRICES a la vez.
+        // Igual que decode_layer_fused int8 pero con kernel tiled 2-bit.
+        // Neto: d_model/nt filas × 3 matrices simultáneamente por thread.
+        if (jm_s < d_model) {
+            int rows = jm_e - jm_s;
+            // forget
+            memset(_acc_tl, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(_xi1, W_forget + (ptrdiff_t)jm_s * bpr_m, _acc_tl, d_model, rows);
+            for (int j = 0; j < rows; j++) _fraw[jm_s+j] = (float)_acc_tl[j] * _cs[0];
+            // cand
+            memset(_acc_tl, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(_xi1, W_cand + (ptrdiff_t)jm_s * bpr_m, _acc_tl, d_model, rows);
+            for (int j = 0; j < rows; j++) _craw[jm_s+j] = (float)_acc_tl[j] * _cs[1];
+            // out
+            memset(_acc_tl, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(_xi1, W_out + (ptrdiff_t)jm_s * bpr_m, _acc_tl, d_model, rows);
+            for (int j = 0; j < rows; j++) _graw[jm_s+j] = (float)_acc_tl[j] * _cs[2];
+        }
+
+        #pragma omp barrier
+
+        // ── PASO 6: MLGRU gates + residual (serial) ──────────────────────────
+        #pragma omp single
+        {
+            int i = 0;
+            for (; i <= d_model-8; i+=8) {
+                __m256 vf = _avx2_sigmoid_ps(_mm256_loadu_ps(_fraw+i));
+                __m256 vc = _avx2_silu_ps(_mm256_loadu_ps(_craw+i));
+                __m256 vg = _avx2_sigmoid_ps(_mm256_loadu_ps(_graw+i));
+                __m256 vh = _mm256_loadu_ps(h+i);
+                __m256 vhn= _mm256_fmadd_ps(vf, _mm256_sub_ps(vh, vc), vc);
+                __m256 vm = _mm256_mul_ps(vg, vhn);
+                _mm256_storeu_ps(h+i, vhn);
+                _mm256_storeu_ps(_xmid+i, _mm256_add_ps(_mm256_loadu_ps(x_in+i), vm));
             }
-        }
-    } // barrier
-
-    // PASO 6: fused MLGRU gates + residual (AVX2, identico a decode_layer_fused)
-    {
-        int i = 0;
-        for (; i <= d_model-8; i+=8) {
-            __m256 vf_r = _mm256_loadu_ps(_fraw+i);
-            __m256 vc_r = _mm256_loadu_ps(_craw+i);
-            __m256 vg_r = _mm256_loadu_ps(_graw+i);
-            __m256 vh   = _mm256_loadu_ps(h+i);
-            __m256 vx   = _mm256_loadu_ps(x_in+i);
-            __m256 vf = _avx2_sigmoid_ps(vf_r);
-            __m256 vc = _avx2_silu_ps(vc_r);
-            __m256 vg = _avx2_sigmoid_ps(vg_r);
-            __m256 vhn = _mm256_fmadd_ps(vf, _mm256_sub_ps(vh, vc), vc);
-            __m256 vm  = _mm256_mul_ps(vg, vhn);
-            _mm256_storeu_ps(h+i, vhn);
-            _mm256_storeu_ps(_mout+i, vm);
-            _mm256_storeu_ps(_xmid+i, _mm256_add_ps(vx, vm));
-        }
-        for (; i < d_model; i++) {
-            float f  = 1.f/(1.f+expf(-_fraw[i]));
-            float c  = _craw[i]/(1.f+expf(-_craw[i]));
-            float g  = 1.f/(1.f+expf(-_graw[i]));
-            float hn = c + f*(h[i]-c);
-            h[i] = hn; _mout[i] = g*hn; _xmid[i] = x_in[i]+_mout[i];
-        }
-    }
-
-    // PASO 7: RMSNorm2
-    rms_norm_inline(_xmid, norm2_w, _xn2, d_model, norm_eps);
-
-    // PASO 8: Cuantizar para gate/up
-    float xs2     = quantize_x_avx2(_xn2, _xi2, d_model);
-    float cs_gate = xs2 * s_gate;
-    float cs_up   = xs2 * s_up;
-
-    // PASO 9-10: GEMVs gate+up en parallel OMP
-    int bpr_m = (d_model + 3) / 4;  // bytes por fila W_gate/W_up [d_ff x d_model]
-    #pragma omp parallel
-    {
-        int nthreads = omp_get_num_threads();
-        int tid      = omp_get_thread_num();
-        int total2   = 2 * d_ff;
-        int chunk    = (total2 + nthreads - 1) / nthreads;
-        int jS       = tid * chunk;
-        int jE       = jS + chunk < total2 ? jS + chunk : total2;
-
-        for (int j = jS; j < jE; j++) {
-            if (j < d_ff) {
-                const uint8_t* wj = W_gate + (ptrdiff_t)j * bpr_m;
-                _gater[j] = (float)gemv_2bit_row(_xi2, wj, d_model) * cs_gate;
-            } else {
-                int jj = j - d_ff;
-                const uint8_t* wj = W_up + (ptrdiff_t)jj * bpr_m;
-                _upr[jj] = (float)gemv_2bit_row(_xi2, wj, d_model) * cs_up;
+            for (; i < d_model; i++) {
+                float f = 1.f/(1.f+expf(-_fraw[i]));
+                float c = _craw[i]/(1.f+expf(-_craw[i]));
+                float g = 1.f/(1.f+expf(-_graw[i]));
+                float hn = c + f*(h[i]-c);
+                h[i] = hn;
+                _xmid[i] = x_in[i] + g*hn;
             }
+            rms_norm_inline(_xmid, norm2_w, _xn2, d_model, norm_eps);
+            float xs2 = quantize_x_avx2(_xn2, _xi2, d_model);
+            _cs[3] = xs2 * s_gate;
+            _cs[4] = xs2 * s_up;
         }
-    } // barrier
+        // implicit barrier after omp single
 
-    // PASO 11: silu(gate)*up → hidden, cuantizar
-    {
-        int i = 0;
-        for (; i <= d_ff-8; i+=8) {
-            __m256 vg = _mm256_loadu_ps(_gater+i);
-            __m256 vu = _mm256_loadu_ps(_upr+i);
-            _mm256_storeu_ps(_hid+i, _mm256_mul_ps(_avx2_silu_ps(vg), vu));
+        // ── PASO 9-10: gate + up (fused en paralelo por filas) ───────────────
+        if (jf_s < d_ff) {
+            int rows = jf_e - jf_s;
+            memset(_acc_tl, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(_xi2, W_gate + (ptrdiff_t)jf_s * bpr_m, _acc_tl, d_model, rows);
+            for (int j = 0; j < rows; j++) _gater[jf_s+j] = (float)_acc_tl[j] * _cs[3];
+            memset(_acc_tl, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(_xi2, W_up + (ptrdiff_t)jf_s * bpr_m, _acc_tl, d_model, rows);
+            for (int j = 0; j < rows; j++) _upr[jf_s+j] = (float)_acc_tl[j] * _cs[4];
         }
-        for (; i < d_ff; i++) _hid[i] = _gater[i]/(1.f+expf(-_gater[i])) * _upr[i];
-    }
 
-    int bpr_ff = (d_ff + 3) / 4;   // bytes por fila W_down [d_model x d_ff]
-    float hs   = quantize_x_avx2(_hid, _hi8, d_ff);
-    float cs_down = hs * s_down;
+        #pragma omp barrier
 
-    // PASO 12: down GEMV paralelo (2-bit)
-    #pragma omp parallel for schedule(static)
-    for (int j = 0; j < d_model; j++) {
-        const uint8_t* wj = W_down + (ptrdiff_t)j * bpr_ff;
-        _ffno[j] = (float)gemv_2bit_row(_hi8, wj, d_ff) * cs_down;
-    }
+        // ── PASO 11: silu + cuantizar (serial) ───────────────────────────────
+        #pragma omp single
+        {
+            int i = 0;
+            for (; i <= d_ff-8; i+=8) {
+                __m256 vg = _mm256_loadu_ps(_gater+i);
+                __m256 vu = _mm256_loadu_ps(_upr+i);
+                _mm256_storeu_ps(_hid+i, _mm256_mul_ps(_avx2_silu_ps(vg), vu));
+            }
+            for (; i < d_ff; i++)
+                _hid[i] = _gater[i]/(1.f+expf(-_gater[i])) * _upr[i];
+            float hs = quantize_x_avx2(_hid, _hi8, d_ff);
+            _cs[5] = hs * s_down;
+        }
+        // implicit barrier
 
-    // PASO 13: x_out = x_mid + ffn_out
-    {
-        int i = 0;
-        for (; i <= d_model-8; i+=8)
+        // ── PASO 12: down_proj GEMV ──────────────────────────────────────────
+        if (jm_s < d_model) {
+            int rows = jm_e - jm_s;
+            memset(_acc_tl, 0, rows * sizeof(int32_t));
+            gemv_2bit_tiled_avx2(_hi8, W_down + (ptrdiff_t)jm_s * bpr_ff, _acc_tl, d_ff, rows);
+            for (int j = 0; j < rows; j++)
+                _ffno[jm_s+j] = (float)_acc_tl[j] * _cs[5];
+        }
+
+        #pragma omp barrier
+
+        // ── PASO 13: x_out = xmid + ffno (paralelo) ─────────────────────────
+        #pragma omp for schedule(static) nowait
+        for (int i = 0; i <= d_model-8; i+=8)
             _mm256_storeu_ps(x_out+i,
                 _mm256_add_ps(_mm256_loadu_ps(_xmid+i), _mm256_loadu_ps(_ffno+i)));
-        for (; i < d_model; i++) x_out[i] = _xmid[i] + _ffno[i];
-    }
+    } // end single OMP region
 }
+
 
 } // extern "C"
