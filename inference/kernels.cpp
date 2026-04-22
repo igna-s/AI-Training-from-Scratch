@@ -1544,4 +1544,150 @@ EXPORT void decode_layer_fused_2bit_mad(
     }
 }
 
+
+// ===========================================================================
+// FPResidual inline: x @ A -> silu -> @ B. Output ADDED to out[].
+// A=[d_in,rank] row-major, B=[rank,d_out] row-major, FP32.
+// ===========================================================================
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void fp_residual_inline(
+    const float* x, const float* A, const float* B,
+    float* out, int d_in, int d_out, int rank
+) {
+    float hidden[32];
+    for (int r = 0; r < rank; r++) {
+        float s = 0.0f;
+        for (int i = 0; i < d_in; i++) s += x[i] * A[i*rank + r];
+        float sig = 1.0f / (1.0f + expf(-s));
+        hidden[r] = s * sig;
+    }
+    for (int j = 0; j < d_out; j++) {
+        float s = 0.0f;
+        for (int r = 0; r < rank; r++) s += hidden[r] * B[r*d_out + j];
+        out[j] += s;
+    }
+}
+
+// ===========================================================================
+// PFNet inline: norm -> quant -> MAD GEMV -> silu -> quant -> MAD GEMV
+// Output ADDED to out[].
+// ===========================================================================
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void pfnet_inline(
+    const float* x, float* out,
+    const float* norm_w, float norm_eps,
+    const uint8_t* W1_mad, float s1,
+    const uint8_t* W2_mad, float s2,
+    int d_model, int pfnet_hidden
+) {
+    static thread_local float  _pf_n[MAX_D_MODEL];
+    static thread_local int8_t _pf_xi[MAX_D_MODEL];
+    static thread_local float  _pf_h[256];
+    static thread_local int8_t _pf_h8[256];
+
+    rms_norm_inline(x, norm_w, _pf_n, d_model, norm_eps);
+    float xs1 = quantize_x_avx2(_pf_n, _pf_xi, d_model);
+    {
+        int nrg = (pfnet_hidden+3)/4;
+        int32_t acc[256];
+        memset(acc,0,nrg*4*sizeof(int32_t));
+        gemv_2bit_mad_chunk(_pf_xi, W1_mad, acc, d_model, pfnet_hidden, 0, nrg);
+        for(int j=0;j<pfnet_hidden;j++) _pf_h[j]=(float)acc[j]*xs1*s1;
+    }
+    {
+        int i=0;
+        for(;i<=pfnet_hidden-8;i+=8)
+            _mm256_storeu_ps(_pf_h+i, _avx2_silu_ps(_mm256_loadu_ps(_pf_h+i)));
+        for(;i<pfnet_hidden;i++){float s=1.f/(1.f+expf(-_pf_h[i])); _pf_h[i]*=s;}
+    }
+    float xs2 = quantize_x_avx2(_pf_h, _pf_h8, pfnet_hidden);
+    {
+        int nrg = (d_model+3)/4;
+        int32_t acc[MAX_D_MODEL];
+        memset(acc,0,nrg*4*sizeof(int32_t));
+        gemv_2bit_mad_chunk(_pf_h8, W2_mad, acc, pfnet_hidden, d_model, 0, nrg);
+        for(int j=0;j<d_model;j++) out[j]+=(float)acc[j]*xs2*s2;
+    }
+}
+
+// ===========================================================================
+// LayerDataMAD struct — all pointers for one layer
+// ===========================================================================
+struct LayerDataMAD {
+    const float*   norm1_w;  const float* norm2_w; float norm_eps;
+    const uint8_t* W_forget; float s_forget;
+    const uint8_t* W_cand;   float s_cand;
+    const uint8_t* W_out;    float s_out;
+    const uint8_t* W_gate;   float s_gate;
+    const uint8_t* W_up;     float s_up;
+    const uint8_t* W_down;   float s_down;
+    const float*   fp_A_mix; const float* fp_B_mix;
+    const float*   fp_A_down; const float* fp_B_down;
+    const float*   pfnet_norm_w;
+    const uint8_t* pfnet_w1; float pfnet_s1;
+    const uint8_t* pfnet_w2; float pfnet_s2;
+};
+
+// ===========================================================================
+// forward_full_mad — full N-layer forward, 1 C call per patch
+//
+// Calls decode_layer_fused_2bit_mad per layer (each opens its own OMP region).
+// FPResidual and PFNet are fused between layers in serial code.
+// Ping-pong buffer swap avoids memcpy between layers.
+// ===========================================================================
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+EXPORT void forward_full_mad(
+    const float* x_in, float* x_out, float* h_all,
+    const LayerDataMAD* layers,
+    int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden
+) {
+    static thread_local float _x_a[MAX_D_MODEL];
+    static thread_local float _x_b[MAX_D_MODEL];
+    // Temporary buffer for xmid (needed for correct PFNet input)
+    static thread_local float _xmid_buf[MAX_D_MODEL];
+
+    float* cur = _x_a;
+    float* nxt = _x_b;
+    memcpy(cur, x_in, d_model * sizeof(float));
+
+    for (int L = 0; L < n_layers; L++) {
+        const LayerDataMAD& ld = layers[L];
+        float* h = h_all + L * d_model;
+
+        // Core layer: norm → GEMVs → MLGRU gates → norm → FFN → residual
+        decode_layer_fused_2bit_mad(
+            cur, nxt, h,
+            ld.norm1_w, ld.norm2_w, ld.norm_eps,
+            ld.W_forget, ld.s_forget, ld.W_cand, ld.s_cand,
+            ld.W_out, ld.s_out, ld.W_gate, ld.s_gate,
+            ld.W_up, ld.s_up, ld.W_down, ld.s_down,
+            d_model, d_ff);
+
+        // FPResidual mixer: reads cur (pre-block), correction adds to nxt
+        if (ld.fp_A_mix && ld.fp_B_mix)
+            fp_residual_inline(cur, ld.fp_A_mix, ld.fp_B_mix,
+                               nxt, d_model, d_model, fp_rank);
+
+        // PFNet: reads nxt (post-FFN output ≈ xmid), adds to nxt
+        if (ld.pfnet_w1 && ld.pfnet_w2 && ld.pfnet_norm_w)
+            pfnet_inline(nxt, nxt, ld.pfnet_norm_w, ld.norm_eps,
+                         ld.pfnet_w1, ld.pfnet_s1,
+                         ld.pfnet_w2, ld.pfnet_s2,
+                         d_model, pfnet_hidden);
+
+        // Swap (zero-cost pointer swap)
+        float* tmp = cur; cur = nxt; nxt = tmp;
+    }
+    memcpy(x_out, cur, d_model * sizeof(float));
+}
+
 } // extern "C"
+
+
+
