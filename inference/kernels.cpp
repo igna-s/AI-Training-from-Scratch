@@ -1721,6 +1721,114 @@ static void gemv_2bit_mad_chunk_st(
     gemv_2bit_mad_chunk(x_i8, W_mad, acc, d_in, d_out, 0, nrg);
 }
 
+// Optimized: SiLU(gate) × up + Quantize + Scale in two passes (minimal overhead)
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static float silu_mul_quantize_fused(
+    const float* gate, const float* up, int8_t* out_i8, int D, float* temp_buf
+) {
+    float x_max = 0.0f;
+    int i = 0;
+
+    // Pass 1: Compute SiLU(gate) × up into temp buffer and find max
+    const __m256 vabsmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+    __m256 vmax = _mm256_setzero_ps();
+
+    for (; i <= D-8; i += 8) {
+        __m256 vg = _mm256_loadu_ps(gate+i);
+        __m256 vu = _mm256_loadu_ps(up+i);
+        __m256 vsilu = _avx2_silu_ps(vg);
+        __m256 vr = _mm256_mul_ps(vsilu, vu);
+        _mm256_storeu_ps(temp_buf+i, vr);
+        vmax = _mm256_max_ps(vmax, _mm256_and_ps(vr, vabsmask));
+    }
+    x_max = _hmax256_ps(vmax);
+    for (; i < D; i++) {
+        float s = gate[i]/(1.f+expf(-gate[i])) * up[i];
+        temp_buf[i] = s;
+        float a = fabsf(s);
+        if (a > x_max) x_max = a;
+    }
+
+    // Pass 2: Quantize to int8 using stored values
+    const float inv_s = 127.0f / (x_max + 1e-8f);
+    const __m256 vinv = _mm256_set1_ps(inv_s);
+    const __m256 vh = _mm256_set1_ps(0.5f);
+    const __m256i vlo = _mm256_set1_epi32(-128);
+    const __m256i vhi = _mm256_set1_epi32(127);
+
+    i = 0;
+    for (; i <= D-8; i += 8) {
+        __m256 vr = _mm256_loadu_ps(temp_buf+i);
+        __m256i vi = _mm256_cvtps_epi32(_mm256_fmadd_ps(vr, vinv, vh));
+        vi = _mm256_min_epi32(_mm256_max_epi32(vi, vlo), vhi);
+        __m128i r = _mm_packs_epi32(_mm256_castsi256_si128(vi), _mm256_extracti128_si256(vi,1));
+        r = _mm_packs_epi16(r, r);
+        _mm_storel_epi64((__m128i*)(out_i8+i), r);
+    }
+    for (; i < D; i++) {
+        float v = temp_buf[i]*inv_s + 0.5f;
+        v = v > 127.f ? 127.f : (v < -128.f ? -128.f : v);
+        out_i8[i] = (int8_t)(int)v;
+    }
+
+    return inv_s;
+}
+
+// Optimized: RMSNorm + Quantize + Scale computation in single pass
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static float rms_norm_quantize_fused_opt(
+    const float* x, const float* w, float* normed, int8_t* xi8,
+    int D, float eps
+) {
+    // Pass 1: sum of squares
+    __m256 vss = _mm256_setzero_ps();
+    int i = 0;
+    for (; i <= D-8; i+=8) { __m256 v = _mm256_loadu_ps(x+i); vss = _mm256_fmadd_ps(v,v,vss); }
+    __m128 ss4 = _mm_add_ps(_mm256_castps256_ps128(vss), _mm256_extractf128_ps(vss,1));
+    ss4 = _mm_hadd_ps(ss4, ss4); ss4 = _mm_hadd_ps(ss4, ss4);
+    float ss = _mm_cvtss_f32(ss4);
+    for (; i < D; i++) ss += x[i]*x[i];
+    float norm_sc = 1.0f / sqrtf(ss/(float)D + eps);
+
+    // Pass 2: normalize, find abs max, and write normed
+    const __m256 vnsc = _mm256_set1_ps(norm_sc);
+    const __m256 vabsmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+    __m256 vmax = _mm256_setzero_ps();
+    i = 0;
+    for (; i <= D-8; i+=8) {
+        __m256 vn = _mm256_mul_ps(_mm256_mul_ps(_mm256_loadu_ps(x+i), vnsc), _mm256_loadu_ps(w+i));
+        _mm256_storeu_ps(normed+i, vn);
+        vmax = _mm256_max_ps(vmax, _mm256_and_ps(vn, vabsmask));
+    }
+    float x_max = _hmax256_ps(vmax);
+    for (; i < D; i++) { normed[i] = x[i]*norm_sc*w[i]; float a=fabsf(normed[i]); if(a>x_max) x_max=a; }
+
+    // Pass 3: quantize to int8
+    const float inv_s = 127.0f / (x_max + 1e-8f);
+    const __m256  vinv = _mm256_set1_ps(inv_s);
+    const __m256  vh   = _mm256_set1_ps(0.5f);
+    const __m256i vlo  = _mm256_set1_epi32(-128);
+    const __m256i vhi  = _mm256_set1_epi32(127);
+    i = 0;
+    for (; i <= D-8; i+=8) {
+        __m256i vi = _mm256_cvtps_epi32(_mm256_fmadd_ps(_mm256_loadu_ps(normed+i), vinv, vh));
+        vi = _mm256_min_epi32(_mm256_max_epi32(vi, vlo), vhi);
+        __m128i r = _mm_packs_epi32(_mm256_castsi256_si128(vi), _mm256_extracti128_si256(vi,1));
+        r = _mm_packs_epi16(r, r);
+        _mm_storel_epi64((__m128i*)(xi8+i), r);
+    }
+    for (; i < D; i++) {
+        float v = normed[i]*inv_s + 0.5f;
+        v = v > 127.f ? 127.f : (v < -128.f ? -128.f : v);
+        xi8[i] = (int8_t)(int)v;
+    }
+    return inv_s;  // Return scale factor directly
+}
+
 // ===========================================================================
 // forward_full_mad_st: Single-threaded fast path (no OMP overhead)
 // ===========================================================================
@@ -1755,20 +1863,17 @@ EXPORT void forward_full_mad_st(
         float* cur = (L & 1) ? _x_b : _x_a;
         float* nxt = (L & 1) ? _x_a : _x_b;
 
-        // Phase 1: RMSNorm1 + Quantize
-        rms_norm_quantize_fused(cur, ld.norm1_w, _xn1, _xi1, d_model, ld.norm_eps, NULL);
-        float xs1 = 0.0f;
-        {
-            const __m256 vabsmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-            __m256 vmax = _mm256_setzero_ps();
-            for (int i = 0; i <= d_model-8; i += 8)
-                vmax = _mm256_max_ps(vmax, _mm256_and_ps(_mm256_loadu_ps(_xn1+i), vabsmask));
-            xs1 = _hmax256_ps(vmax);
-            for (int i = (d_model/8)*8; i < d_model; i++) {
-                float a = fabsf(_xn1[i]); if (a > xs1) xs1 = a;
-            }
-            xs1 = 127.0f / (xs1 + 1e-8f);
+        // Prefetch next layer's W_forget (most accessed weight matrix) to hide memory latency
+        if (L + 1 < n_layers) {
+            const LayerDataMAD& ld_next = layers[L + 1];
+            const int nrg = (d_model + 3) / 4;
+            const int weight_size = nrg * 4 * d_model;
+            for (int i = 0; i < weight_size; i += 128)
+                _mm_prefetch((const char*)ld_next.W_forget + i, _MM_HINT_T1);
         }
+
+        // Phase 1: RMSNorm1 + Quantize (optimized with embedded scale computation)
+        float xs1 = rms_norm_quantize_fused_opt(cur, ld.norm1_w, _xn1, _xi1, d_model, ld.norm_eps);
 
         // Phase 2: 3 Mixer GEMVs (forget, cand, out)
         gemv_2bit_mad_chunk_st(_xi1, ld.W_forget, _acc, d_model, d_model);
@@ -1800,20 +1905,8 @@ EXPORT void forward_full_mad_st(
             _xmid[i] = cur[i] + g*hn;
         }
 
-        // Phase 4: RMSNorm2 + Quantize
-        rms_norm_quantize_fused(_xmid, ld.norm2_w, _xn2, _xi2, d_model, ld.norm_eps, NULL);
-        float xs2 = 0.0f;
-        {
-            const __m256 vabsmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-            __m256 vmax = _mm256_setzero_ps();
-            for (int i = 0; i <= d_model-8; i += 8)
-                vmax = _mm256_max_ps(vmax, _mm256_and_ps(_mm256_loadu_ps(_xn2+i), vabsmask));
-            xs2 = _hmax256_ps(vmax);
-            for (int i = (d_model/8)*8; i < d_model; i++) {
-                float a = fabsf(_xn2[i]); if (a > xs2) xs2 = a;
-            }
-            xs2 = 127.0f / (xs2 + 1e-8f);
-        }
+        // Phase 4: RMSNorm2 + Quantize (optimized with embedded scale computation)
+        float xs2 = rms_norm_quantize_fused_opt(_xmid, ld.norm2_w, _xn2, _xi2, d_model, ld.norm_eps);
 
         // Phase 5: 2 FFN GEMVs (gate, up)
         gemv_2bit_mad_chunk_st(_xi2, ld.W_gate, _acc, d_model, d_ff);
@@ -1822,28 +1915,8 @@ EXPORT void forward_full_mad_st(
         gemv_2bit_mad_chunk_st(_xi2, ld.W_up, _acc, d_model, d_ff);
         for (int j = 0; j < d_ff; j++) _upr[j] = (float)_acc[j] * xs2 * ld.s_up;
 
-        // Phase 6: SiLU(gate) × up + quantize
-        for (int i = 0; i <= d_ff-8; i += 8) {
-            _mm256_storeu_ps(_hid+i, _mm256_mul_ps(
-                _avx2_silu_ps(_mm256_loadu_ps(_gater+i)),
-                _mm256_loadu_ps(_upr+i)));
-        }
-        for (int i = (d_ff/8)*8; i < d_ff; i++)
-            _hid[i] = _gater[i]/(1.f+expf(-_gater[i])) * _upr[i];
-
-        quantize_x_avx2(_hid, _hi8, d_ff);
-        float xs3 = 0.0f;
-        {
-            const __m256 vabsmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-            __m256 vmax = _mm256_setzero_ps();
-            for (int i = 0; i <= d_ff-8; i += 8)
-                vmax = _mm256_max_ps(vmax, _mm256_and_ps(_mm256_loadu_ps(_hid+i), vabsmask));
-            xs3 = _hmax256_ps(vmax);
-            for (int i = (d_ff/8)*8; i < d_ff; i++) {
-                float a = fabsf(_hid[i]); if (a > xs3) xs3 = a;
-            }
-            xs3 = 127.0f / (xs3 + 1e-8f);
-        }
+        // Phase 6: SiLU(gate) × up + quantize (fused two-pass: compute then quantize)
+        float xs3 = silu_mul_quantize_fused(_gater, _upr, _hi8, d_ff, _hid);
 
         // Phase 7: Down GEMV + residual add
         gemv_2bit_mad_chunk_st(_hi8, ld.W_down, _acc, d_ff, d_model);
