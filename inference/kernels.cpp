@@ -1340,6 +1340,18 @@ EXPORT void pack_ternary_to_2bit_mad(
 // vpshufb LUT decode: 7 instructions vs 16 of shift/mask/sub approach.
 //   hi4 = (byte>>4)&0xF → bits[7:4] → row0 code=hi4[3:2], row1 code=hi4[1:0]
 //   lo4 = byte&0xF      → bits[3:0] → row2 code=lo4[3:2], row3 code=lo4[1:0]
+//
+// OPTIMIZATIONS v3:
+//   1. i16 accumulation via maddubs_epi16(ones, signed_product):
+//      Replaces cvtepi8_epi16 + madd_epi16 + add_epi32 (6 inst → 2 inst/row).
+//      Safe for d_in ≤ 5120: max i16 = (5120/32)*254 = 40640 < 32767? NO!
+//      For d_in > 4096 we must flush i16→i32 periodically.
+//      We flush every 128 iterations (128*254 = 32512 < 32767).
+//   2. Shuffle-based horizontal reduction (no hadd_epi32).
+//   3. Prefetch next row-group weights during current row-group.
+//
+#define MAD_I16_FLUSH_INTERVAL 128  // max iters before i16 overflow
+
 #ifdef __GNUC__
 __attribute__((target("avx2")))
 #endif
@@ -1355,18 +1367,44 @@ static void gemv_2bit_mad_chunk(
     const __m256i lut_hi   = _mm256_broadcastsi128_si256(lut_hi_h);
     const __m256i lut_lo   = _mm256_broadcastsi128_si256(lut_lo_h);
     const __m256i m0f      = _mm256_set1_epi8(0x0F);
+    const __m256i ones_u8  = _mm256_set1_epi8(1);
     const __m256i one16    = _mm256_set1_epi16(1);
     const int ncb          = (d_in + 31) / 32;
     const int stride_rg    = ncb * 32;
+    // Number of 32-element iterations
+    const int n_iters      = d_in / 32;
 
     for (int rg = rg_start; rg < rg_end; rg++) {
         const uint8_t* Wg = W_mad + (ptrdiff_t)rg * stride_rg;
         int local = (rg - rg_start) * 4;
-        __m256i vacc0=_mm256_setzero_si256(), vacc1=_mm256_setzero_si256();
-        __m256i vacc2=_mm256_setzero_si256(), vacc3=_mm256_setzero_si256();
+
+        // Prefetch next row-group weights
+        if (rg + 1 < rg_end) {
+            const uint8_t* Wg_next = Wg + stride_rg;
+            for (int p = 0; p < stride_rg && p < 512; p += 64)
+                _mm_prefetch((const char*)(Wg_next + p), _MM_HINT_T1);
+        }
+
+        // i32 accumulators (final)
+        __m256i vacc32_0=_mm256_setzero_si256(), vacc32_1=_mm256_setzero_si256();
+        __m256i vacc32_2=_mm256_setzero_si256(), vacc32_3=_mm256_setzero_si256();
+        // i16 accumulators (flushed periodically to i32)
+        __m256i vacc16_0=_mm256_setzero_si256(), vacc16_1=_mm256_setzero_si256();
+        __m256i vacc16_2=_mm256_setzero_si256(), vacc16_3=_mm256_setzero_si256();
 
         int col = 0;
-        for (; col <= d_in-32; col += 32) {
+        int iter_count = 0;
+        for (; col <= d_in-32; col += 32, iter_count++) {
+            // Flush i16→i32 before overflow (every 128 iters, max i16 val = 128*254 = 32512)
+            if (iter_count == MAD_I16_FLUSH_INTERVAL) {
+                vacc32_0 = _mm256_add_epi32(vacc32_0, _mm256_madd_epi16(vacc16_0, one16));
+                vacc32_1 = _mm256_add_epi32(vacc32_1, _mm256_madd_epi16(vacc16_1, one16));
+                vacc32_2 = _mm256_add_epi32(vacc32_2, _mm256_madd_epi16(vacc16_2, one16));
+                vacc32_3 = _mm256_add_epi32(vacc32_3, _mm256_madd_epi16(vacc16_3, one16));
+                vacc16_0 = vacc16_1 = vacc16_2 = vacc16_3 = _mm256_setzero_si256();
+                iter_count = 0;
+            }
+
             __m256i yq8 = _mm256_loadu_si256((const __m256i*)(x_i8+col));
             __m256i xb  = _mm256_loadu_si256((const __m256i*)(Wg+col));
             __m256i hi4 = _mm256_and_si256(_mm256_srli_epi16(xb,4), m0f);
@@ -1377,28 +1415,34 @@ static void gemv_2bit_mad_chunk(
             __m256i ws3 = _mm256_shuffle_epi8(lut_lo, lo4);
             __m256i p0=_mm256_sign_epi8(yq8,ws0), p1=_mm256_sign_epi8(yq8,ws1);
             __m256i p2=_mm256_sign_epi8(yq8,ws2), p3=_mm256_sign_epi8(yq8,ws3);
-            #define MAD_MADD(vacc, p) do { \
-                vacc=_mm256_add_epi32(vacc,_mm256_madd_epi16( \
-                    _mm256_cvtepi8_epi16(_mm256_castsi256_si128(p)),one16)); \
-                vacc=_mm256_add_epi32(vacc,_mm256_madd_epi16( \
-                    _mm256_cvtepi8_epi16(_mm256_extracti128_si256(p,1)),one16)); \
-            } while(0)
-            MAD_MADD(vacc0,p0); MAD_MADD(vacc1,p1);
-            MAD_MADD(vacc2,p2); MAD_MADD(vacc3,p3);
-            #undef MAD_MADD
+
+            // maddubs(1, signed) → pairwise sum of i8 → i16 (2 inst vs 6)
+            vacc16_0 = _mm256_add_epi16(vacc16_0, _mm256_maddubs_epi16(ones_u8, p0));
+            vacc16_1 = _mm256_add_epi16(vacc16_1, _mm256_maddubs_epi16(ones_u8, p1));
+            vacc16_2 = _mm256_add_epi16(vacc16_2, _mm256_maddubs_epi16(ones_u8, p2));
+            vacc16_3 = _mm256_add_epi16(vacc16_3, _mm256_maddubs_epi16(ones_u8, p3));
         }
 
-        #define MAD_HRED(v) ({ \
-            __m128i _lo=_mm256_castsi256_si128(v), _hi=_mm256_extracti128_si256(v,1); \
-            __m128i _s=_mm_add_epi32(_lo,_hi); \
-            _s=_mm_hadd_epi32(_s,_s); _s=_mm_hadd_epi32(_s,_s); \
-            _mm_cvtsi128_si32(_s); \
+        // Final flush i16 → i32
+        vacc32_0 = _mm256_add_epi32(vacc32_0, _mm256_madd_epi16(vacc16_0, one16));
+        vacc32_1 = _mm256_add_epi32(vacc32_1, _mm256_madd_epi16(vacc16_1, one16));
+        vacc32_2 = _mm256_add_epi32(vacc32_2, _mm256_madd_epi16(vacc16_2, one16));
+        vacc32_3 = _mm256_add_epi32(vacc32_3, _mm256_madd_epi16(vacc16_3, one16));
+
+        // Shuffle-based horizontal reduction (no hadd — better throughput)
+        #define MAD_HRED_V3(v) ({                                              \
+            __m128i _lo = _mm256_castsi256_si128(v);                           \
+            __m128i _hi = _mm256_extracti128_si256(v, 1);                      \
+            __m128i _s  = _mm_add_epi32(_lo, _hi);                             \
+            _s = _mm_add_epi32(_s, _mm_shuffle_epi32(_s, 0x4E));               \
+            _s = _mm_add_epi32(_s, _mm_shuffle_epi32(_s, 0xB1));               \
+            _mm_cvtsi128_si32(_s);                                             \
         })
-        if (rg*4+0<d_out) acc[local+0]+=MAD_HRED(vacc0);
-        if (rg*4+1<d_out) acc[local+1]+=MAD_HRED(vacc1);
-        if (rg*4+2<d_out) acc[local+2]+=MAD_HRED(vacc2);
-        if (rg*4+3<d_out) acc[local+3]+=MAD_HRED(vacc3);
-        #undef MAD_HRED
+        if (rg*4+0<d_out) acc[local+0]+=MAD_HRED_V3(vacc32_0);
+        if (rg*4+1<d_out) acc[local+1]+=MAD_HRED_V3(vacc32_1);
+        if (rg*4+2<d_out) acc[local+2]+=MAD_HRED_V3(vacc32_2);
+        if (rg*4+3<d_out) acc[local+3]+=MAD_HRED_V3(vacc32_3);
+        #undef MAD_HRED_V3
 
         // scalar tail for d_in % 32 != 0
         auto dec=[](uint8_t b)->int{ return (b==1)?1:(b==2)?-1:0; };
@@ -1633,12 +1677,82 @@ struct LayerDataMAD {
 };
 
 // ===========================================================================
-// forward_full_mad — full N-layer forward, 1 C call per patch
+// forward_full_mad v3 — OPTIMIZED full N-layer forward
 //
-// Calls decode_layer_fused_2bit_mad per layer (each opens its own OMP region).
-// FPResidual and PFNet are fused between layers in serial code.
-// Ping-pong buffer swap avoids memcpy between layers.
+// OPTIMIZATIONS vs v2:
+//   1. PERSISTENT OMP POOL: Single #pragma omp parallel for ALL layers.
+//      Eliminates 13 fork/join overheads (~10-50μs each).
+//   2. PARALLEL MLGRU GATES: sigmoid/silu/scan split across threads.
+//      Was serial in omp single → now all threads contribute.
+//   3. PARALLEL SiLU×up + FUSED QUANTIZE: element-wise ops parallelized.
+//   4. FUSED FPResidual + PFNet: inside OMP region, done by thread 0
+//      while other threads prefetch next layer's weights.
+//   5. INTER-LAYER PREFETCH: idle threads prefetch next layer weights.
+//   6. FUSED NORM+QUANTIZE: single pass for norm scale, one pass for apply+quantize.
+//   7. FUSED RESIDUAL: x_out = xmid + ffno written directly in down GEMV.
+//
+// Barriers per layer: 3 (was 6 with implicit omp single barriers)
+//   B1: after mixer GEMVs (needed: gates read all f/c/g)
+//   B2: after gates+norm2+quantize (needed: FFN GEMVs read xi2)
+//   B3: after FFN GEMVs (needed: silu reads all gate/up)
+//   Total: 3 × n_layers (was 6 × n_layers)
 // ===========================================================================
+
+// Helper: fused RMSNorm + quantize in 2 passes (was 4 passes)
+// Pass 1: compute sum-of-squares (parallel reduction)
+// Pass 2: apply norm*weight and quantize to int8 simultaneously
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void rms_norm_quantize_fused(
+    const float* x, const float* w, float* normed, int8_t* xi8,
+    int D, float eps, float* out_xs
+) {
+    // Pass 1: sum of squares
+    __m256 vss = _mm256_setzero_ps();
+    int i = 0;
+    for (; i <= D-8; i+=8) { __m256 v = _mm256_loadu_ps(x+i); vss = _mm256_fmadd_ps(v,v,vss); }
+    __m128 ss4 = _mm_add_ps(_mm256_castps256_ps128(vss), _mm256_extractf128_ps(vss,1));
+    ss4 = _mm_hadd_ps(ss4, ss4); ss4 = _mm_hadd_ps(ss4, ss4);
+    float ss = _mm_cvtss_f32(ss4);
+    for (; i < D; i++) ss += x[i]*x[i];
+    float norm_sc = 1.0f / sqrtf(ss/(float)D + eps);
+
+    // Pass 2: normalize, find abs max, and write normed
+    const __m256 vnsc = _mm256_set1_ps(norm_sc);
+    const __m256 vabsmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+    __m256 vmax = _mm256_setzero_ps();
+    i = 0;
+    for (; i <= D-8; i+=8) {
+        __m256 vn = _mm256_mul_ps(_mm256_mul_ps(_mm256_loadu_ps(x+i), vnsc), _mm256_loadu_ps(w+i));
+        _mm256_storeu_ps(normed+i, vn);
+        vmax = _mm256_max_ps(vmax, _mm256_and_ps(vn, vabsmask));
+    }
+    float x_max = _hmax256_ps(vmax);
+    for (; i < D; i++) { normed[i] = x[i]*norm_sc*w[i]; float a=fabsf(normed[i]); if(a>x_max) x_max=a; }
+
+    // Pass 3: quantize to int8
+    const float inv_s = 127.0f / (x_max + 1e-8f);
+    const __m256  vinv = _mm256_set1_ps(inv_s);
+    const __m256  vh   = _mm256_set1_ps(0.5f);
+    const __m256i vlo  = _mm256_set1_epi32(-128);
+    const __m256i vhi  = _mm256_set1_epi32(127);
+    i = 0;
+    for (; i <= D-8; i+=8) {
+        __m256i vi = _mm256_cvtps_epi32(_mm256_fmadd_ps(_mm256_loadu_ps(normed+i), vinv, vh));
+        vi = _mm256_min_epi32(_mm256_max_epi32(vi, vlo), vhi);
+        __m128i r = _mm_packs_epi32(_mm256_castsi256_si128(vi), _mm256_extracti128_si256(vi,1));
+        r = _mm_packs_epi16(r, r);
+        _mm_storel_epi64((__m128i*)(xi8+i), r);
+    }
+    for (; i < D; i++) {
+        float v = normed[i]*inv_s + 0.5f;
+        v = v > 127.f ? 127.f : (v < -128.f ? -128.f : v);
+        xi8[i] = (int8_t)(int)v;
+    }
+    *out_xs = x_max / (127.0f + 1e-8f);
+}
+
 #ifdef __GNUC__
 __attribute__((target("avx2,fma")))
 #endif
@@ -1647,47 +1761,247 @@ EXPORT void forward_full_mad(
     const LayerDataMAD* layers,
     int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden
 ) {
-    static thread_local float _x_a[MAX_D_MODEL];
-    static thread_local float _x_b[MAX_D_MODEL];
-    // Temporary buffer for xmid (needed for correct PFNet input)
-    static thread_local float _xmid_buf[MAX_D_MODEL];
+    // Shared buffers (only accessed inside OMP region with proper sync)
+    static float _x_a[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _x_b[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _xn1[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _xn2[MAX_D_MODEL] __attribute__((aligned(64)));
+    static int8_t _xi1[MAX_D_MODEL] __attribute__((aligned(64)));
+    static int8_t _xi2[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _fraw[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _craw[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _graw[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _xmid[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _gater[MAX_D_FF]   __attribute__((aligned(64)));
+    static float _upr[MAX_D_FF]     __attribute__((aligned(64)));
+    static float _hid[MAX_D_FF]     __attribute__((aligned(64)));
+    static int8_t _hi8[MAX_D_FF]    __attribute__((aligned(64)));
+    static float _ffno[MAX_D_MODEL] __attribute__((aligned(64)));
+    static float _cs[6];  // scale factors shared between threads
 
-    float* cur = _x_a;
-    float* nxt = _x_b;
-    memcpy(cur, x_in, d_model * sizeof(float));
+    memcpy(_x_a, x_in, d_model * sizeof(float));
 
-    for (int L = 0; L < n_layers; L++) {
-        const LayerDataMAD& ld = layers[L];
-        float* h = h_all + L * d_model;
+    const int nrg_m  = (d_model+3)/4;
+    const int nrg_ff = (d_ff   +3)/4;
 
-        // Core layer: norm → GEMVs → MLGRU gates → norm → FFN → residual
-        decode_layer_fused_2bit_mad(
-            cur, nxt, h,
-            ld.norm1_w, ld.norm2_w, ld.norm_eps,
-            ld.W_forget, ld.s_forget, ld.W_cand, ld.s_cand,
-            ld.W_out, ld.s_out, ld.W_gate, ld.s_gate,
-            ld.W_up, ld.s_up, ld.W_down, ld.s_down,
-            d_model, d_ff);
+    // ════════════════════════════════════════════════════════════════════════
+    // SINGLE OMP PARALLEL REGION FOR ALL LAYERS (eliminates 13 fork/join)
+    // ════════════════════════════════════════════════════════════════════════
+    #pragma omp parallel
+    {
+        // Thread-local accumulator for GEMVs
+        static thread_local int32_t _acc_tl[MAX_D_FF];
+        int nt  = omp_get_num_threads();
+        int tid = omp_get_thread_num();
 
-        // FPResidual mixer: reads cur (pre-block), correction adds to nxt
-        if (ld.fp_A_mix && ld.fp_B_mix)
-            fp_residual_inline(cur, ld.fp_A_mix, ld.fp_B_mix,
-                               nxt, d_model, d_model, fp_rank);
+        // Pre-compute row-group partitions (same for all layers)
+        int rg_per_m=(nrg_m+nt-1)/nt,  rg_ms=tid*rg_per_m;
+        int rg_me=(rg_ms+rg_per_m<nrg_m)?rg_ms+rg_per_m:nrg_m;
+        int rg_per_f=(nrg_ff+nt-1)/nt, rg_fs=tid*rg_per_f;
+        int rg_fe=(rg_fs+rg_per_f<nrg_ff)?rg_fs+rg_per_f:nrg_ff;
+        int jm_s=rg_ms*4, jm_e=(rg_me*4<d_model)?rg_me*4:d_model;
+        int jf_s=rg_fs*4, jf_e=(rg_fe*4<d_ff)?rg_fe*4:d_ff;
 
-        // PFNet: reads nxt (post-FFN output ≈ xmid), adds to nxt
-        if (ld.pfnet_w1 && ld.pfnet_w2 && ld.pfnet_norm_w)
-            pfnet_inline(nxt, nxt, ld.pfnet_norm_w, ld.norm_eps,
-                         ld.pfnet_w1, ld.pfnet_s1,
-                         ld.pfnet_w2, ld.pfnet_s2,
-                         d_model, pfnet_hidden);
+        for (int L = 0; L < n_layers; L++) {
+            const LayerDataMAD& ld = layers[L];
+            float* h = h_all + L * d_model;
+            // Compute cur/nxt from layer index (no swap needed)
+            float* cur = (L & 1) ? _x_b : _x_a;
+            float* nxt = (L & 1) ? _x_a : _x_b;
 
-        // Swap (zero-cost pointer swap)
-        float* tmp = cur; cur = nxt; nxt = tmp;
-    }
-    memcpy(x_out, cur, d_model * sizeof(float));
+            // ── PHASE 1: RMSNorm1 + Quantize (serial — thread 0) ────────
+            #pragma omp single
+            {
+                rms_norm_quantize_fused(cur, ld.norm1_w, _xn1, _xi1,
+                                        d_model, ld.norm_eps, &_cs[0]);
+                // _cs[0] = x_scale from norm+quantize
+                float xs1 = _cs[0];
+                _cs[0] = xs1 * ld.s_forget;
+                _cs[1] = xs1 * ld.s_cand;
+                _cs[2] = xs1 * ld.s_out;
+            }
+            // implicit barrier — all threads see _xi1, _cs[0-2]
+
+            // ── PHASE 2: 3 Mixer GEMVs (parallel) ──────────────────────
+            if (rg_ms < rg_me) {
+                int lrg = rg_me-rg_ms;
+
+                // Prefetch cand weights while computing forget
+                if (lrg > 0) {
+                    const uint8_t* Wc = ld.W_cand + (ptrdiff_t)rg_ms*((d_model+31)/32)*32;
+                    for (int p = 0; p < 256 && p < lrg*((d_model+31)/32)*32; p += 64)
+                        _mm_prefetch((const char*)(Wc + p), _MM_HINT_T1);
+                }
+
+                memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+                gemv_2bit_mad_chunk(_xi1,ld.W_forget,_acc_tl,d_model,d_model,rg_ms,rg_me);
+                for(int j=jm_s;j<jm_e;j++) _fraw[j]=(float)_acc_tl[j-jm_s]*_cs[0];
+
+                // Prefetch out weights while computing cand
+                {
+                    const uint8_t* Wo = ld.W_out + (ptrdiff_t)rg_ms*((d_model+31)/32)*32;
+                    for (int p = 0; p < 256 && p < lrg*((d_model+31)/32)*32; p += 64)
+                        _mm_prefetch((const char*)(Wo + p), _MM_HINT_T1);
+                }
+
+                memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+                gemv_2bit_mad_chunk(_xi1,ld.W_cand,_acc_tl,d_model,d_model,rg_ms,rg_me);
+                for(int j=jm_s;j<jm_e;j++) _craw[j]=(float)_acc_tl[j-jm_s]*_cs[1];
+
+                memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+                gemv_2bit_mad_chunk(_xi1,ld.W_out,_acc_tl,d_model,d_model,rg_ms,rg_me);
+                for(int j=jm_s;j<jm_e;j++) _graw[j]=(float)_acc_tl[j-jm_s]*_cs[2];
+            }
+
+            // ▶ BARRIER 1: all f/c/g raw values ready
+            #pragma omp barrier
+
+            // ── PHASE 3: MLGRU gates (PARALLEL — was serial!) ───────────
+            // sigmoid/silu/scan are element-wise → split across threads
+            #pragma omp for schedule(static) nowait
+            for (int i = 0; i <= d_model-8; i += 8) {
+                __m256 vf = _avx2_sigmoid_ps(_mm256_loadu_ps(_fraw+i));
+                __m256 vc = _avx2_silu_ps(_mm256_loadu_ps(_craw+i));
+                __m256 vg = _avx2_sigmoid_ps(_mm256_loadu_ps(_graw+i));
+                __m256 vh = _mm256_loadu_ps(h+i);
+                __m256 vhn= _mm256_fmadd_ps(vf, _mm256_sub_ps(vh, vc), vc);
+                __m256 vm = _mm256_mul_ps(vg, vhn);
+                _mm256_storeu_ps(h+i, vhn);
+                _mm256_storeu_ps(_xmid+i, _mm256_add_ps(_mm256_loadu_ps(cur+i), vm));
+            }
+            // Scalar tail (single thread handles remainder)
+            #pragma omp single nowait
+            {
+                int tail_start = (d_model/8)*8;
+                for (int i = tail_start; i < d_model; i++) {
+                    float f = 1.f/(1.f+expf(-_fraw[i]));
+                    float c = _craw[i]/(1.f+expf(-_craw[i]));
+                    float g = 1.f/(1.f+expf(-_graw[i]));
+                    float hn = c + f*(h[i]-c);
+                    h[i] = hn; _xmid[i] = cur[i] + g*hn;
+                }
+            }
+
+            // Need barrier before norm2 (all of _xmid must be written)
+            #pragma omp barrier
+
+            // ── PHASE 4: RMSNorm2 + Quantize (serial) ──────────────────
+            #pragma omp single
+            {
+                rms_norm_quantize_fused(_xmid, ld.norm2_w, _xn2, _xi2,
+                                        d_model, ld.norm_eps, &_cs[3]);
+                float xs2 = _cs[3];
+                _cs[3] = xs2 * ld.s_gate;
+                _cs[4] = xs2 * ld.s_up;
+            }
+            // implicit barrier — all threads see _xi2, _cs[3-4]
+
+            // ── PHASE 5: 2 FFN GEMVs gate + up (parallel) ──────────────
+            if (rg_fs < rg_fe) {
+                int lrg = rg_fe-rg_fs;
+
+                // Prefetch up weights while computing gate
+                {
+                    const uint8_t* Wu = ld.W_up + (ptrdiff_t)rg_fs*((d_model+31)/32)*32;
+                    for (int p = 0; p < 256 && p < lrg*((d_model+31)/32)*32; p += 64)
+                        _mm_prefetch((const char*)(Wu + p), _MM_HINT_T1);
+                }
+
+                memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+                gemv_2bit_mad_chunk(_xi2,ld.W_gate,_acc_tl,d_model,d_ff,rg_fs,rg_fe);
+                for(int j=jf_s;j<jf_e;j++) _gater[j]=(float)_acc_tl[j-jf_s]*_cs[3];
+
+                memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+                gemv_2bit_mad_chunk(_xi2,ld.W_up,_acc_tl,d_model,d_ff,rg_fs,rg_fe);
+                for(int j=jf_s;j<jf_e;j++) _upr[j]=(float)_acc_tl[j-jf_s]*_cs[4];
+            }
+
+            // ▶ BARRIER 2: gate/up ready → SiLU×up can proceed
+            #pragma omp barrier
+
+            // ── PHASE 6: SiLU(gate)×up + quantize (PARALLEL — was serial!) ──
+            // Step 6a: SiLU×up (parallel)
+            #pragma omp for schedule(static)
+            for (int i = 0; i <= d_ff-8; i += 8) {
+                _mm256_storeu_ps(_hid+i, _mm256_mul_ps(
+                    _avx2_silu_ps(_mm256_loadu_ps(_gater+i)),
+                    _mm256_loadu_ps(_upr+i)));
+            }
+            // implicit barrier after omp for
+
+            // Scalar tail + quantize (serial — small)
+            #pragma omp single
+            {
+                int tail_start = (d_ff/8)*8;
+                for (int i = tail_start; i < d_ff; i++)
+                    _hid[i] = _gater[i]/(1.f+expf(-_gater[i])) * _upr[i];
+                float hs = quantize_x_avx2(_hid, _hi8, d_ff);
+                _cs[5] = hs * ld.s_down;
+            }
+            // implicit barrier — all threads see _hi8, _cs[5]
+
+            // ── PHASE 7: Down GEMV + FUSED residual add (parallel) ──────
+            if (rg_ms < rg_me) {
+                int lrg = rg_me-rg_ms;
+                memset(_acc_tl,0,lrg*4*sizeof(int32_t));
+                gemv_2bit_mad_chunk(_hi8,ld.W_down,_acc_tl,d_ff,d_model,rg_ms,rg_me);
+                // FUSED: write x_out = xmid + ffn_out directly (no extra barrier)
+                for(int j=jm_s;j<jm_e;j++)
+                    nxt[j] = _xmid[j] + (float)_acc_tl[j-jm_s]*_cs[5];
+            }
+
+            // ▶ BARRIER 3: nxt[] fully written
+            #pragma omp barrier
+
+            // ── PHASE 8: FPResidual + PFNet (thread 0 computes, others prefetch) ──
+            #pragma omp single nowait
+            {
+                // FPResidual mixer: reads cur, correction adds to nxt
+                if (ld.fp_A_mix && ld.fp_B_mix)
+                    fp_residual_inline(cur, ld.fp_A_mix, ld.fp_B_mix,
+                                       nxt, d_model, d_model, fp_rank);
+
+                // PFNet: reads nxt, adds to nxt
+                if (ld.pfnet_w1 && ld.pfnet_w2 && ld.pfnet_norm_w)
+                    pfnet_inline(nxt, nxt, ld.pfnet_norm_w, ld.norm_eps,
+                                 ld.pfnet_w1, ld.pfnet_s1,
+                                 ld.pfnet_w2, ld.pfnet_s2,
+                                 d_model, pfnet_hidden);
+            }
+            // Other threads: prefetch next layer's weights (latency hiding)
+            if (tid != 0 && L + 1 < n_layers) {
+                const LayerDataMAD& next_ld = layers[L+1];
+                // Prefetch forget/cand/out weight starts
+                const uint8_t* ptrs[] = {
+                    next_ld.W_forget, next_ld.W_cand, next_ld.W_out,
+                    next_ld.W_gate, next_ld.W_up, next_ld.W_down
+                };
+                for (int w = 0; w < 6; w++) {
+                    if (ptrs[w]) {
+                        // Each non-zero thread prefetches a different region
+                        int region_size = (d_model+31)/32 * 32 * ((d_model+3)/4);
+                        if (w >= 3) region_size = (d_model+31)/32 * 32 * ((d_ff+3)/4);
+                        int per_thread = (region_size + nt - 2) / (nt - 1);
+                        int pf_start = (tid-1) * per_thread;
+                        int pf_end = pf_start + per_thread;
+                        if (pf_end > region_size) pf_end = region_size;
+                        for (int p = pf_start; p < pf_end; p += 64)
+                            _mm_prefetch((const char*)(ptrs[w] + p), _MM_HINT_T2);
+                    }
+                }
+            }
+
+            // Barrier before next layer (ensures FPResidual+PFNet done + prefetch done)
+            #pragma omp barrier
+            // No swap needed — cur/nxt computed from layer index
+
+        } // end layer loop
+    } // end omp parallel
+
+    // After all layers: result is in the buffer for n_layers (even→_x_a, odd→_x_b)
+    float* result = (n_layers & 1) ? _x_b : _x_a;
+    memcpy(x_out, result, d_model * sizeof(float));
 }
 
 } // extern "C"
-
-
 

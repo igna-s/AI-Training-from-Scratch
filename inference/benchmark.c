@@ -17,6 +17,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <omp.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -139,6 +140,7 @@ int main(int argc, char** argv) {
     int fp_rank = 8, pfnet_hidden = 64;
     int n_patches = 200, n_warmup = 20;
     int mode = 0; /* 0=forward_full_mad, 1=per-layer */
+    int n_threads = 0; /* 0 = auto-detect */
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--patches")  && i+1 < argc) n_patches    = atoi(argv[++i]);
@@ -146,11 +148,22 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--d_model")  && i+1 < argc) d_model      = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--n_layers") && i+1 < argc) n_layers     = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mode")     && i+1 < argc) mode         = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--threads")  && i+1 < argc) n_threads    = atoi(argv[++i]);
     }
+
+    /* ── Thread configuration ───────────────────────────────────── */
+    if (n_threads <= 0) {
+        n_threads = omp_get_num_procs();
+        /* On HT systems, halve the count (heuristic) */
+        if (n_threads > 4) n_threads = n_threads / 2;
+        if (n_threads < 1) n_threads = 1;
+    }
+    omp_set_num_threads(n_threads);
 
     srand(42);
     printf("=================================================================\n");
-    printf("CPU-1 Benchmark (C) — d_model=%d n_layers=%d d_ff=%d\n", d_model, n_layers, d_ff);
+    printf("CPU-1 Benchmark (C) v3 — d_model=%d n_layers=%d d_ff=%d\n", d_model, n_layers, d_ff);
+    printf("OMP threads: %d (of %d logical procs)\n", n_threads, omp_get_num_procs());
     printf("=================================================================\n");
 
     /* ── Allocate model weights ──────────────────────────────────── */
