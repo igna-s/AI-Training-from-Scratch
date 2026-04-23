@@ -345,15 +345,18 @@ int main(int argc, char** argv) {
     for (int i = 0; i < n_patches; i++) total += times[i];
     double p50 = times[n_patches / 2];
     double p95 = times[(int)(n_patches * 0.95)];
-    double pps = n_patches / total;
+
+    // Real patches/sec: in mode 3, each iteration processes batch_size patches
+    double actual_patches = (mode == 3) ? (double)(n_patches * batch_size) : (double)n_patches;
+    double pps = actual_patches / total;
     double bw  = (total_bytes / 1e6) * pps;
 
     printf("\n=================================================================\n");
     const char* mode_names[] = { "forward_full_mad (OMP)", "per-layer", "forward_full_mad_st (ST)", "batch" };
     printf("Mode: %s\n", mode_names[mode]);
     if (mode == 3) {
-        printf("Patches: %d (batch_size=%d)  Warmup: %d\n", n_patches, batch_size, n_warmup);
-        printf("Total throughput: %.1f patches/sec (%.1f × batch)\n", pps, (double)batch_size);
+        printf("Iterations: %d (batch_size=%d, total patches: %d)  Warmup: %d\n",
+               n_patches, batch_size, (int)actual_patches, n_warmup);
     } else {
         printf("Patches: %d  Warmup: %d\n", n_patches, n_warmup);
     }
