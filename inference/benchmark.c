@@ -29,6 +29,7 @@ static double get_time_sec(void) {
 }
 #else
 #include <time.h>
+#include <sys/mman.h>
 static double get_time_sec(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -105,6 +106,23 @@ static void* alloc_aligned(size_t align, size_t size) {
     return p;
 }
 
+static void* alloc_aligned_hugepages(size_t size) {
+#ifdef _WIN32
+    void* p = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+    if (!p) p = _aligned_malloc(size, 64);
+    if (!p) { fprintf(stderr, "OOM %zu bytes\n", size); exit(1); }
+    memset(p, 0, size);
+#else
+    void* p;
+    if (posix_memalign(&p, 64, size) != 0) {
+        fprintf(stderr, "OOM %zu bytes\n", size); exit(1);
+    }
+    memset(p, 0, size);
+    madvise(p, size, MADV_HUGEPAGE);
+#endif
+    return p;
+}
+
 static void free_aligned(void* p) {
 #ifdef _WIN32
     _aligned_free(p);
@@ -113,9 +131,19 @@ static void free_aligned(void* p) {
 #endif
 }
 
+static void free_aligned_hugepages(void* p) {
+#ifdef _WIN32
+    if (!VirtualFree(p, 0, MEM_RELEASE)) _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+
 static float*   alloc_f32(int n) { return (float*)  alloc_aligned(64, n * sizeof(float)); }
 static int8_t*  alloc_i8(int n)  { return (int8_t*) alloc_aligned(64, n); }
 static uint8_t* alloc_u8(int n)  { return (uint8_t*)alloc_aligned(64, n); }
+static float*   alloc_f32_hp(int n) { return (float*)  alloc_aligned_hugepages(n * sizeof(float)); }
+static uint8_t* alloc_u8_hp(int n)  { return (uint8_t*)alloc_aligned_hugepages(n); }
 
 /* ── Weight creation ───────────────────────────────────────────────── */
 
@@ -126,7 +154,7 @@ static uint8_t* make_random_mad_weight(int d_out, int d_in) {
         raw[i] = (int8_t)((rand() % 3) - 1);  /* {-1, 0, 1} */
     int ncb = (d_in + 31) / 32;
     int mad_size = ((d_out + 3) / 4) * ncb * 32;
-    uint8_t* packed = alloc_u8(mad_size);
+    uint8_t* packed = alloc_u8_hp(mad_size);
     pack_ternary_to_2bit_mad(raw, packed, d_out, d_in);
     free_aligned(raw);
     return packed;
@@ -134,6 +162,13 @@ static uint8_t* make_random_mad_weight(int d_out, int d_in) {
 
 static float* make_random_f32(int n, float scale) {
     float* v = alloc_f32(n);
+    for (int i = 0; i < n; i++)
+        v[i] = ((float)(rand() % 1000) / 500.0f - 1.0f) * scale;
+    return v;
+}
+
+static float* make_random_f32_hp(int n, float scale) {
+    float* v = alloc_f32_hp(n);
     for (int i = 0; i < n; i++)
         v[i] = ((float)(rand() % 1000) / 500.0f - 1.0f) * scale;
     return v;
@@ -187,8 +222,8 @@ int main(int argc, char** argv) {
 
     for (int L = 0; L < n_layers; L++) {
         struct LayerDataMAD* ld = &layers[L];
-        ld->norm1_w = make_random_f32(d_model, 1.0f);
-        ld->norm2_w = make_random_f32(d_model, 1.0f);
+        ld->norm1_w = make_random_f32_hp(d_model, 1.0f);
+        ld->norm2_w = make_random_f32_hp(d_model, 1.0f);
         ld->norm_eps = 1e-6f;
         ld->W_forget = make_random_mad_weight(d_model, d_model); ld->s_forget = 0.01f;
         ld->W_cand   = make_random_mad_weight(d_model, d_model); ld->s_cand   = 0.01f;
@@ -196,10 +231,10 @@ int main(int argc, char** argv) {
         ld->W_gate   = make_random_mad_weight(d_ff, d_model);    ld->s_gate   = 0.01f;
         ld->W_up     = make_random_mad_weight(d_ff, d_model);    ld->s_up     = 0.01f;
         ld->W_down   = make_random_mad_weight(d_model, d_ff);    ld->s_down   = 0.01f;
-        ld->fp_A_mix = make_random_f32(d_model * fp_rank, 0.01f);
-        ld->fp_B_mix = make_random_f32(fp_rank * d_model, 0.01f);
+        ld->fp_A_mix = make_random_f32_hp(d_model * fp_rank, 0.01f);
+        ld->fp_B_mix = make_random_f32_hp(fp_rank * d_model, 0.01f);
         ld->fp_A_down = NULL; ld->fp_B_down = NULL;
-        ld->pfnet_norm_w = make_random_f32(d_model, 1.0f);
+        ld->pfnet_norm_w = make_random_f32_hp(d_model, 1.0f);
         ld->pfnet_w1 = make_random_mad_weight(pfnet_hidden, d_model); ld->pfnet_s1 = 0.01f;
         ld->pfnet_w2 = make_random_mad_weight(d_model, pfnet_hidden); ld->pfnet_s2 = 0.01f;
 
