@@ -64,6 +64,19 @@ void forward_full_mad(
     const struct LayerDataMAD* layers,
     int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden);
 
+void forward_full_mad_st(
+    const float* x_in, float* x_out, float* h_all,
+    const struct LayerDataMAD* layers,
+    int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden);
+
+void forward_full_mad_batch(
+    const float* const*  x_in_array,
+    float* const*        x_out_array,
+    float* const*        h_all_array,
+    const struct LayerDataMAD* layers,
+    int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden,
+    int n_patches, int n_threads);
+
 void decode_layer_fused_2bit_mad(
     const float* x_in, float* x_out, float* h,
     const float* norm1_w, const float* norm2_w, float norm_eps,
@@ -139,8 +152,9 @@ int main(int argc, char** argv) {
     int d_model = 1024, n_layers = 14, d_ff = 2688;
     int fp_rank = 8, pfnet_hidden = 64;
     int n_patches = 200, n_warmup = 20;
-    int mode = 0; /* 0=forward_full_mad, 1=per-layer */
+    int mode = 0; /* 0=forward_full_mad (OMP), 1=per-layer, 2=ST single-threaded, 3=batch */
     int n_threads = 0; /* 0 = auto-detect */
+    int batch_size = 1; /* for mode 3: patches per batch */
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--patches")  && i+1 < argc) n_patches    = atoi(argv[++i]);
@@ -149,6 +163,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--n_layers") && i+1 < argc) n_layers     = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mode")     && i+1 < argc) mode         = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--threads")  && i+1 < argc) n_threads    = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--batch")    && i+1 < argc) batch_size   = atoi(argv[++i]);
     }
 
     /* ── Thread configuration ───────────────────────────────────── */
@@ -202,14 +217,29 @@ int main(int argc, char** argv) {
     float* x_out = alloc_f32(d_model);
     float* h_all = alloc_f32(n_layers * d_model);
 
+    /* ── Allocate batch arrays for mode 3 ────────────────────────── */
+    float** x_in_array = NULL, **x_out_array = NULL, **h_all_array = NULL;
+    if (mode == 3) {
+        x_in_array = (float**)malloc(batch_size * sizeof(float*));
+        x_out_array = (float**)malloc(batch_size * sizeof(float*));
+        h_all_array = (float**)malloc(batch_size * sizeof(float*));
+        for (int b = 0; b < batch_size; b++) {
+            x_in_array[b] = alloc_f32(d_model);
+            x_out_array[b] = alloc_f32(d_model);
+            h_all_array[b] = alloc_f32(n_layers * d_model);
+            memcpy(x_in_array[b], x_in, d_model * sizeof(float));
+        }
+    }
+
     /* ── Warmup ──────────────────────────────────────────────────── */
     printf("Warmup %d patches...", n_warmup); fflush(stdout);
     for (int w = 0; w < n_warmup; w++) {
-        memset(h_all, 0, n_layers * d_model * sizeof(float));
         if (mode == 0) {
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
             forward_full_mad(x_in, x_out, h_all, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
-        } else {
+        } else if (mode == 1) {
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
             float *cur = x_in, *nxt = x_out;
             for (int L = 0; L < n_layers; L++) {
                 struct LayerDataMAD* ld = &layers[L];
@@ -222,6 +252,17 @@ int main(int argc, char** argv) {
                     d_model, d_ff);
                 float* tmp = cur; cur = nxt; nxt = tmp;
             }
+        } else if (mode == 2) {
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
+            forward_full_mad_st(x_in, x_out, h_all, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
+        } else if (mode == 3) {
+            for (int b = 0; b < batch_size; b++)
+                memset(h_all_array[b], 0, n_layers * d_model * sizeof(float));
+            forward_full_mad_batch((const float* const*)x_in_array,
+                x_out_array, h_all_array, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
+                batch_size, n_threads);
         }
     }
     printf(" OK\n");
@@ -229,12 +270,13 @@ int main(int argc, char** argv) {
     /* ── Timed run ───────────────────────────────────────────────── */
     double* times = (double*)malloc(n_patches * sizeof(double));
     for (int p = 0; p < n_patches; p++) {
-        memset(h_all, 0, n_layers * d_model * sizeof(float));
         double t0 = get_time_sec();
         if (mode == 0) {
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
             forward_full_mad(x_in, x_out, h_all, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
-        } else {
+        } else if (mode == 1) {
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
             float *cur = x_in, *nxt = x_out;
             for (int L = 0; L < n_layers; L++) {
                 struct LayerDataMAD* ld = &layers[L];
@@ -247,6 +289,17 @@ int main(int argc, char** argv) {
                     d_model, d_ff);
                 float* tmp = cur; cur = nxt; nxt = tmp;
             }
+        } else if (mode == 2) {
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
+            forward_full_mad_st(x_in, x_out, h_all, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
+        } else if (mode == 3) {
+            for (int b = 0; b < batch_size; b++)
+                memset(h_all_array[b], 0, n_layers * d_model * sizeof(float));
+            forward_full_mad_batch((const float* const*)x_in_array,
+                x_out_array, h_all_array, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
+                batch_size, n_threads);
         }
         times[p] = get_time_sec() - t0;
     }
@@ -261,8 +314,14 @@ int main(int argc, char** argv) {
     double bw  = (total_bytes / 1e6) * pps;
 
     printf("\n=================================================================\n");
-    printf("Mode: %s\n", mode == 0 ? "forward_full_mad" : "per-layer");
-    printf("Patches: %d  Warmup: %d\n", n_patches, n_warmup);
+    const char* mode_names[] = { "forward_full_mad (OMP)", "per-layer", "forward_full_mad_st (ST)", "batch" };
+    printf("Mode: %s\n", mode_names[mode]);
+    if (mode == 3) {
+        printf("Patches: %d (batch_size=%d)  Warmup: %d\n", n_patches, batch_size, n_warmup);
+        printf("Total throughput: %.1f patches/sec (%.1f × batch)\n", pps, (double)batch_size);
+    } else {
+        printf("Patches: %d  Warmup: %d\n", n_patches, n_warmup);
+    }
     printf("-----------------------------------------------------------------\n");
     printf("Throughput:  %.1f patches/sec  (%.1f bytes/sec)\n", pps, pps*4);
     printf("Latency:     p50=%.2f ms  p95=%.2f ms\n", p50*1000, p95*1000);
@@ -271,6 +330,18 @@ int main(int argc, char** argv) {
     printf("=================================================================\n");
 
     free(times);
+
+    if (mode == 3) {
+        for (int b = 0; b < batch_size; b++) {
+            free_aligned(x_in_array[b]);
+            free_aligned(x_out_array[b]);
+            free_aligned(h_all_array[b]);
+        }
+        free(x_in_array);
+        free(x_out_array);
+        free(h_all_array);
+    }
+
     free_aligned(x_in); free_aligned(x_out); free_aligned(h_all);
     return 0;
 }
