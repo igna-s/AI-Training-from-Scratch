@@ -346,6 +346,128 @@ class BitHead(nn.Module):
 
 
 # =============================================================================
+# 4b. LocalByteDecoder — MegaByte intra-patch autoregressive decoder
+# =============================================================================
+
+class LocalByteDecoder(nn.Module):
+    """MegaByte (Yu et al., 2023) local model for byte-level prediction.
+
+    Paper-canonical wiring:
+      - Global state h_G projected to P * d_local via BitLinear, reshaped so
+        each of the P positions receives its own global slice (not a broadcast).
+      - Shift-right byte input: position 0 sees a zero-padded byte,
+        positions 1..P-1 see emb(b_{k-1}).
+      - 1 causal transformer layer (RMSNorm → MHA → SwiGLU FFN, ff=4×) over
+        the P-position sequence.
+
+    Replaces the 4 independent BitHead modules:
+        Old (WRONG): P(b0|ctx) · P(b1|ctx) · P(b2|ctx) · P(b3|ctx)
+        New (paper):  P(b0|ctx) · P(b1|b0,ctx) · P(b2|b1b0,ctx) · P(b3|b2b1b0,ctx)
+
+    Training:  teacher-forced, parallel over P positions (causal P×P mask).
+    Inference: call generate_step() once per byte in the patch.
+    """
+
+    def __init__(self, d_model: int, patch_size: int = 4,
+                 d_local: int = 128, n_heads: int = 4,
+                 ff_ratio: float = 4.0):
+        super().__init__()
+        assert d_local % n_heads == 0, "d_local must be divisible by n_heads"
+        self.patch_size = patch_size
+        self.d_local   = d_local
+        self.n_heads   = n_heads
+        self.head_dim  = d_local // n_heads
+
+        # Paper Listing 1: project global to P × d_local
+        self.h_proj    = BitLinear(d_model, patch_size * d_local)
+        self.byte_embed = BitEmbedding(256, d_local)
+        self.pos_embed  = nn.Parameter(torch.randn(patch_size, d_local) * 0.02)
+
+        self.norm1  = RMSNorm(d_local)
+        self.q_proj = BitLinear(d_local, d_local)
+        self.k_proj = BitLinear(d_local, d_local)
+        self.v_proj = BitLinear(d_local, d_local)
+        self.o_proj = BitLinear(d_local, d_local)
+
+        self.norm2    = RMSNorm(d_local)
+        d_ff_local    = int(d_local * ff_ratio)
+        self.ffn_gate = BitLinear(d_local, d_ff_local)
+        self.ffn_up   = BitLinear(d_local, d_ff_local)
+        self.ffn_down = BitLinear(d_ff_local, d_local)
+
+        self.out_proj  = BitLinear(d_local, 256)
+        self.out_scale = nn.Parameter(torch.ones(1))
+
+    def _attn_ffn(self, x: Tensor) -> Tensor:
+        """Causal self-attention + SwiGLU FFN. x: [N, L, d_local]."""
+        N, L, D = x.shape
+        residual = x
+        y = self.norm1(x)
+        q = self.q_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = y.transpose(1, 2).contiguous().view(N, L, D)
+        x = residual + self.o_proj(y)
+
+        residual = x
+        y = self.norm2(x)
+        y = self.ffn_down(F.silu(self.ffn_gate(y)) * self.ffn_up(y))
+        return residual + y
+
+    def forward(self, h: Tensor, targets: Tensor) -> tuple:
+        """Teacher-forced training/eval forward.
+
+        Args:
+            h:       [B, S, d_model] global hidden state (post final RMSNorm)
+            targets: [B, S, P] long  — ground-truth bytes of the predicted patch
+        Returns:
+            tuple of P tensors, each [B, S, 256] — logits byte_0..byte_{P-1}
+        """
+        B, S, _ = h.shape
+        P = self.patch_size
+
+        # [B, S, P, d_local] — one global context slice per intra-patch position
+        g = self.h_proj(h).reshape(B, S, P, self.d_local)
+
+        # Shift-right: pos 0 sees zero byte; pos k sees emb(target[k-1])
+        zero_pad  = torch.zeros_like(targets[..., :1])
+        shifted   = torch.cat([zero_pad, targets[..., :-1]], dim=-1)  # [B, S, P]
+        byte_embs = self.byte_embed(shifted.long())                   # [B, S, P, d_local]
+
+        local_in  = g + byte_embs + self.pos_embed                   # [B, S, P, d_local]
+        local_in  = local_in.reshape(B * S, P, self.d_local)
+        local_out = self._attn_ffn(local_in)
+        local_out = local_out.reshape(B, S, P, self.d_local)
+
+        logits = self.out_proj(local_out) * self.out_scale            # [B, S, P, 256]
+        return tuple(logits[:, :, k, :] for k in range(P))
+
+    def generate_step(self, h: Tensor, generated: Tensor) -> Tensor:
+        """Single-byte prediction within a patch (inference).
+
+        Args:
+            h:         [B, d_model] global state for the current patch
+            generated: [B, k] long  — bytes already sampled (k in 0..P-1)
+        Returns:
+            logits [B, 256] for the next byte at position k
+        """
+        B = h.shape[0]
+        k = generated.shape[1]
+
+        g_full = self.h_proj(h).reshape(B, self.patch_size, self.d_local)  # [B, P, d_local]
+        g      = g_full[:, :k + 1, :]                                      # [B, k+1, d_local]
+
+        zero_pad  = torch.zeros(B, 1, dtype=torch.long, device=h.device)
+        shifted   = torch.cat([zero_pad, generated.long()], dim=1)         # [B, k+1]
+        byte_embs = self.byte_embed(shifted)                               # [B, k+1, d_local]
+
+        local_in  = g + byte_embs + self.pos_embed[:k + 1]                # [B, k+1, d_local]
+        local_out = self._attn_ffn(local_in)
+        return self.out_proj(local_out[:, -1, :]) * self.out_scale         # [B, 256]
+
+
+# =============================================================================
 # 5. CPU1BlockV2 — Bloque con MLGRU + SwiGLU, todo ternario
 # =============================================================================
 
@@ -441,23 +563,38 @@ class CPU1ModelV2(nn.Module):
         self.norm = RMSNorm(d_model)
 
         # 4 heads ternarios (Slender-Mamba style)
-        self.byte_heads = nn.ModuleList([
-            BitHead(d_model, VOCAB_SIZE) for _ in range(4)
-        ])
+        # NOTE: pass config['legacy_heads']=True to load old checkpoints
+        # that used 4 independent BitHead modules (keys byte_heads.{0..3}.*).
+        # New default: LocalByteDecoder (autoregressive intra-patch chain).
+        if config.get('legacy_heads', False):
+            self.byte_heads   = nn.ModuleList([
+                BitHead(d_model, VOCAB_SIZE) for _ in range(4)
+            ])
+            self.local_decoder = None
+        else:
+            self.local_decoder = LocalByteDecoder(
+                d_model=d_model,
+                patch_size=PATCH_SIZE,
+                d_local=config.get('local_decoder_dim', 128),
+                n_heads=config.get('local_decoder_heads', 4),
+                ff_ratio=config.get('local_decoder_ff_ratio', 4.0),
+            )
+            self.byte_heads = None
 
         self.use_gradient_checkpointing = config.get(
             'use_gradient_checkpointing', False
         )
 
-    def forward(
+    def _forward_global(
         self,
-        patches: Tensor,                     # [B, S, 4] uint8/long
-        hidden_states: list | None = None    # lista de n_layers tensores [B, d_model]
-    ) -> tuple[tuple, list]:
-        """
+        patches: Tensor,
+        hidden_states: list | None = None,
+    ) -> tuple[Tensor, list]:
+        """Run embedding + all MLGRU blocks + final norm.
+
         Returns:
-            logits: tuple de 4 tensores [B, S, 256]
-            hidden_states: lista de n_layers tensores [B, d_model]
+            x_normed: [B, S, d_model] — post-norm global representation
+            new_states: list of n_layers [B, d_model] MLGRU states
         """
         x = self.patch_embedding(patches)
 
@@ -479,12 +616,34 @@ class CPU1ModelV2(nn.Module):
                 # Prefetch pesos de capa i+2 mientras procesamos capa i
                 if i + 2 < len(self.blocks):
                     _ = self.blocks[i + 2].token_mixer.forget_proj.weight.data_ptr()
-
                 x, h_new = block(x, hidden_states[i])
                 new_states.append(h_new)
 
-        x = self.norm(x)
-        logits = tuple(head(x) for head in self.byte_heads)
+        return self.norm(x), new_states
+
+    def forward(
+        self,
+        patches: Tensor,                       # [B, S, 4] uint8/long
+        hidden_states: list | None = None,     # lista de n_layers [B, d_model]
+        byte_targets: Tensor | None = None,    # [B, S, 4] long — targets for LocalByteDecoder
+    ) -> tuple[tuple, list]:
+        """
+        Returns:
+            logits: tuple de 4 tensores [B, S, 256]
+            hidden_states: lista de n_layers tensores [B, d_model]
+        """
+        x, new_states = self._forward_global(patches, hidden_states)
+
+        if self.local_decoder is not None:
+            if byte_targets is None:
+                # Fallback for benchmarks / dry-runs: zero bytes
+                B, S = x.shape[0], x.shape[1]
+                byte_targets = torch.zeros(
+                    B, S, PATCH_SIZE, dtype=torch.long, device=x.device
+                )
+            logits = self.local_decoder(x, byte_targets)
+        else:
+            logits = tuple(head(x) for head in self.byte_heads)
 
         return logits, new_states
 
@@ -496,40 +655,56 @@ class CPU1ModelV2(nn.Module):
         top_p: float = 0.9,
     ) -> bytes:
         """
-        Inferencia recurrente token por token.
+        Inferencia recurrente patch-by-patch, byte-by-byte dentro de cada patch.
+        Usa LocalByteDecoder.generate_step() para la cadena autoregresiva correcta.
         Cero KV cache. Estado MLGRU de 28KB fijo.
         """
         self.eval()
         device = next(self.parameters()).device
 
-        # Convertir prompt a patches
+        # Convertir prompt a patches y prefill
         patches = bytes_to_patches(prompt_bytes).to(device)
-        hidden_states = None
-
-        # Prefill: procesar prompt completo
         with torch.no_grad():
-            _, hidden_states = self.forward(patches, hidden_states)
+            _, hidden_states = self._forward_global(patches)
 
-        # Generacion autoregresiva
         generated = []
         last_patch = patches[:, -1:, :]
 
+        def _nucleus_sample(logits_1d: Tensor) -> int:
+            probs = F.softmax(logits_1d / temperature, dim=-1)
+            sorted_probs, sorted_idx = probs.sort(descending=True)
+            cumsum = sorted_probs.cumsum(dim=0)
+            sorted_probs[cumsum - sorted_probs > top_p] = 0.0
+            sorted_probs /= sorted_probs.sum()
+            return sorted_idx[torch.multinomial(sorted_probs, 1)].item()
+
         for _ in range(max_tokens // PATCH_SIZE):
             with torch.no_grad():
-                logits, hidden_states = self.forward(last_patch, hidden_states)
+                # Global decode: actualizar estado MLGRU
+                h_global, hidden_states = self._forward_global(last_patch, hidden_states)
+                h_patch = h_global[:, 0, :]  # [1, d_model]
 
-            # Samplear los 4 bytes del proximo patch
-            next_bytes = []
-            for head_logits in logits:
-                probs = F.softmax(head_logits[0, 0] / temperature, dim=-1)
-                # Top-p (nucleus) sampling
-                sorted_probs, sorted_idx = probs.sort(descending=True)
-                cumsum = sorted_probs.cumsum(dim=0)
-                mask = cumsum - sorted_probs > top_p
-                sorted_probs[mask] = 0.0
-                sorted_probs /= sorted_probs.sum()
-                byte_val = sorted_idx[torch.multinomial(sorted_probs, 1)].item()
-                next_bytes.append(byte_val)
+            if self.local_decoder is not None:
+                # Autoregresivo byte a byte dentro del patch
+                next_bytes = []
+                gen_so_far = torch.zeros(1, 0, dtype=torch.long, device=device)
+                for _ in range(PATCH_SIZE):
+                    with torch.no_grad():
+                        step_logits = self.local_decoder.generate_step(
+                            h_patch, gen_so_far
+                        )  # [1, 256]
+                    byte_val = _nucleus_sample(step_logits[0])
+                    next_bytes.append(byte_val)
+                    gen_so_far = torch.cat(
+                        [gen_so_far,
+                         torch.tensor([[byte_val]], dtype=torch.long, device=device)],
+                        dim=1,
+                    )
+            else:
+                # Legacy: 4 cabezas independientes
+                with torch.no_grad():
+                    logits, hidden_states = self.forward(last_patch, hidden_states)
+                next_bytes = [_nucleus_sample(lgt[0, 0]) for lgt in logits]
 
             generated.extend(next_bytes)
             last_patch = torch.tensor(
@@ -999,9 +1174,20 @@ class CPU1ModelV2WithGates(nn.Module):
             for _ in range(n_layers)
         ])
         self.norm = RMSNorm(d_model)
-        self.byte_heads = nn.ModuleList([
-            BitHead(d_model, VOCAB_SIZE) for _ in range(4)
-        ])
+        if config.get('legacy_heads', False):
+            self.byte_heads    = nn.ModuleList([
+                BitHead(d_model, VOCAB_SIZE) for _ in range(4)
+            ])
+            self.local_decoder = None
+        else:
+            self.local_decoder = LocalByteDecoder(
+                d_model=d_model,
+                patch_size=PATCH_SIZE,
+                d_local=config.get('local_decoder_dim', 128),
+                n_heads=config.get('local_decoder_heads', 4),
+                ff_ratio=config.get('local_decoder_ff_ratio', 4.0),
+            )
+            self.byte_heads = None
 
         # Módulos nuevos (opcionales)
         if self.use_boundary:
@@ -1027,12 +1213,14 @@ class CPU1ModelV2WithGates(nn.Module):
 
     def forward(
         self,
-        patches: Tensor,                  # [B, S, patch_size] uint8
+        patches: Tensor,                       # [B, S, patch_size] uint8
         hidden_states: list | None = None,
-        training_phase: int = 1,           # 1 = con distilación, 2 = con delete gate
+        training_phase: int = 1,               # 1 = distilación, 2 = delete gate
         target_elimination: float = 0.0,
         teacher_hidden: Tensor | None = None,  # [B, S, teacher_dim] for EmbAligner
         teacher_mask: Tensor | None = None,    # [B, S] bool
+        byte_targets: Tensor | None = None,    # [B, S, P] long — for LocalByteDecoder
+        **kwargs,
     ) -> tuple:
         """
         Forward pass con soporte para ambas fases de training.
@@ -1088,7 +1276,16 @@ class CPU1ModelV2WithGates(nn.Module):
 
         x_pre_norm = x  # guardar para EmbeddingAligner antes del norm
         x = self.norm(x)
-        logits = tuple(head(x) for head in self.byte_heads)
+
+        if self.local_decoder is not None:
+            if byte_targets is None:
+                B2, S2 = x.shape[0], x.shape[1]
+                byte_targets = torch.zeros(
+                    B2, S2, PATCH_SIZE, dtype=torch.long, device=x.device
+                )
+            logits = self.local_decoder(x, byte_targets)
+        else:
+            logits = tuple(head(x) for head in self.byte_heads)
 
         # EmbeddingAlignment loss (solo Fase 1 si está habilitado y hay teacher_hidden)
         if self.use_emb_align and training_phase == 1 and teacher_hidden is not None:
@@ -1608,22 +1805,41 @@ class CPU1GeneratorV2:
             # Forward a traves de todas las capas
             x_out, hidden_states = self.model.generate_one_patch(x, hidden_states)
 
-            # Norm final y heads
+            # Norm final
             x_normed = self.model.norm(x_out.unsqueeze(1))  # [B, 1, D]
             next_bytes = []
-            for head in self.model.byte_heads:
-                logits = head(x_normed).squeeze(1).squeeze(0)  # [256]
-                torch.softmax(logits / temperature, dim=-1, out=probs_buf)
 
-                # Top-p filtering in-place
-                sorted_probs, sorted_idx = probs_buf.sort(descending=True)
-                cumsum = sorted_probs.cumsum(dim=0)
-                mask = cumsum - sorted_probs > top_p
-                sorted_probs[mask] = 0.0
-                sorted_probs /= sorted_probs.sum()
-
-                byte_val = sorted_idx[torch.multinomial(sorted_probs, 1)].item()
-                next_bytes.append(byte_val)
+            if self.model.local_decoder is not None:
+                # MegaByte autoregressive: byte-by-byte
+                h_patch = x_normed[:, 0, :]  # [1, d_model]
+                gen_so_far = torch.zeros(1, 0, dtype=torch.long, device=self.device)
+                for _ in range(PATCH_SIZE):
+                    logits = self.model.local_decoder.generate_step(
+                        h_patch, gen_so_far
+                    ).squeeze(0)  # [256]
+                    torch.softmax(logits / temperature, dim=-1, out=probs_buf)
+                    sorted_probs, sorted_idx = probs_buf.sort(descending=True)
+                    cumsum = sorted_probs.cumsum(dim=0)
+                    sorted_probs[cumsum - sorted_probs > top_p] = 0.0
+                    sorted_probs /= sorted_probs.sum()
+                    byte_val = sorted_idx[torch.multinomial(sorted_probs, 1)].item()
+                    next_bytes.append(byte_val)
+                    gen_so_far = torch.cat(
+                        [gen_so_far,
+                         torch.tensor([[byte_val]], dtype=torch.long, device=self.device)],
+                        dim=1,
+                    )
+            else:
+                # Legacy: 4 independent heads
+                for head in self.model.byte_heads:
+                    logits = head(x_normed).squeeze(1).squeeze(0)  # [256]
+                    torch.softmax(logits / temperature, dim=-1, out=probs_buf)
+                    sorted_probs, sorted_idx = probs_buf.sort(descending=True)
+                    cumsum = sorted_probs.cumsum(dim=0)
+                    sorted_probs[cumsum - sorted_probs > top_p] = 0.0
+                    sorted_probs /= sorted_probs.sum()
+                    byte_val = sorted_idx[torch.multinomial(sorted_probs, 1)].item()
+                    next_bytes.append(byte_val)
 
             for j, bv in enumerate(next_bytes):
                 output_buf[i * PATCH_SIZE + j] = bv
@@ -1650,9 +1866,15 @@ def print_parameter_breakdown(model: CPU1ModelV2):
     """Prints a detailed parameter breakdown: embedding, per-layer (MLGRU + FFN + PFNet), heads, total."""
     total = count_parameters(model)
     embed_params = count_parameters(model.patch_embedding)
-    norm_params = count_parameters(model.norm)
-    head_params = sum(count_parameters(h) for h in model.byte_heads)
+    norm_params  = count_parameters(model.norm)
     block_params = count_parameters(model.blocks)
+
+    if model.local_decoder is not None:
+        head_params = count_parameters(model.local_decoder)
+        head_label  = "LocalDecoder:"
+    else:
+        head_params = sum(count_parameters(h) for h in model.byte_heads)
+        head_label  = "Heads (x4):   "
 
     print(f"Parameter breakdown (~{total / 1e6:.0f}M total):")
     print(f"  Embedding:       {embed_params:>12,}")
@@ -1660,7 +1882,7 @@ def print_parameter_breakdown(model: CPU1ModelV2):
 
     block = model.blocks[0]
     mixer_p = count_parameters(block.token_mixer)
-    ffn_p = count_parameters(block.ffn)
+    ffn_p   = count_parameters(block.ffn)
     pfnet_p = count_parameters(block.pfnet)
     norms_p = count_parameters(block.norm1) + count_parameters(block.norm2)
     print(f"    Per block:")
@@ -1670,7 +1892,7 @@ def print_parameter_breakdown(model: CPU1ModelV2):
     print(f"      Norms:       {norms_p:>10,}")
 
     print(f"  Final norm:      {norm_params:>12,}")
-    print(f"  Heads (x4):      {head_params:>12,}")
+    print(f"  {head_label}     {head_params:>12,}")
     print(f"  Total:           {total:>12,}")
 
 
@@ -1743,24 +1965,60 @@ def test_cpu1_block_v2():
 
 
 def test_cpu1_model_v2():
-    """Verifica CPU1ModelV2 forward pass."""
+    """Verifica CPU1ModelV2 forward pass (con LocalByteDecoder)."""
     config = {'d_model': 128, 'n_layers': 2, 'd_ff': 256, 'fp_rank': 4}
     model = CPU1ModelV2(config)
     model.eval()
 
-    patches = torch.randint(0, 256, (2, 8, PATCH_SIZE))
+    B, S = 2, 8
+    patches = torch.randint(0, 256, (B, S, PATCH_SIZE))
+    targets = torch.randint(0, 256, (B, S, PATCH_SIZE))
 
     with torch.no_grad():
-        logits, states = model(patches)
+        logits, states = model(patches, byte_targets=targets)
 
-    assert len(logits) == 4, f"Expected 4 heads, got {len(logits)}"
+    assert len(logits) == 4, f"Expected 4 logit heads, got {len(logits)}"
     for i, l in enumerate(logits):
-        assert l.shape == (2, 8, VOCAB_SIZE), (
-            f"Head {i}: shape {l.shape}, expected (2, 8, {VOCAB_SIZE})"
+        assert l.shape == (B, S, VOCAB_SIZE), (
+            f"Head {i}: shape {l.shape}, expected ({B}, {S}, {VOCAB_SIZE})"
         )
     assert len(states) == 2, f"Expected 2 states, got {len(states)}"
 
     print(f"[OK] CPU1ModelV2 forward OK: 4 x {logits[0].shape}")
+
+
+def test_local_decoder_parity():
+    """
+    Paper conformance check: teacher-forced training forward must produce
+    identical logits to step-by-step inference (generate_step) for every
+    byte position.  Expected max diff < 1e-4.
+    """
+    config = {'d_model': 128, 'n_layers': 2, 'd_ff': 256, 'fp_rank': 4}
+    model = CPU1ModelV2(config)
+    model.eval()
+
+    B, S, P = 1, 3, PATCH_SIZE
+    patches = torch.randint(0, 256, (B, S, P))
+    h_global = torch.randn(B, S, 128)
+
+    with torch.no_grad():
+        # Training path (teacher-forced, parallel)
+        train_logits = model.local_decoder(h_global, patches)  # tuple P x [B,S,256]
+
+        # Inference path (step-by-step)
+        for s in range(S):
+            h_s  = h_global[:, s, :]                           # [B, d_model]
+            gen  = torch.zeros(B, 0, dtype=torch.long)
+            for k in range(P):
+                step = model.local_decoder.generate_step(h_s, gen)   # [B, 256]
+                ref  = train_logits[k][:, s, :]                       # [B, 256]
+                diff = (step - ref).abs().max().item()
+                assert diff < 1e-4, (
+                    f"Parity fail patch {s}, byte {k}: max_diff={diff:.2e}"
+                )
+                gen = torch.cat([gen, patches[:, s, k:k+1]], dim=1)
+
+    print("[OK] LocalByteDecoder training<->inference parity: diff=0")
 
 
 def test_generate_bytes():
@@ -1908,3 +2166,12 @@ if __name__ == "__main__":
     print("Test 8: Conteo de parametros (modelo completo)")
     print("=" * 60)
     test_parameter_count_v2()
+
+    print("\n" + "=" * 60)
+    print("Test 9: LocalByteDecoder parity (Paper conformance check)")
+    print("=" * 60)
+    test_local_decoder_parity()
+
+    print("\n" + "=" * 60)
+    print("Todos los tests pasaron.")
+    print("=" * 60)

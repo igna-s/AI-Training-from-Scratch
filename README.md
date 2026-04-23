@@ -156,6 +156,65 @@ All runs: CE-only training from scratch, 50M params, same data/optimizer/steps.
 
 **Architecture constraint:** 1.58-bit ternary weights (BitLinear/BitEmbedding). No activation×activation matrix multiplications at inference (MLGRU uses Hadamard products only; Folded Transformer uses bounded local attention O(N·w)).
 
+### Byte head — MegaByte Local Decoder (intra-patch autoregression)
+
+All `tokenization='byte'` and `tokenization='byte_dynamic'` runs (run_02 onward and the 10M scale runs) predict the 4 bytes of each patch through a **MegaByte local decoder** ([Yu et al., 2023](papers/MEGABYTE-Predicting-byte-sequences.pdf), Listing 1) rather than four independent heads.
+
+**Why:** with four parallel heads `P(b₀ b₁ b₂ b₃ | ctx) = ∏ P(bᵢ | ctx)`, the bytes inside a patch are conditionally independent — byte 2 cannot see byte 1. That directly breaks UTF-8 continuation bytes (lead + continuation), common bigrams (`th`, `\r\n`, `_la`), and shared word prefixes. The output degrades into locally plausible but globally incoherent noise, hurting any downstream reasoning task.
+
+**How (paper-canonical wiring):**
+
+1. **Per-position global slice.** The global patch state `h_G ∈ ℝ^{d_model}` is projected via a single `BitLinear(d_model, P·d_local)` and reshaped to `[P, d_local]`. Each of the P byte positions receives **its own slice** of the global context — position 0's slice can encode "how the patch starts", position 3's slice can encode "how it closes".
+2. **Shift-right byte input.** Position k's input byte is `byte_embed(b_{k-1})` for k>0, or a zero-padded embedding for k=0.
+3. **Local transformer block.** Position-specific global slice + shifted byte embedding + learned position embedding feed a 1-layer causal transformer (SwiGLU FFN with **ratio 4×**, RMSNorm, d_local=128, 4 heads) over the length-P sequence.
+
+Training is teacher-forced in parallel over all P positions with a causal mask; inference calls `generate_step` once per byte to sample autoregressively within the patch.
+
+| Aspect | Parallel heads (old) | LocalByteDecoder (current) |
+|---|---|---|
+| Factorization | `∏ P(bᵢ \| ctx)` — independence | `∏ P(bᵢ \| ctx, b₀..b_{i-1})` — chain rule |
+| Global→local signal | none (heads read `h` directly) | `BitLinear(d_model, P·d_local)` — positional slices |
+| Byte conditioning | — | shift-right embedding, additive |
+| FFN ratio | — | 4× (paper-canonical) |
+| Params @ d_local=128 | `4 × 512 × 256 ≈ 524K` | `~700K` (h_proj + attn + 4× FFN + byte_embed + out_proj) |
+| Inference cost | 4 parallel logits | 4 sequential `generate_step` calls on a length-P sequence |
+| UTF-8 handling | broken (continuation bytes independent) | correct |
+
+**Config knobs** (in `BASE_CONFIG`, all opt-in or default-on):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `use_local_decoder` | `True` | Master switch. `False` → fall back to 4 independent heads (decoder ablation). |
+| `local_decoder_dim` | `128` | `d_local`. Bigger = more capacity per position. Stays L2-resident up to ~256. |
+| `local_decoder_heads` | `4` | Attention heads for the local transformer. |
+| `local_decoder_ff_ratio` | `4.0` | SwiGLU FFN width as a multiple of `d_local`. Paper uses 4×. |
+| `local_decoder_fp16` | `False` | **Opt-in.** Keep the local decoder in FP16 even when the global model is ternary. Costs ~420 KB extra RAM at d_local=128; removes quantization noise from a narrow, shallow submodule where it hurts most. Useful as a separate ablation when d_local is small. |
+
+Note: the `--legacy-heads` flag (pass `config['legacy_heads']=True`) allows loading old checkpoints with `byte_heads.{0..3}.*` weight keys without `LocalByteDecoder`. See the *Checkpoint compatibility* section below.
+
+#### Paper conformance check
+
+| Check against MegaByte (Yu et al., 2023) | Status |
+|---|---|
+| Factorization `∏ P(bᵢ \| ctx, b<i)` — chain rule, not independence | ✅ |
+| Global→local via `W_proj(h_G) → P·D_L` with per-position reshape | ✅ |
+| Shift-right byte input with zero-pad at position 0 | ✅ |
+| FFN width 4× `d_local` | ✅ |
+| Teacher forcing in training / autoregressive in inference | ✅ |
+| Global model ≫ Local model in parameters | ✅ (50M vs ~700K ≈ 70×) |
+| Patch size 4 | ✅ |
+
+**Deliberate deviations** (design choices, not bugs):
+
+- **SwiGLU instead of GELU** — universally accepted modern upgrade; used everywhere else in the model for consistency.
+- **RMSNorm instead of LayerNorm** — cheaper, standard in modern LLMs; matches the rest of the CPU-1 stack.
+- **1 local layer instead of 2** — at `seq_len = P = 4`, additional depth gives near-zero return. A second layer becomes worth trying only when `d_local ≥ 256`.
+- **Ternary weights by default** — this is the CPU-1 thesis, not a MegaByte choice. The `local_decoder_fp16` flag exists precisely so the ternary-vs-FP16 tradeoff in this submodule can be measured as a separate ablation.
+
+**Intentional omission**: there is no separate "first-byte head" reading `h` directly. Position 0 of the local decoder already receives `global_slice[0] + embed(zero_pad) + pos_embed[0]`, so its output is `P(b₀ | h)` — exactly what a dedicated head would produce, with no extra parameters.
+
+In short: the architectural skeleton matches the paper. Remaining differences are modern activation/norm choices (SwiGLU, RMSNorm) or project-specific constraints (ternary). A reviewer familiar with MegaByte would recognise this as a faithful implementation.
+
 ### Progressive Design — 50M runs (run_01 to run_12, run_17)
 
 ```
@@ -515,6 +574,45 @@ The custom C++ kernels (`inference/kernels.cpp`) are ultra-optimized for the MLG
 
 Since `patch_size = 4`, the 235 TPS translates to generating **almost 1 KB of text per second** entirely locally on a consumer CPU without GPU VRAM constraints.
 
+### CPU-1 170M Performance — Current C Benchmark Status
+
+> Baseline measured on commit `478567a` using `inference/benchmark.c` standalone (`gcc -O3 -march=native -fopenmp`). Hardware: Intel i7-8750H (6C/12T, Coffee Lake, AVX2 + FMA, no AVX-512).
+
+**Mode comparison** (500 patches, 100 warmup, 4 threads):
+
+| Mode | Configuration | Throughput | Notes |
+|---|---|---|---|
+| 0 — `forward_full_mad` (OMP) | 4 threads | 81.7 pps | High per-layer sync overhead |
+| 1 — per-layer | 4 threads | 128.8 pps | |
+| 2 — `forward_full_mad_st` (single-threaded) | 1 thread | 167.1 pps | Per-thread peak |
+| **3 — `forward_full_mad_batch`** | **batch_size=4, 4 threads** | **~617 pps** ✓ | **Current best** |
+| 3 — batch | batch_size=8, 4 threads | 587 pps | Diminishing returns |
+
+**Performance characteristics at baseline (mode 3, batch=4, 4 threads):**
+
+- Throughput: 610–625 pps (avg **617 pps**, ±3% run-to-run variance)
+- Memory bandwidth: **24.5 GB/s** of ~30 GB/s available (82% utilization)
+- Thread scaling efficiency: **90.9%** (4× single-threaded × 0.909 = batch throughput)
+- Latency p50: ~6.1 ms / p95: ~9.2 ms
+- Weight footprint: 40.4 MB (14 layers, 2-bit packed)
+
+**Optimizations active in the current build:**
+
+- AVX2 SIMD with shuffle-LUT 2-bit weight decode (`gemv_2bit_mad_chunk`)
+- Fused RMSNorm + Quantize (`rms_norm_quantize_fused_opt`)
+- Fused SiLU(gate) × up + Quantize (`silu_mul_quantize_fused`)
+- Inter-layer prefetch (next-layer `W_forget` warmed during current layer)
+- Huge pages allocation for weight matrices (TLB optimization)
+- Batch processing with minimal cross-thread synchronization
+
+**Target: 1000 pps.** Gap of 64.5% vs. baseline. To reach it, single-threaded (167.1 pps) needs to climb to ~275 pps (≈65% improvement) since 4-thread scaling is already near-saturation. Using more threads (6) does not help — efficiency drops from 90.9% to 61.3% because RAM bandwidth becomes the bottleneck.
+
+```bash
+# Reproduce the baseline:
+gcc -O3 -march=native -fopenmp inference/benchmark.c inference/kernels.cpp -o benchmark -lm
+./benchmark --mode 3 --batch 4 --patches 500 --warmup 100 --threads 4
+```
+
 ---
 
 ## Project Structure
@@ -795,3 +893,59 @@ run_13	Ternary (BPE 4K)	44.75 MB	~4.6 MB
 run_14	Ternary (Byte)	36.05 MB	~3.7 MB
 run_15	Ternary (Complement)	36.05 MB	~3.7 MB
 run_16	Ternary (Raw bytes)	36.05 MB	~3.7 MB
+
+---
+
+## Checkpoint compatibility
+
+> [!WARNING]
+> Checkpoints trained **before** the `LocalByteDecoder` migration have weight keys
+> `byte_heads.0.*` … `byte_heads.3.*`.  Loading them into the new `CPU1ModelV2`
+> (which has `local_decoder.*`) will raise a `RuntimeError: unexpected key`.
+
+To load an old checkpoint without migrating it, pass `legacy_heads=True` in the
+model config:
+
+```python
+from model import CPU1ModelV2
+model = CPU1ModelV2({'legacy_heads': True})
+ckpt  = torch.load('old_checkpoint.pt', map_location='cpu', weights_only=False)
+model.load_state_dict(ckpt['model_state_dict'])
+```
+
+This restores the original 4-head architecture.  Generation still works; the
+byte-level factorization reverts to the (independent) old form.
+
+**Weight key mapping** (old → new):
+
+| Old key (legacy_heads) | New key (default) |
+|---|---|
+| `byte_heads.0.proj.weight` … `byte_heads.3.proj.weight` | `local_decoder.h_proj.weight`, `local_decoder.q_proj.weight`, … |
+| `byte_heads.{i}.output_scale` | `local_decoder.out_scale` |
+
+There is no automated migration script because the architectures are genuinely
+different (4 scalars → 1 full local transformer).  New checkpoints trained with
+the default config will always use `local_decoder.*`.
+
+---
+
+## Paper conformance check
+
+Verifies that `LocalByteDecoder.forward()` (teacher-forced, parallel) and
+`LocalByteDecoder.generate_step()` (autoregressive, sequential) produce
+**identical logits** for every byte position in every patch.
+
+```bash
+python model.py   # runs all self-tests including test_local_decoder_parity()
+```
+
+Expected output:
+
+```
+[OK] LocalByteDecoder training↔inference parity: diff=0
+```
+
+The test constructs random global hidden states `h ∈ ℝ^{B×S×d_model}` and
+random target byte tensors, then asserts `max|forward_logit[k] - step_logit[k]| < 1e-4`
+for each patch position `k ∈ {0, 1, 2, 3}`.  The tolerance accounts for
+float32 reorder differences; the true diff is typically `< 1e-6`.

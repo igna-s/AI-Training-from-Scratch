@@ -394,17 +394,16 @@ def build_param_groups(model: nn.Module) -> list[dict]:
         # PFNet parameters get their own group
         if '.pfnet.' in name:
             pfnet_params.append(param)
-        # v1 usa head_0..head_3, v2 usa byte_heads.0..byte_heads.3
+        # v1 usa head_0..head_3, v2 usa byte_heads.0..byte_heads.3, new: local_decoder
         elif ('head_' in name or 'byte_heads' in name) and 'weight' in name:
             head_params.append(param)
+        # pos_embed is a learned position embedding — no weight decay
         elif any(k in name for k in ('fp_A', 'fp_B', 'norm', 'bias',
                                       'byte_embedding', 'byte_embed',
-                                      'output_scale', '.scale')):
-            # FPResidual, RMSNorm, biases, lookup/BitEmbedding, scales — sin decay
+                                      'output_scale', '.scale', 'pos_embed')):
             no_decay_params.append(param)
         else:
-            # BitLinear weights (q/k/v/o_proj, gate/up/down_proj, forget/cand/output_proj)
-            # + embedding.proj / patch_proj
+            # BitLinear weights + local_decoder projections
             decay_params.append(param)
 
     return [
@@ -624,10 +623,18 @@ def train(args: argparse.Namespace):
             with amp_ctx:
                 # If model is AblationModel, it might accept teacher_hidden
                 import inspect
-                if 'teacher_hidden' in inspect.signature(model.forward).parameters if not hasattr(model, 'module') else inspect.signature(model.module.forward).parameters:
-                    logits, _, _ = model(patches, teacher_hidden=teacher_hidden, teacher_mask=teacher_mask)
+                sig_params = (
+                    inspect.signature(model.forward).parameters
+                    if not hasattr(model, 'module')
+                    else inspect.signature(model.module.forward).parameters
+                )
+                if 'teacher_hidden' in sig_params:
+                    logits, _, _ = model(
+                        patches, byte_targets=targets,
+                        teacher_hidden=teacher_hidden, teacher_mask=teacher_mask,
+                    )
                 else:
-                    logits, _ = model(patches)
+                    logits, _ = model(patches, byte_targets=targets)
                 loss, metrics = distillation_loss(
                     logits, targets, teacher_probs, teacher_mask,
                     temperature=args.temperature,
@@ -1380,7 +1387,10 @@ def evaluate_run(model: nn.Module, val_ds, config: dict,
             amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
                        if device.type == 'cuda' else nullcontext())
             with amp_ctx:
-                result = model(x)
+                # byte_targets is what the LocalByteDecoder teacher-forces on.
+                # Ignored by AblationModel when use_local_decoder is False or BPE.
+                fwd_kwargs = {'byte_targets': targets} if tok in ('byte', 'byte_dynamic') else {}
+                result = model(x, **fwd_kwargs)
                 if len(result) == 3:
                     logits, _, _ = result
                 else:
@@ -1686,13 +1696,14 @@ def train_run(run_name: str, dry_run: bool = False,
             amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
                        if use_amp else contextlib.nullcontext())
             with amp_ctx:
-                # Support both 2-tuple (runs 01-11) and 3-tuple (runs 12-15)
                 training_phase = config.get('_current_phase', 1)
                 target_elim = config.get('target_elimination', 0.0)
+                fwd_kwargs = {'byte_targets': targets} if tok in ('byte', 'byte_dynamic') else {}
                 result = model(
                     x, training_phase=training_phase,
                     target_elimination=target_elim,
                     teacher_hidden=t_hidden, teacher_mask=t_mask,
+                    **fwd_kwargs,
                 )
                 if len(result) == 3:
                     logits, _, extra_losses = result

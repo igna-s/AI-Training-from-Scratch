@@ -98,6 +98,16 @@ BASE_CONFIG = {
     'seq_len':          5000,
     'patch_size':       4,
 
+    # Byte head — MegaByte local decoder (intra-patch autoregression).
+    # Conditions b_k on b_0..b_{k-1}; without it the 4 bytes are independent
+    # which corrupts UTF-8 continuations and common bigrams.
+    # Paper-canonical: h_proj outputs P × d_local, FFN ratio 4×.
+    'use_local_decoder':      True,
+    'local_decoder_dim':      128,
+    'local_decoder_heads':    4,
+    'local_decoder_ff_ratio': 4.0,     # paper: GELU FFN at 4×; SwiGLU-equivalent is 4×·2/3 ≈ 2.67× but 4× matches capacity
+    'local_decoder_fp16':     False,   # opt-in: keep local decoder in FP16 even when global is ternary
+
     # Checkpoints
     'checkpoint_repo':  'Cukinator/cpu1-ablation-checkpoints',
     'save_every_steps': 1000,
@@ -885,6 +895,134 @@ class AblationBPEHead(nn.Module):
 
 
 # ============================================================
+# MegaByte-style Local Byte Decoder (intra-patch autoregression)
+# ============================================================
+
+class LocalByteDecoder(nn.Module):
+    """MegaByte (Yu et al., 2023, Listing 1) local model for byte-level prediction.
+
+    Paper-canonical wiring:
+      - Global state h_G projected to P * d_local via a single BitLinear, then
+        reshaped so each of the P positions inside the patch receives its own
+        slice of the global context (not a broadcast copy).
+      - Byte input at patch position k is the shift-right byte embedding:
+        position 0 sees a zero-padded byte, positions 1..P-1 see emb(b_{k-1}).
+      - Position-specific global slice + shifted byte embedding + learned
+        position embedding feed a causal transformer block over length P.
+
+    Training: teacher-forced, parallel over P positions with a causal P×P mask.
+    Inference: call generate_step once per byte in the patch.
+
+    FP16 override: passing use_ternary=False keeps all local-decoder weights in
+    FP16 while the rest of the model stays ternary. Costs ~420 KB extra vs
+    ternary at d_local=128; removes quantization noise from a narrow (d=128)
+    shallow (1 layer, seq_len=P) network where the noise hurts most.
+    """
+
+    def __init__(self, d_model: int, patch_size: int = 4,
+                 d_local: int = 128, n_heads: int = 4,
+                 ff_ratio: float = 4.0,
+                 use_ternary: bool = True):
+        super().__init__()
+        assert d_local % n_heads == 0, "d_local must be divisible by n_heads"
+        self.patch_size = patch_size
+        self.d_local = d_local
+        self.n_heads = n_heads
+        self.head_dim = d_local // n_heads
+
+        # Paper Listing 1: project global to P × d_local so each of the P patch
+        # positions receives its own global slice, not a broadcast copy.
+        self.h_proj = make_linear(d_model, patch_size * d_local, use_ternary)
+        self.byte_embed = make_embedding(256, d_local, use_ternary)
+        self.pos_embed = nn.Parameter(torch.randn(patch_size, d_local) * 0.02)
+
+        self.norm1 = RMSNorm(d_local)
+        self.q_proj = make_linear(d_local, d_local, use_ternary)
+        self.k_proj = make_linear(d_local, d_local, use_ternary)
+        self.v_proj = make_linear(d_local, d_local, use_ternary)
+        self.o_proj = make_linear(d_local, d_local, use_ternary)
+
+        self.norm2 = RMSNorm(d_local)
+        d_ff_local = int(d_local * ff_ratio)
+        self.ffn_gate = make_linear(d_local, d_ff_local, use_ternary)
+        self.ffn_up = make_linear(d_local, d_ff_local, use_ternary)
+        self.ffn_down = make_linear(d_ff_local, d_local, use_ternary)
+
+        self.out_proj = make_linear(d_local, 256, use_ternary)
+        self.out_scale = nn.Parameter(torch.ones(1))
+
+    def _attn_ffn(self, x: Tensor) -> Tensor:
+        """Causal self-attention + SwiGLU FFN over the patch axis. x: [N, L, d_local]."""
+        N, L, D = x.shape
+        residual = x
+        y = self.norm1(x)
+        q = self.q_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = y.transpose(1, 2).contiguous().view(N, L, D)
+        x = residual + self.o_proj(y)
+
+        residual = x
+        y = self.norm2(x)
+        y = self.ffn_down(F.silu(self.ffn_gate(y)) * self.ffn_up(y))
+        return residual + y
+
+    def forward(self, h: Tensor, targets: Tensor) -> tuple:
+        """Teacher-forced training/eval forward.
+
+        Args:
+            h:       [B, S, d_model] global patch-level hidden state
+            targets: [B, S, P] long — ground-truth bytes of the predicted patch
+        Returns:
+            tuple of P tensors, each [B, S, 256] — logits for byte_0 .. byte_{P-1}
+        """
+        B, S, _ = h.shape
+        P = self.patch_size
+
+        # Paper Listing 1: project to [B, S, P, d_local] — one slice per position.
+        g = self.h_proj(h).reshape(B, S, P, self.d_local)
+
+        # Shift-right byte targets: position 0 sees a zero-padded byte;
+        # position k > 0 sees emb(target[k-1]).
+        zero_pad = torch.zeros_like(targets[..., :1])
+        shifted = torch.cat([zero_pad, targets[..., :-1]], dim=-1)      # [B, S, P]
+        byte_embs = self.byte_embed(shifted.long())                     # [B, S, P, d_local]
+
+        local_in = g + byte_embs + self.pos_embed                       # [B, S, P, d_local]
+        local_in = local_in.reshape(B * S, P, self.d_local)
+        local_out = self._attn_ffn(local_in)
+        local_out = local_out.reshape(B, S, P, self.d_local)
+
+        logits = self.out_proj(local_out) * self.out_scale              # [B, S, P, 256]
+        return tuple(logits[:, :, k, :] for k in range(P))
+
+    def generate_step(self, h: Tensor, generated: Tensor) -> Tensor:
+        """Single-byte prediction within a patch (inference).
+
+        Args:
+            h:         [B, d_model] global state for the current patch
+            generated: [B, k] long — bytes already sampled in this patch (k in 0..P-1)
+        Returns:
+            logits: [B, 256] for the next byte at position k
+        """
+        B = h.shape[0]
+        k = generated.shape[1]
+        P = self.patch_size
+
+        g_full = self.h_proj(h).reshape(B, P, self.d_local)              # [B, P, d_local]
+        g = g_full[:, :k + 1, :]                                         # [B, k+1, d_local]
+
+        zero_pad = torch.zeros(B, 1, dtype=torch.long, device=h.device)
+        shifted = torch.cat([zero_pad, generated.long()], dim=1)         # [B, k+1]
+        byte_embs = self.byte_embed(shifted)                             # [B, k+1, d_local]
+
+        local_in = g + byte_embs + self.pos_embed[:k + 1]                # [B, k+1, d_local]
+        local_out = self._attn_ffn(local_in)
+        return self.out_proj(local_out[:, -1, :]) * self.out_scale
+
+
+# ============================================================
 # Unified ablation model
 # ============================================================
 
@@ -930,7 +1068,30 @@ class AblationModel(nn.Module):
         self.norm = RMSNorm(d_model)
 
         # Prediction heads
-        if tok in ('byte', 'byte_dynamic'):
+        #   Byte runs: by default use MegaByte-style LocalByteDecoder so byte k
+        #   is conditioned on bytes 0..k-1 within the patch. Setting
+        #   config['use_local_decoder']=False falls back to 4 independent heads
+        #   (kept for tightly-scoped ablations of the decoder itself).
+        self.use_local_decoder = (
+            tok in ('byte', 'byte_dynamic')
+            and config.get('use_local_decoder', True)
+        )
+        if self.use_local_decoder:
+            # FP16 override: if local_decoder_fp16 is set, keep the whole local
+            # decoder in FP16 even when the global model is ternary. Trades
+            # ~420 KB extra RAM for lower quantization noise in a narrow (d=128),
+            # shallow (1 layer, seq_len=P) submodule where the noise bites most.
+            local_ternary = use_ternary and not config.get('local_decoder_fp16', False)
+            self.local_decoder = LocalByteDecoder(
+                d_model=d_model,
+                patch_size=config.get('patch_size', 4),
+                d_local=config.get('local_decoder_dim', 128),
+                n_heads=config.get('local_decoder_heads', 4),
+                ff_ratio=config.get('local_decoder_ff_ratio', 4.0),
+                use_ternary=local_ternary,
+            )
+            self.heads = None
+        elif tok in ('byte', 'byte_dynamic'):
             self.heads = nn.ModuleList([
                 AblationByteHead(d_model, use_ternary) for _ in range(4)
             ])
@@ -976,6 +1137,7 @@ class AblationModel(nn.Module):
         target_elimination: float = 0.0,
         teacher_hidden: Tensor | None = None,
         teacher_mask: Tensor | None = None,
+        byte_targets: Tensor | None = None,
     ) -> tuple:
         """
         Args:
@@ -985,6 +1147,9 @@ class AblationModel(nn.Module):
             target_elimination: fraction of states to eliminate (Phase 2)
             teacher_hidden: [B, S, teacher_dim] float — projected teacher hidden states
             teacher_mask: [B, S] bool — where teacher signal exists
+            byte_targets: [B, S, 4] long — ground-truth bytes of the PREDICTED patch.
+                Required by the MegaByte LocalByteDecoder for teacher forcing.
+                If None and the decoder is enabled, zeros are used (benchmark / dry-run).
 
         Returns:
             For byte:  (tuple of 4 × [B, S, 256], new_hidden_states, extra_losses)
@@ -1037,7 +1202,17 @@ class AblationModel(nn.Module):
         h = self.norm(h)
 
         if self.tokenization in ('byte', 'byte_dynamic'):
-            logits = tuple(head(h) for head in self.heads)
+            if self.use_local_decoder:
+                if byte_targets is None:
+                    # Fallback for throughput benchmarks / dry runs.
+                    B, S = h.shape[0], h.shape[1]
+                    P = self.config.get('patch_size', 4)
+                    byte_targets = torch.zeros(
+                        B, S, P, dtype=torch.long, device=h.device
+                    )
+                logits = self.local_decoder(h, byte_targets)
+            else:
+                logits = tuple(head(h) for head in self.heads)
         else:
             logits = self.heads[0](h)
 
@@ -1066,7 +1241,10 @@ class AblationModel(nn.Module):
         total = sum(p.numel() for p in self.parameters())
         embedding = sum(p.numel() for p in self.embedding.parameters())
         blocks = sum(p.numel() for p in self.blocks.parameters())
-        heads = sum(p.numel() for p in self.heads.parameters())
+        if self.use_local_decoder:
+            heads = sum(p.numel() for p in self.local_decoder.parameters())
+        else:
+            heads = sum(p.numel() for p in self.heads.parameters())
         return {
             'total': total,
             'total_M': total / 1e6,
@@ -1085,6 +1263,9 @@ def build_ablation_model(config: dict) -> AblationModel:
     model = AblationModel(config)
     counts = model.count_parameters()
     extras = []
+    tok = config.get('tokenization', '')
+    if tok in ('byte', 'byte_dynamic') and config.get('use_local_decoder', True):
+        extras.append('LocalDecoder')
     if config.get('use_boundary_predictor'):
         extras.append('Bolmo')
     if config.get('use_delete_gate'):

@@ -59,3 +59,5 @@ prompts/
 models/
 llamacpp/
 
+# Executables
+*.exe

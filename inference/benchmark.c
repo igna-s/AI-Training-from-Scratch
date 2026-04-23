@@ -89,6 +89,24 @@ void decode_layer_fused_2bit_mad(
     const uint8_t* W_down, float s_down,
     int d_model, int d_ff);
 
+void local_decode_step(
+    const float* h, const uint8_t* W_hproj, float s_hproj,
+    const float* byte_emb_table, const float* pos_emb,
+    const int32_t* generated, int k,
+    int d_model, int d_local, int n_heads, int d_ff_local, int patch_size,
+    const float* norm1_w,
+    const uint8_t* W_q, float s_q,
+    const uint8_t* W_k, float s_k,
+    const uint8_t* W_v, float s_v,
+    const uint8_t* W_o, float s_o,
+    const float* norm2_w,
+    const uint8_t* W_gate, float s_gate,
+    const uint8_t* W_up,   float s_up,
+    const uint8_t* W_down, float s_down,
+    const uint8_t* W_out,  float s_out,
+    float norm_eps,
+    float* logits_out);
+
 #ifdef __cplusplus
 }
 #endif
@@ -187,9 +205,11 @@ int main(int argc, char** argv) {
     int d_model = 1024, n_layers = 14, d_ff = 2688;
     int fp_rank = 8, pfnet_hidden = 64;
     int n_patches = 200, n_warmup = 20;
-    int mode = 0; /* 0=forward_full_mad (OMP), 1=per-layer, 2=ST single-threaded, 3=batch */
-    int n_threads = 0; /* 0 = auto-detect */
-    int batch_size = 1; /* for mode 3: patches per batch */
+    /* 0=forward_full_mad (OMP), 1=per-layer, 2=ST single-threaded,
+       3=batch, 4=local_decode (global+4 local steps) */
+    int mode = 0;
+    int n_threads = 0;
+    int batch_size = 1;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--patches")  && i+1 < argc) n_patches    = atoi(argv[++i]);
@@ -258,6 +278,33 @@ int main(int argc, char** argv) {
         x_in_array = (float**)malloc(batch_size * sizeof(float*));
         x_out_array = (float**)malloc(batch_size * sizeof(float*));
         h_all_array = (float**)malloc(batch_size * sizeof(float*));
+
+    /* ── Allocate LocalDecoder weights for mode 4 ────────────────── */
+    /* d_local=128, d_ff_local=512, patch_size=4, vocab=256         */
+    uint8_t *mode4_W_hproj=NULL, *mode4_W_q=NULL, *mode4_W_k=NULL;
+    uint8_t *mode4_W_v=NULL, *mode4_W_o=NULL;
+    uint8_t *mode4_W_gate=NULL, *mode4_W_up=NULL, *mode4_W_down=NULL;
+    uint8_t *mode4_W_out=NULL;
+    float   *mode4_byte_emb=NULL, *mode4_pos_emb=NULL;
+    float   *mode4_norm1_w=NULL,  *mode4_norm2_w=NULL;
+    if (mode == 4) {
+        int dl=128, dff=512, P=4;
+        mode4_W_hproj  = make_random_mad_weight(P*dl, d_model);
+        mode4_W_q      = make_random_mad_weight(dl, dl);
+        mode4_W_k      = make_random_mad_weight(dl, dl);
+        mode4_W_v      = make_random_mad_weight(dl, dl);
+        mode4_W_o      = make_random_mad_weight(dl, dl);
+        mode4_W_gate   = make_random_mad_weight(dff, dl);
+        mode4_W_up     = make_random_mad_weight(dff, dl);
+        mode4_W_down   = make_random_mad_weight(dl, dff);
+        mode4_W_out    = make_random_mad_weight(256, dl);
+        mode4_byte_emb = make_random_f32(256 * dl, 0.01f);
+        mode4_pos_emb  = make_random_f32(P * dl, 0.01f);
+        mode4_norm1_w  = make_random_f32(dl, 1.0f);
+        mode4_norm2_w  = make_random_f32(dl, 1.0f);
+        printf("LocalDecoder weights: d_local=%d d_ff=%d P=%d\n", dl, dff, P);
+    }
+
         for (int b = 0; b < batch_size; b++) {
             x_in_array[b] = alloc_f32(d_model);
             x_out_array[b] = alloc_f32(d_model);
@@ -335,6 +382,31 @@ int main(int argc, char** argv) {
                 x_out_array, h_all_array, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
                 batch_size, n_threads);
+        } else if (mode == 4) {
+            /* Global decode (ST) + 4 local_decode_step passes */
+            memset(h_all, 0, n_layers * d_model * sizeof(float));
+            forward_full_mad_st(x_in, x_out, h_all, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
+            /* local decoder weights stored in mode4_* below */
+            int32_t generated[4] = {0};
+            float logits[256];
+            for (int kb = 0; kb < 4; kb++) {
+                generated[kb] = kb * 17 % 256; /* dummy bytes */
+                local_decode_step(
+                    x_out,
+                    mode4_W_hproj, 0.01f,
+                    mode4_byte_emb, mode4_pos_emb,
+                    generated, kb,
+                    d_model, 128, 4, 512, 4,
+                    mode4_norm1_w,
+                    mode4_W_q, 0.01f, mode4_W_k, 0.01f,
+                    mode4_W_v, 0.01f, mode4_W_o, 0.01f,
+                    mode4_norm2_w,
+                    mode4_W_gate, 0.01f, mode4_W_up, 0.01f,
+                    mode4_W_down, 0.01f,
+                    mode4_W_out, 0.01f,
+                    1e-6f, logits);
+            }
         }
         times[p] = get_time_sec() - t0;
     }
