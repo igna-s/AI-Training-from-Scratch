@@ -59,5 +59,9 @@ prompts/
 models/
 llamacpp/
 
-# Executables
+# Build artifacts
 *.exe
+*.dll
+*.so
+*.o
+*.obj

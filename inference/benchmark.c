@@ -265,7 +265,10 @@ int main(int argc, char** argv) {
         if      (!strcmp(argv[i], "--patches")  && i+1 < argc) n_patches    = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--warmup")   && i+1 < argc) n_warmup     = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--d_model")  && i+1 < argc) d_model      = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--d_ff")     && i+1 < argc) d_ff         = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--n_layers") && i+1 < argc) n_layers     = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--fp_rank")  && i+1 < argc) fp_rank      = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--pfnet")    && i+1 < argc) pfnet_hidden = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mode")     && i+1 < argc) mode         = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--threads")  && i+1 < argc) n_threads    = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--batch")    && i+1 < argc) batch_size   = atoi(argv[++i]);

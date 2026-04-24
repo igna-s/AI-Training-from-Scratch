@@ -673,6 +673,55 @@ g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math \
 | `--local 0\|1` | 1 | Include MegaByte LocalByteDecoder (4× `local_decode_step` per patch) |
 | `--threads N` | auto | Number of OMP threads (mode 0/1/3) |
 | `--batch N` | 1 | Batch size for mode 3 |
+| `--d_model N` | 1024 | Override `d_model` (≤ 2048, multiple of 64 recommended) |
+| `--d_ff N` | 2688 | Override `d_ff` (≤ 5120, multiple of 64 recommended) |
+| `--n_layers N` | 14 | Override layer count |
+| `--fp_rank N` | 8 | FPResidual rank |
+| `--pfnet N` | 64 | PFNet hidden dim |
+
+---
+
+### 400M kernel-optimal config — same kernel, scaled up
+
+The same kernel handles a **~430M parameter** ablation variant
+([models/ablation_models/run_400M_cpu1_kernel_optimal.py](models/ablation_models/run_400M_cpu1_kernel_optimal.py))
+designed so that all dims are kernel-friendly:
+
+| Hyperparameter | 170M (production) | 400M (kernel-optimal) | Notes |
+|---|---:|---:|---|
+| `d_model` | 1024 | **1280** | Multiple of 64, ≤ MAX_D_MODEL=2048 |
+| `n_layers` | 14 | **24** | 24/6 = 4 layers per pipeline stage exact |
+| `d_ff` | 2688 | **3328** | Multiple of 64, ≤ MAX_D_FF=5120 |
+| `fp_rank` | 8 | 8 | unchanged |
+| `pfnet_hidden` | 64 | 64 | unchanged |
+| LocalDecoder dim | 128 | **192** | 3 × 64 head_dim |
+| Total params | ~170M | **~430M** | 2.5× scale |
+| 2-bit weight bytes | 40 MB | **107 MB** | 2.7× scale |
+
+The DP calibrator confirms a perfect split for 24 layers / 6 stages: `[4, 4, 4, 4, 4, 4]` — every stage carries identical work.
+
+**Benchmark on 400M (full patch, MegaByte LocalDecoder ON, best of 3, same i7-8750H):**
+
+| Mode | Configuration | Total pps | Per-stream pps | vs Mode 2 |
+|---|---|---:|---:|---:|
+| 2 — single-thread (ST) | 1 thread | 73 | 73 | 1.00× |
+| 3 — batch (6 threads) | 6 threads, batch=6 | **270** | 45 | 0.62× |
+| **4 — pipeline (6 stages, calibrated)** ⭐ | 6 threads, chunk=64, pin=1 | **193** | **193** | **2.65×** |
+
+> Mode 4 single-stream on 400M (193 pps) ≈ mode 2 single-stream on 170M (188 pps).
+> **Scaling is consistent**: at 2.7× the model size, mode 4's pipeline efficiency stays at ~45% of ideal speedup (170M: 521/188 = 2.77×; 400M: 193/73 = 2.65×).
+> Per-user advantage of mode 4 vs mode 3: 193 / 45 ≈ **4.3× per stream**, identical ratio to the 170M case.
+
+```bash
+# Mode 4 on the 400M kernel-optimal config:
+./benchmark.exe --d_model 1280 --n_layers 24 --d_ff 3328 --fp_rank 8 \
+                --mode 4 --patches 30 --warmup 10 \
+                --chunk 64 --pin 1 --stages 6 --calibrate 1 --local 1
+
+# Mode 3 reference on 400M:
+./benchmark.exe --d_model 1280 --n_layers 24 --d_ff 3328 --fp_rank 8 \
+                --mode 3 --batch 6 --threads 6 --patches 50 --warmup 15 --local 1
+```
 
 ---
 
