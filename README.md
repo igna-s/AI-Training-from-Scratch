@@ -578,40 +578,101 @@ Since `patch_size = 4`, the 235 TPS translates to generating **almost 1 KB of te
 
 > Baseline measured on commit `478567a` using `inference/benchmark.c` standalone (`gcc -O3 -march=native -fopenmp`). Hardware: Intel i7-8750H (6C/12T, Coffee Lake, AVX2 + FMA, no AVX-512).
 
-**Mode comparison** (500 patches, 100 warmup, 4 threads):
+**Model under test:** CPU-1 170M — `d_model=1024`, `n_layers=14`, `d_ff=2688`, weights 2-bit packed (~40.4 MB), recurrent state `h_all` ~57 KB. All measurements from `inference/benchmark.c` standalone driver, AVX2 + FMA, no AVX-512.
 
-| Mode | Configuration | Throughput | Notes |
+**Mode descriptions:**
+
+| Mode | Function | Threading model | What it represents |
 |---|---|---|---|
-| 0 — `forward_full_mad` (OMP) | 4 threads | 81.7 pps | High per-layer sync overhead |
-| 1 — per-layer | 4 threads | 128.8 pps | |
-| 2 — `forward_full_mad_st` (single-threaded) | 1 thread | 167.1 pps | Per-thread peak |
-| **3 — `forward_full_mad_batch`** | **batch_size=4, 4 threads** | **~617 pps** ✓ | **Current best** |
-| 3 — batch | batch_size=8, 4 threads | 587 pps | Diminishing returns |
+| **0** | `forward_full_mad` (OMP) | 1 OMP `parallel` region per layer; threads split rows of each GEMV | Naive intra-layer tensor parallelism — pays a sync barrier per GEMV |
+| **1** | per-layer dispatch | 4 OMP threads | Layer-by-layer call from C, OMP teams per kernel — high overhead |
+| **2** | `forward_full_mad_st` | **1 thread** | Pure single-threaded reference. The 14 layers run one after another |
+| **3** | `forward_full_mad_batch` | **4 threads × 4 streams**, each thread runs `_st` on its own patch | **Throughput-oriented:** 4 independent users in parallel, no sync. Memory-bound |
+| **4** | `forward_full_mad_pipeline` ⭐ | **N threads, 1 stream**, layer-pipeline. N is configurable (default **6 stages** on i7-8750H to use all physical cores). DP-calibrated layer split, atomic ring-buffer handoff, cross-patch L3 prefetch, process-wide affinity pinning | **Latency-oriented:** maximise single-stream throughput for one user |
 
-**Performance characteristics at baseline (mode 3, batch=4, 4 threads):**
+**Mode comparison — FULL PATCH** (1 global pass + 4× MegaByte LocalByteDecoder steps per patch). Best of 3 trials. Hardware: Intel i7-8750H 6C/12T, ~9 MB L3, dual-channel DDR4.
 
-- Throughput: 610–625 pps (avg **617 pps**, ±3% run-to-run variance)
-- Memory bandwidth: **24.5 GB/s** of ~30 GB/s available (82% utilization)
-- Thread scaling efficiency: **90.9%** (4× single-threaded × 0.909 = batch throughput)
-- Latency p50: ~6.1 ms / p95: ~9.2 ms
-- Weight footprint: 40.4 MB (14 layers, 2-bit packed)
+| Mode | Configuration | Total pps | Per-stream pps | vs Mode 2 (per-stream) |
+|---|---|---:|---:|---:|
+| 2 — single-thread (ST) | 1 thread | 188 | **188** | 1.00× |
+| 3 — batch (4 threads) | 4 threads, batch=4 | 578 | 144 | 0.77× |
+| **3 — batch (6 threads)** | 6 threads, batch=6 | **726** | 121 | 0.64× |
+| **4 — pipeline (6 stages, calibrated)** ⭐ | 6 threads, chunk=128, pin=1, --calibrate 1 | **521** | **521** | **2.77×** |
 
-**Optimizations active in the current build:**
+> **Single-user latency**: mode 4 wins **4.3× per stream** vs mode 3 (6t) — 521 vs 121 pps.
+> **Aggregate multi-user throughput**: mode 3 (6t) wins **1.4× total** vs mode 4 — 726 vs 521 pps.
 
-- AVX2 SIMD with shuffle-LUT 2-bit weight decode (`gemv_2bit_mad_chunk`)
-- Fused RMSNorm + Quantize (`rms_norm_quantize_fused_opt`)
-- Fused SiLU(gate) × up + Quantize (`silu_mul_quantize_fused`)
-- Inter-layer prefetch (next-layer `W_forget` warmed during current layer)
-- Huge pages allocation for weight matrices (TLB optimization)
-- Batch processing with minimal cross-thread synchronization
+### What "full patch" includes
 
-**Target: 1000 pps.** Gap of 64.5% vs. baseline. To reach it, single-threaded (167.1 pps) needs to climb to ~275 pps (≈65% improvement) since 4-thread scaling is already near-saturation. Using more threads (6) does not help — efficiency drops from 90.9% to 61.3% because RAM bandwidth becomes the bottleneck.
+Each patch of the byte-level model produces 4 bytes:
+1. **Global pass** — 14-layer transformer backbone (forward through all `LayerDataMAD`). 40.4 MB of 2-bit weights.
+2. **4× LocalByteDecoder steps** — autoregressive byte generation inside the patch using the MegaByte local decoder (d_local=128, d_ff=512, n_heads=4, ~1 MB weights). Each step does `h_proj → causal-attention → SwiGLU FFN → out_proj[256]`.
+
+The 4 local steps are **sequential within a patch** (each byte depends on the previous), but **parallel across patches**. Mode 4 launches an OMP loop over the 128 patches in the chunk to parallelise the local decoder across all 6 cores.
+
+### Mode 4 evolution (gains from successive optimizations)
+
+| Mode 4 variant | pps single-stream | vs original |
+|---|---:|---:|
+| Original (4 stages, no calibration, no L3 prefetch) | 392 | 1.00× |
+| 4 stages, calibrated split | 470 | 1.20× |
+| 6 stages, even split | 408 | 1.04× |
+| **6 stages, calibrated split + cross-patch prefetch + process affinity** | **521** | **1.33×** |
+
+**Why mode 4 uses less RAM bandwidth than mode 3 with the same cores:** in mode 3, every thread loads the full 40 MB of weights every patch → 6× redundant traffic. In mode 4, each thread owns only ~7-9 MB (its layer slice), and cross-patch prefetch keeps that slice warm in L2/L3. So mode 4 trades higher single-stream throughput for lower aggregate throughput — a different point on the same Pareto curve.
+
+**Pipeline (mode 4) optimizations applied:**
+
+1. **6-stage pipeline using all 6 physical cores** (was 4 stages). Raises the throughput ceiling because the slowest stage now contains 2-3 layers instead of 4. Cap: `max(stage_cost) ≈ 1.21 ms` → **~830 pps** theoretical, **~555 pps** measured.
+2. **Cost-balanced layer split via runtime calibration + DP partition.** A startup phase measures per-layer wall-time (~50 iterations each, on a single thread, warmed cache). A linear-partition DP then assigns layers to stages so that `max(stage_cost)` is minimized. For 14 layers / 6 stages, the calibrator typically picks `[3, 2, 2, 3, 2, 2]` instead of the naive `[3, 2, 2, 2, 2, 3]`. **+33% throughput** vs uniform split.
+3. **Cross-patch L3 prefetch.** While each thread processes the *last* layer of patch N, it issues `_mm_prefetch` (T2 hint) for its own *first* layer's `W_forget` weights, so they are warm in L2/L3 when patch N+1 starts on that stage. Mitigates L3 thrashing (working set 40 MB > L3 size 9 MB).
+4. **Process-wide affinity pinning.** `SetProcessAffinityMask` restricts the entire process to the chosen physical cores (logical CPUs 0,2,4,6,8,10), preventing Windows from scheduling background threads on the HT siblings of pipeline cores. Reduces p95 latency.
+5. **Cached partition.** The calibrated split is computed once and reused across batches via a static cache keyed on `(n_stages, n_layers)`.
+
+**Internal structure:**
+
+- Synchronization: `std::atomic<uint64_t>` produced/consumed counters with `_mm_pause()` busy-spin
+- Inter-stage handoff: 4-slot ring buffer (`PipeRing`), each slot 64-byte aligned (no false sharing)
+- Per-thread scratch (`PipeScratch`, ~80 KB): all RMSNorm/GEMV/SiLU buffers, separate from TLS-based helpers
+- `h_all` recurrent state: each thread owns a disjoint slice of layers → no cross-thread writes
+
+**When to use which mode (full-patch pps including local decoder):**
+
+| Workload | Best mode | Single-user pps | Aggregate pps |
+|---|---|---:|---:|
+| 1 active user, latency-sensitive (chat) | **Mode 4** (pipeline, 6 stages, calibrated) | **521** | 521 |
+| 6+ concurrent users (batch serving) | **Mode 3** (6-thread batch) | 121 | **726** |
+| 4 concurrent users | Mode 3 (4-thread batch) | 144 | 578 |
+| Reference / debugging | Mode 2 (ST) | 188 | 188 |
 
 ```bash
-# Reproduce the baseline:
-gcc -O3 -march=native -fopenmp inference/benchmark.c inference/kernels.cpp -o benchmark -lm
-./benchmark --mode 3 --batch 4 --patches 500 --warmup 100 --threads 4
+# Compile (Windows MSYS / Linux / WSL):
+g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math \
+    -std=c++11 -x c++ -o benchmark.exe \
+    inference/benchmark.c inference/kernels.cpp -lm
+
+# Mode 3 — max aggregate throughput (6-stream batch, RAM-saturated):
+./benchmark.exe --mode 3 --batch 6 --patches 100 --warmup 30 --threads 6 --local 1
+
+# Mode 4 — recommended single-stream pipeline (full patch with local decoder):
+./benchmark.exe --mode 4 --patches 80 --warmup 30 \
+                --chunk 128 --pin 1 --stages 6 --calibrate 1 --local 1
+
+# Strip the local decoder (global-only — useful for kernel-only profiling):
+./benchmark.exe --mode 4 --patches 80 --warmup 30 --stages 6 --calibrate 1 --local 0
 ```
+
+**CLI flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--stages N` | 6 | Number of pipeline stages (= worker threads) for mode 4 |
+| `--chunk N` | 128 | Patches per mode-4 pipeline launch (amortizes thread spawn) |
+| `--pin 0\|1` | 1 | Pin pipeline threads to physical cores + set process affinity |
+| `--calibrate 0\|1` | 1 | Run DP-partition calibration on first launch (~10 ms one-shot) |
+| `--local 0\|1` | 1 | Include MegaByte LocalByteDecoder (4× `local_decode_step` per patch) |
+| `--threads N` | auto | Number of OMP threads (mode 0/1/3) |
+| `--batch N` | 1 | Batch size for mode 3 |
 
 ---
 

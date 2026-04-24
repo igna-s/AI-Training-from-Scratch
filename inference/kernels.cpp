@@ -27,6 +27,7 @@
 #define USE_GATHER 0
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
@@ -2335,7 +2336,489 @@ EXPORT void forward_full_mad_batch(
     free(batch_data);
 }
 
-} // extern "C"
+} // extern "C"  (closes the block that contains forward_full_mad_batch)
+
+// ===========================================================================
+// PIPELINE PARALLEL (mode 4) — 4-thread layer-pipeline single-stream inference
+//
+// Strategy:
+//   Stage 0: layers [0..L1)
+//   Stage 1: layers [L1..L2)
+//   Stage 2: layers [L2..L3)
+//   Stage 3: layers [L3..n_layers)
+//
+//   Each stage runs in its own std::thread and processes patches sequentially
+//   (the recurrent state h_all[L*d_model] for layers it owns is its private
+//   slice). Inter-stage handoff is a small ring buffer of activation vectors
+//   plus a single producer-side atomic counter polled by the consumer.
+//
+// Synchronization is busy-spin on std::atomic<uint64_t> with acquire/release.
+// Buffers are 64-byte aligned to avoid false sharing on the activation
+// handoff lines and on the atomic counters themselves.
+// ===========================================================================
+
+#include <thread>
+#include <atomic>
+#include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+// One activation vector slot, padded to its own cache line group.
+struct alignas(64) PipeSlot {
+    float data[MAX_D_MODEL];
+};
+
+// Per-stage scratch buffers (one set per worker thread).
+// Identical to the static buffers used by forward_full_mad_st, but
+// per-thread to avoid the silent cross-thread aliasing that plagues
+// the OMP path when the same function is reused from multiple threads.
+struct alignas(64) PipeScratch {
+    alignas(64) float  xa[MAX_D_MODEL];
+    alignas(64) float  xb[MAX_D_MODEL];
+    alignas(64) float  xn1[MAX_D_MODEL];
+    alignas(64) float  xn2[MAX_D_MODEL];
+    alignas(64) int8_t xi1[MAX_D_MODEL];
+    alignas(64) int8_t xi2[MAX_D_MODEL];
+    alignas(64) float  fraw[MAX_D_MODEL];
+    alignas(64) float  craw[MAX_D_MODEL];
+    alignas(64) float  graw[MAX_D_MODEL];
+    alignas(64) float  xmid[MAX_D_MODEL];
+    alignas(64) float  gater[MAX_D_FF];
+    alignas(64) float  upr[MAX_D_FF];
+    alignas(64) float  hid[MAX_D_FF];
+    alignas(64) int8_t hi8[MAX_D_FF];
+    alignas(64) float  ffno[MAX_D_MODEL];
+    alignas(64) int32_t acc[MAX_D_FF];
+};
+
+// Ring buffer between two stages — capacity is a power of two
+#define PIPE_RING_BITS 2u
+#define PIPE_RING_CAP  (1u << PIPE_RING_BITS)
+#define PIPE_RING_MASK (PIPE_RING_CAP - 1u)
+
+struct alignas(64) PipeRing {
+    PipeSlot slots[PIPE_RING_CAP];
+    // Padded counters on their own cache lines:
+    alignas(64) std::atomic<uint64_t> produced{0};
+    char _pad0[64 - sizeof(std::atomic<uint64_t>)];
+    alignas(64) std::atomic<uint64_t> consumed{0};
+    char _pad1[64 - sizeof(std::atomic<uint64_t>)];
+};
+
+#ifdef __GNUC__
+__attribute__((target("avx2,fma")))
+#endif
+static void pipe_process_one_layer(
+    const LayerDataMAD& ld, float* h,
+    float* cur, float* nxt,
+    int d_model, int d_ff, int fp_rank, int pfnet_hidden,
+    PipeScratch& s
+) {
+    // Phase 1: RMSNorm1 + Quantize
+    float xs1 = rms_norm_quantize_fused_opt(cur, ld.norm1_w, s.xn1, s.xi1, d_model, ld.norm_eps);
+
+    // Phase 2: 3 Mixer GEMVs
+    gemv_2bit_mad_chunk_st(s.xi1, ld.W_forget, s.acc, d_model, d_model);
+    for (int j = 0; j < d_model; j++) s.fraw[j] = (float)s.acc[j] * xs1 * ld.s_forget;
+    gemv_2bit_mad_chunk_st(s.xi1, ld.W_cand,   s.acc, d_model, d_model);
+    for (int j = 0; j < d_model; j++) s.craw[j] = (float)s.acc[j] * xs1 * ld.s_cand;
+    gemv_2bit_mad_chunk_st(s.xi1, ld.W_out,    s.acc, d_model, d_model);
+    for (int j = 0; j < d_model; j++) s.graw[j] = (float)s.acc[j] * xs1 * ld.s_out;
+
+    // Phase 3: MLGRU gates (vectorized) + xmid
+    int i = 0;
+    for (; i <= d_model-8; i += 8) {
+        __m256 vf = _avx2_sigmoid_ps(_mm256_loadu_ps(s.fraw+i));
+        __m256 vc = _avx2_silu_ps   (_mm256_loadu_ps(s.craw+i));
+        __m256 vg = _avx2_sigmoid_ps(_mm256_loadu_ps(s.graw+i));
+        __m256 vh = _mm256_loadu_ps(h+i);
+        __m256 vhn= _mm256_fmadd_ps(vf, _mm256_sub_ps(vh, vc), vc);
+        __m256 vm = _mm256_mul_ps(vg, vhn);
+        _mm256_storeu_ps(h+i, vhn);
+        _mm256_storeu_ps(s.xmid+i, _mm256_add_ps(_mm256_loadu_ps(cur+i), vm));
+    }
+    for (; i < d_model; i++) {
+        float f = 1.f/(1.f+expf(-s.fraw[i]));
+        float c = s.craw[i]/(1.f+expf(-s.craw[i]));
+        float g = 1.f/(1.f+expf(-s.graw[i]));
+        float hn = c + f*(h[i]-c);
+        h[i] = hn;
+        s.xmid[i] = cur[i] + g*hn;
+    }
+
+    // Phase 4: RMSNorm2 + Quantize
+    float xs2 = rms_norm_quantize_fused_opt(s.xmid, ld.norm2_w, s.xn2, s.xi2, d_model, ld.norm_eps);
+
+    // Phase 5: 2 FFN GEMVs
+    gemv_2bit_mad_chunk_st(s.xi2, ld.W_gate, s.acc, d_model, d_ff);
+    for (int j = 0; j < d_ff; j++) s.gater[j] = (float)s.acc[j] * xs2 * ld.s_gate;
+    gemv_2bit_mad_chunk_st(s.xi2, ld.W_up,   s.acc, d_model, d_ff);
+    for (int j = 0; j < d_ff; j++) s.upr[j]   = (float)s.acc[j] * xs2 * ld.s_up;
+
+    // Phase 6: SiLU(gate)*up + quantize
+    float xs3 = silu_mul_quantize_fused(s.gater, s.upr, s.hi8, d_ff, s.hid);
+
+    // Phase 7: Down GEMV + residual
+    gemv_2bit_mad_chunk_st(s.hi8, ld.W_down, s.acc, d_ff, d_model);
+    for (int j = 0; j < d_model; j++)
+        nxt[j] = s.xmid[j] + (float)s.acc[j] * xs3 * ld.s_down;
+
+    // Phase 8: FPResidual + PFNet
+    if (ld.fp_A_mix && ld.fp_B_mix)
+        fp_residual_inline(cur, ld.fp_A_mix, ld.fp_B_mix, nxt, d_model, d_model, fp_rank);
+    if (ld.pfnet_w1 && ld.pfnet_w2 && ld.pfnet_norm_w)
+        pfnet_inline(nxt, nxt, ld.pfnet_norm_w, ld.norm_eps,
+                     ld.pfnet_w1, ld.pfnet_s1,
+                     ld.pfnet_w2, ld.pfnet_s2,
+                     d_model, pfnet_hidden);
+}
+
+#ifdef _WIN32
+static void pipe_pin_thread(int logical_cpu) {
+    DWORD_PTR mask = (DWORD_PTR)1 << logical_cpu;
+    SetThreadAffinityMask(GetCurrentThread(), mask);
+}
+#else
+static void pipe_pin_thread(int /*logical_cpu*/) { /* no-op */ }
+#endif
+
+// Helper: portable 64-byte aligned alloc
+static void* aligned_alloc_compat(size_t bytes) {
+#ifdef _WIN32
+    return _aligned_malloc(bytes, 64);
+#else
+    size_t sz = ((bytes + 63) / 64) * 64;
+    return aligned_alloc(64, sz);
+#endif
+}
+
+static void aligned_free_compat(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Cost calibration: measure per-layer wall-time on a single thread (warm).
+// Used by pipe_dp_partition to compute a load-balanced layer split.
+// ---------------------------------------------------------------------------
+static void pipe_calibrate_costs(
+    const LayerDataMAD* layers, int n_layers,
+    int d_model, int d_ff, int fp_rank, int pfnet_hidden,
+    double* costs_out
+) {
+    PipeScratch* s = (PipeScratch*)aligned_alloc_compat(sizeof(PipeScratch));
+    memset(s, 0, sizeof(PipeScratch));
+
+    float* h_buf  = (float*)aligned_alloc_compat(d_model * sizeof(float));
+    float* in_buf = (float*)aligned_alloc_compat(d_model * sizeof(float));
+    for (int i = 0; i < d_model; i++) in_buf[i] = ((i % 7) - 3) * 0.05f;
+
+    const int N_WARMUP = 5;
+    const int N_ITERS  = 50;
+
+    for (int L = 0; L < n_layers; L++) {
+        const LayerDataMAD& ld = layers[L];
+        // Warm cache for this layer
+        for (int it = 0; it < N_WARMUP; it++) {
+            memset(h_buf, 0, d_model * sizeof(float));
+            memcpy(s->xa, in_buf, d_model * sizeof(float));
+            pipe_process_one_layer(ld, h_buf, s->xa, s->xb,
+                d_model, d_ff, fp_rank, pfnet_hidden, *s);
+        }
+        // Time — repeat with growing iter count if first run is too short
+        // for the wallclock resolution. Reject runs <2ms (likely noise).
+        int iters = N_ITERS;
+        double dt = 0.0;
+        for (int trial = 0; trial < 3; trial++) {
+            double t0 = omp_get_wtime();
+            for (int it = 0; it < iters; it++) {
+                memcpy(s->xa, in_buf, d_model * sizeof(float));
+                pipe_process_one_layer(ld, h_buf, s->xa, s->xb,
+                    d_model, d_ff, fp_rank, pfnet_hidden, *s);
+            }
+            dt = omp_get_wtime() - t0;
+            if (dt > 0.002) break;  // ≥2ms is reliable
+            iters *= 4;             // otherwise quadruple
+        }
+        costs_out[L] = dt / (double)iters;
+    }
+
+    aligned_free_compat(h_buf);
+    aligned_free_compat(in_buf);
+    aligned_free_compat(s);
+}
+
+// ---------------------------------------------------------------------------
+// DP partition: split layers [0..n) into k contiguous stages such that the
+// maximum stage cost is minimized. Returns L_split[0..k] with L_split[0]=0
+// and L_split[k]=n.
+// ---------------------------------------------------------------------------
+static void pipe_dp_partition(
+    const double* costs, int n, int k, int* L_split
+) {
+    if (k <= 1) { L_split[0] = 0; L_split[1] = n; return; }
+    if (k >= n) {
+        // One layer per stage, then empty stages collapse — clamp k = n
+        for (int i = 0; i <= k; i++) L_split[i] = (i < n) ? i : n;
+        return;
+    }
+
+    // Prefix sums
+    std::vector<double> psum(n + 1, 0.0);
+    for (int i = 0; i < n; i++) psum[i + 1] = psum[i] + costs[i];
+
+    // f[i][s] = min over j<i of max(f[j][s-1], psum[i]-psum[j])
+    // back[i][s] = best j (split point)
+    std::vector<std::vector<double>> f(n + 1, std::vector<double>(k + 1, 1e18));
+    std::vector<std::vector<int>>    back(n + 1, std::vector<int>(k + 1, 0));
+    f[0][0] = 0.0;
+    for (int s = 1; s <= k; s++) {
+        for (int i = s; i <= n; i++) {
+            for (int j = s - 1; j < i; j++) {
+                double stage_cost = psum[i] - psum[j];
+                double m = (f[j][s-1] > stage_cost) ? f[j][s-1] : stage_cost;
+                if (m < f[i][s]) {
+                    f[i][s] = m;
+                    back[i][s] = j;
+                }
+            }
+        }
+    }
+
+    // Reconstruct
+    L_split[k] = n;
+    int cur = n;
+    for (int s = k; s >= 1; s--) {
+        cur = back[cur][s];
+        L_split[s - 1] = cur;
+    }
+    L_split[0] = 0;
+}
+
+// Default even split when no calibration available.
+static void pipe_even_split(int n_layers, int n_stages, int* L_split) {
+    L_split[0] = 0;
+    for (int k = 1; k < n_stages; k++)
+        L_split[k] = (n_layers * k) / n_stages;
+    L_split[n_stages] = n_layers;
+}
+
+extern "C" {
+
+// Process n_patches sequentially through an N-stage layer pipeline.
+// Single-stream throughput: each input patch produces one output patch.
+// h_all is recurrent state, modified in place; each stage owns a disjoint
+// slice of layers, so its h-rows are not touched by any other thread.
+//
+// Parameters:
+//   n_stages     : number of pipeline stages (1..n_layers). If <=0 → 4.
+//   pin_threads  : if non-zero, pin each worker to logical CPU 2*k (i.e.
+//                  physical cores on Intel HT layout).
+//   do_calibrate : if non-zero, run a single-threaded warm calibration of
+//                  per-layer cost and use DP to compute an optimal split.
+EXPORT void forward_full_mad_pipeline(
+    const float* const* x_in_array,    // [n_patches]
+    float* const*       x_out_array,   // [n_patches]
+    float*              h_all,         // [n_layers * d_model] persistent
+    const LayerDataMAD* layers,
+    int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden,
+    int n_patches, int pin_threads,
+    int n_stages, int do_calibrate
+) {
+    if (n_stages <= 0) n_stages = 4;
+    if (n_stages > n_layers) n_stages = n_layers;
+
+    // -------- Layer split: cached calibrated split, recomputed only ----
+    // when do_calibrate=1 OR when (n_stages, n_layers) tuple changes.
+    // Cache is process-wide; fine since all calls share the same model.
+    static int    cached_n_stages = 0;
+    static int    cached_n_layers = 0;
+    static int    cached_split[64] = {0};
+    static bool   have_calibrated  = false;
+
+    std::vector<int> L_split(n_stages + 1);
+    bool need_recompute = (cached_n_stages != n_stages) ||
+                          (cached_n_layers != n_layers) ||
+                          (do_calibrate && !have_calibrated);
+    if (need_recompute) {
+        if (do_calibrate) {
+            std::vector<double> costs(n_layers, 0.0);
+            pipe_calibrate_costs(layers, n_layers, d_model, d_ff,
+                                 fp_rank, pfnet_hidden, costs.data());
+            pipe_dp_partition(costs.data(), n_layers, n_stages, L_split.data());
+            have_calibrated = true;
+            // Print the split for visibility (only on calibration).
+            fprintf(stderr, "[pipeline] calibrated split (stages=%d, layers=%d):",
+                    n_stages, n_layers);
+            for (int k = 0; k <= n_stages; k++) fprintf(stderr, " %d", L_split[k]);
+            fprintf(stderr, "  costs:");
+            for (int L = 0; L < n_layers; L++)
+                fprintf(stderr, " %.0fus", costs[L]*1e6);
+            fprintf(stderr, "\n");
+        } else {
+            pipe_even_split(n_layers, n_stages, L_split.data());
+        }
+        cached_n_stages = n_stages;
+        cached_n_layers = n_layers;
+        for (int k = 0; k <= n_stages; k++) cached_split[k] = L_split[k];
+    } else {
+        for (int k = 0; k <= n_stages; k++) L_split[k] = cached_split[k];
+    }
+
+    // -------- Process-wide affinity (saves & restores on Win) --------
+#ifdef _WIN32
+    DWORD_PTR prev_proc_mask = 0, prev_sys_mask = 0;
+    DWORD_PTR proc_mask = 0;
+    if (pin_threads) {
+        for (int k = 0; k < n_stages; k++) proc_mask |= ((DWORD_PTR)1 << (k * 2));
+        GetProcessAffinityMask(GetCurrentProcess(), &prev_proc_mask, &prev_sys_mask);
+        SetProcessAffinityMask(GetCurrentProcess(), proc_mask);
+    }
+#endif
+
+    // -------- Allocate per-stage scratch and rings -------------------
+    std::vector<PipeScratch*> scratch(n_stages);
+    for (int k = 0; k < n_stages; k++) {
+#ifdef _WIN32
+        scratch[k] = (PipeScratch*)_aligned_malloc(sizeof(PipeScratch), 64);
+#else
+        scratch[k] = (PipeScratch*)aligned_alloc(64,
+                       ((sizeof(PipeScratch)+63)/64)*64);
+#endif
+        memset(scratch[k], 0, sizeof(PipeScratch));
+    }
+
+    std::vector<PipeRing*> rings(n_stages > 1 ? n_stages - 1 : 0);
+    for (int k = 0; k + 1 < n_stages; k++) {
+#ifdef _WIN32
+        rings[k] = (PipeRing*)_aligned_malloc(sizeof(PipeRing), 64);
+#else
+        rings[k] = (PipeRing*)aligned_alloc(64,
+                       ((sizeof(PipeRing)+63)/64)*64);
+#endif
+        new (rings[k]) PipeRing();
+    }
+
+    auto stage_fn = [&](int k) {
+        if (pin_threads) {
+            // i7-8750H Intel HT: logical (k*2) = physical core k.
+            pipe_pin_thread(k * 2);
+        }
+
+        const int L0 = L_split[k];
+        const int L1 = L_split[k + 1];
+        const int n_local = L1 - L0;
+
+        PipeScratch& s = *scratch[k];
+        PipeRing*  in_ring  = (k == 0)            ? nullptr : rings[k - 1];
+        PipeRing*  out_ring = (k == n_stages - 1) ? nullptr : rings[k];
+
+        for (int p = 0; p < n_patches; p++) {
+            // -------- 1) Acquire input activation for patch p ----------
+            const float* in_ptr;
+            if (in_ring == nullptr) {
+                in_ptr = x_in_array[p];
+            } else {
+                while (in_ring->produced.load(std::memory_order_acquire) <= (uint64_t)p) {
+                    _mm_pause();
+                }
+                in_ptr = in_ring->slots[p & PIPE_RING_MASK].data;
+            }
+
+            // -------- 2) Acquire output slot ------------------------
+            float* out_ptr;
+            if (out_ring == nullptr) {
+                out_ptr = x_out_array[p];
+            } else {
+                while ((uint64_t)p - out_ring->consumed.load(std::memory_order_acquire)
+                       >= (uint64_t)PIPE_RING_CAP) {
+                    _mm_pause();
+                }
+                out_ptr = out_ring->slots[p & PIPE_RING_MASK].data;
+            }
+
+            // -------- 3) Process this stage's layer range ----------
+            memcpy(s.xa, in_ptr, d_model * sizeof(float));
+            for (int Li = 0; Li < n_local; Li++) {
+                int L = L0 + Li;
+                const LayerDataMAD& ld = layers[L];
+                float* h   = h_all + L * d_model;
+                float* cur = (Li & 1) ? s.xb : s.xa;
+                float* nxt = (Li & 1) ? s.xa : s.xb;
+
+                // Prefetch INSIDE-stage: next layer's W_forget
+                if (Li + 1 < n_local) {
+                    const LayerDataMAD& ldn = layers[L + 1];
+                    const int nrg = (d_model + 3) / 4;
+                    const int wsz = nrg * 4 * d_model;
+                    for (int i = 0; i < wsz; i += 128)
+                        _mm_prefetch((const char*)ldn.W_forget + i, _MM_HINT_T1);
+                }
+
+                // Cross-patch prefetch: while on the LAST layer of this
+                // stage for patch p, prefetch this stage's FIRST layer's
+                // W_forget into L2/L3 to warm cache for patch p+1.
+                if (Li == n_local - 1 && p + 1 < n_patches && n_local > 1) {
+                    const LayerDataMAD& ld_first = layers[L0];
+                    const int nrg = (d_model + 3) / 4;
+                    const int wsz = nrg * 4 * d_model;
+                    // Sparser prefetch (256B step) to avoid thrashing TLB
+                    for (int i = 0; i < wsz; i += 256)
+                        _mm_prefetch((const char*)ld_first.W_forget + i, _MM_HINT_T2);
+                }
+
+                pipe_process_one_layer(ld, h, cur, nxt,
+                                       d_model, d_ff, fp_rank, pfnet_hidden, s);
+            }
+            float* result = (n_local & 1) ? s.xb : s.xa;
+            memcpy(out_ptr, result, d_model * sizeof(float));
+
+            // -------- 4) Publish (out_ring) and consume (in_ring) ----
+            if (out_ring) {
+                out_ring->produced.store((uint64_t)p + 1, std::memory_order_release);
+            }
+            if (in_ring) {
+                in_ring->consumed.store((uint64_t)p + 1, std::memory_order_release);
+            }
+        }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(n_stages);
+    for (int k = 0; k < n_stages; k++)
+        workers.emplace_back(stage_fn, k);
+    for (auto& t : workers) t.join();
+
+    // Cleanup
+    for (int k = 0; k < n_stages; k++) {
+#ifdef _WIN32
+        _aligned_free(scratch[k]);
+#else
+        free(scratch[k]);
+#endif
+    }
+    for (int k = 0; k + 1 < n_stages; k++) {
+        rings[k]->~PipeRing();
+#ifdef _WIN32
+        _aligned_free(rings[k]);
+#else
+        free(rings[k]);
+#endif
+    }
+
+#ifdef _WIN32
+    if (pin_threads && prev_proc_mask) {
+        SetProcessAffinityMask(GetCurrentProcess(), prev_proc_mask);
+    }
+#endif
+}
+
+} // extern "C"  (closes pipeline block)
 
 // ===========================================================================
 // local_decode_step — MegaByte LocalByteDecoder, 1 byte step

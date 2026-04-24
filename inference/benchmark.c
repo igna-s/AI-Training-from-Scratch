@@ -78,6 +78,15 @@ void forward_full_mad_batch(
     int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden,
     int n_patches, int n_threads);
 
+void forward_full_mad_pipeline(
+    const float* const*  x_in_array,
+    float* const*        x_out_array,
+    float*               h_all,
+    const struct LayerDataMAD* layers,
+    int n_layers, int d_model, int d_ff, int fp_rank, int pfnet_hidden,
+    int n_patches, int pin_threads,
+    int n_stages, int do_calibrate);
+
 void decode_layer_fused_2bit_mad(
     const float* x_in, float* x_out, float* h,
     const float* norm1_w, const float* norm2_w, float norm_eps,
@@ -199,6 +208,42 @@ static int cmp_double(const void* a, const void* b) {
     return (da > db) - (da < db);
 }
 
+/* ── MegaByte LocalByteDecoder weight bundle ─────────────────────── */
+struct LocalDecW {
+    const uint8_t *W_hproj;
+    const uint8_t *W_q, *W_k, *W_v, *W_o;
+    const uint8_t *W_gate, *W_up, *W_down, *W_out;
+    const float   *byte_emb, *pos_emb;
+    const float   *norm1_w, *norm2_w;
+    int d_local, d_ff_local, n_heads, patch_size;
+};
+
+/* Run all 4 local_decode_step calls (autoregressive byte generation
+ * inside one patch). x_out is the global model output [d_model]. */
+static inline void run_local_patch(
+    const float* x_out, int d_model, const struct LocalDecW* L
+) {
+    int32_t generated[4] = {0};
+    float   logits[256];
+    const float scale = 0.01f;
+    for (int kb = 0; kb < L->patch_size; kb++) {
+        local_decode_step(
+            x_out,
+            L->W_hproj, scale,
+            L->byte_emb, L->pos_emb,
+            generated, kb,
+            d_model, L->d_local, L->n_heads, L->d_ff_local, L->patch_size,
+            L->norm1_w,
+            L->W_q, scale, L->W_k, scale, L->W_v, scale, L->W_o, scale,
+            L->norm2_w,
+            L->W_gate, scale, L->W_up, scale, L->W_down, scale,
+            L->W_out, scale,
+            1e-6f, logits);
+        /* emulate argmax of the freshly-generated logits */
+        generated[kb] = (kb * 17) % 256;
+    }
+}
+
 /* ── Main ──────────────────────────────────────────────────────────── */
 
 int main(int argc, char** argv) {
@@ -210,6 +255,11 @@ int main(int argc, char** argv) {
     int mode = 0;
     int n_threads = 0;
     int batch_size = 1;
+    int pipe_chunk    = 128;
+    int pipe_pin      = 1;
+    int pipe_stages   = 6;   /* default: use all 6 physical cores on i7-8750H */
+    int pipe_calibrate= 1;   /* default: calibrate per-layer cost + DP split  */
+    int local_decode  = 1;   /* default: run 4 local_decode_step per patch    */
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--patches")  && i+1 < argc) n_patches    = atoi(argv[++i]);
@@ -219,6 +269,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--mode")     && i+1 < argc) mode         = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--threads")  && i+1 < argc) n_threads    = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--batch")    && i+1 < argc) batch_size   = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--chunk")    && i+1 < argc) pipe_chunk   = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--pin")      && i+1 < argc) pipe_pin     = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stages")   && i+1 < argc) pipe_stages  = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--calibrate")&& i+1 < argc) pipe_calibrate=atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--local")    && i+1 < argc) local_decode = atoi(argv[++i]);
     }
 
     /* ── Thread configuration ───────────────────────────────────── */
@@ -272,45 +327,68 @@ int main(int argc, char** argv) {
     float* x_out = alloc_f32(d_model);
     float* h_all = alloc_f32(n_layers * d_model);
 
+    /* ── MegaByte LocalByteDecoder weights (always allocated) ────── */
+    /* Per-patch full inference = 1 global pass + 4 local_decode_step. */
+    /* These weights are SHARED across all modes and persist always.  */
+    const int LD_DLOCAL    = 128;
+    const int LD_DFF       = 512;
+    const int LD_NHEADS    = 4;
+    const int LD_PATCHSIZE = 4;
+    uint8_t* ld_W_hproj = make_random_mad_weight(LD_PATCHSIZE * LD_DLOCAL, d_model);
+    uint8_t* ld_W_q     = make_random_mad_weight(LD_DLOCAL, LD_DLOCAL);
+    uint8_t* ld_W_k     = make_random_mad_weight(LD_DLOCAL, LD_DLOCAL);
+    uint8_t* ld_W_v     = make_random_mad_weight(LD_DLOCAL, LD_DLOCAL);
+    uint8_t* ld_W_o     = make_random_mad_weight(LD_DLOCAL, LD_DLOCAL);
+    uint8_t* ld_W_gate  = make_random_mad_weight(LD_DFF,    LD_DLOCAL);
+    uint8_t* ld_W_up    = make_random_mad_weight(LD_DFF,    LD_DLOCAL);
+    uint8_t* ld_W_down  = make_random_mad_weight(LD_DLOCAL, LD_DFF);
+    uint8_t* ld_W_out   = make_random_mad_weight(256,       LD_DLOCAL);
+    float*   ld_byte_emb = make_random_f32(256 * LD_DLOCAL, 0.01f);
+    float*   ld_pos_emb  = make_random_f32(LD_PATCHSIZE * LD_DLOCAL, 0.01f);
+    float*   ld_norm1_w  = make_random_f32(LD_DLOCAL, 1.0f);
+    float*   ld_norm2_w  = make_random_f32(LD_DLOCAL, 1.0f);
+    /* Local decoder weights total ~= 1 MB (negligible vs 40 MB global) */
+
+    struct LocalDecW LDW = {
+        ld_W_hproj, ld_W_q, ld_W_k, ld_W_v, ld_W_o,
+        ld_W_gate, ld_W_up, ld_W_down, ld_W_out,
+        ld_byte_emb, ld_pos_emb, ld_norm1_w, ld_norm2_w,
+        LD_DLOCAL, LD_DFF, LD_NHEADS, LD_PATCHSIZE
+    };
+
     /* ── Allocate batch arrays for mode 3 ────────────────────────── */
     float** x_in_array = NULL, **x_out_array = NULL, **h_all_array = NULL;
     if (mode == 3) {
         x_in_array = (float**)malloc(batch_size * sizeof(float*));
         x_out_array = (float**)malloc(batch_size * sizeof(float*));
         h_all_array = (float**)malloc(batch_size * sizeof(float*));
-
-    /* ── Allocate LocalDecoder weights for mode 4 ────────────────── */
-    /* d_local=128, d_ff_local=512, patch_size=4, vocab=256         */
-    uint8_t *mode4_W_hproj=NULL, *mode4_W_q=NULL, *mode4_W_k=NULL;
-    uint8_t *mode4_W_v=NULL, *mode4_W_o=NULL;
-    uint8_t *mode4_W_gate=NULL, *mode4_W_up=NULL, *mode4_W_down=NULL;
-    uint8_t *mode4_W_out=NULL;
-    float   *mode4_byte_emb=NULL, *mode4_pos_emb=NULL;
-    float   *mode4_norm1_w=NULL,  *mode4_norm2_w=NULL;
-    if (mode == 4) {
-        int dl=128, dff=512, P=4;
-        mode4_W_hproj  = make_random_mad_weight(P*dl, d_model);
-        mode4_W_q      = make_random_mad_weight(dl, dl);
-        mode4_W_k      = make_random_mad_weight(dl, dl);
-        mode4_W_v      = make_random_mad_weight(dl, dl);
-        mode4_W_o      = make_random_mad_weight(dl, dl);
-        mode4_W_gate   = make_random_mad_weight(dff, dl);
-        mode4_W_up     = make_random_mad_weight(dff, dl);
-        mode4_W_down   = make_random_mad_weight(dl, dff);
-        mode4_W_out    = make_random_mad_weight(256, dl);
-        mode4_byte_emb = make_random_f32(256 * dl, 0.01f);
-        mode4_pos_emb  = make_random_f32(P * dl, 0.01f);
-        mode4_norm1_w  = make_random_f32(dl, 1.0f);
-        mode4_norm2_w  = make_random_f32(dl, 1.0f);
-        printf("LocalDecoder weights: d_local=%d d_ff=%d P=%d\n", dl, dff, P);
-    }
-
         for (int b = 0; b < batch_size; b++) {
             x_in_array[b] = alloc_f32(d_model);
             x_out_array[b] = alloc_f32(d_model);
             h_all_array[b] = alloc_f32(n_layers * d_model);
             memcpy(x_in_array[b], x_in, d_model * sizeof(float));
         }
+    }
+
+    /* ── Allocate single-stream arrays for mode 4 (pipeline) ─────── */
+    /* Pipeline reuses ONE persistent h_all (single recurrent stream) */
+    /* and processes a batch of n_patches sequentially through 4      */
+    /* layer-pipeline stages.                                         */
+    float** mode4_x_in  = NULL;
+    float** mode4_x_out = NULL;
+    float*  mode4_h_all = NULL;
+    int     mode4_pin   = pipe_pin; /* pin threads to logical CPUs 0,2,4,6 */
+    if (mode == 4) {
+        mode4_x_in  = (float**)malloc(pipe_chunk * sizeof(float*));
+        mode4_x_out = (float**)malloc(pipe_chunk * sizeof(float*));
+        for (int p = 0; p < pipe_chunk; p++) {
+            mode4_x_in[p]  = alloc_f32(d_model);
+            mode4_x_out[p] = alloc_f32(d_model);
+            memcpy(mode4_x_in[p], x_in, d_model * sizeof(float));
+        }
+        mode4_h_all = alloc_f32(n_layers * d_model);
+        printf("Mode 4 pipeline: stages=%d chunk=%d pin=%d calibrate=%d\n",
+               pipe_stages, pipe_chunk, mode4_pin, pipe_calibrate);
     }
 
     /* ── Warmup ──────────────────────────────────────────────────── */
@@ -338,6 +416,7 @@ int main(int argc, char** argv) {
             memset(h_all, 0, n_layers * d_model * sizeof(float));
             forward_full_mad_st(x_in, x_out, h_all, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
+            if (local_decode) run_local_patch(x_out, d_model, &LDW);
         } else if (mode == 3) {
             for (int b = 0; b < batch_size; b++)
                 memset(h_all_array[b], 0, n_layers * d_model * sizeof(float));
@@ -345,6 +424,21 @@ int main(int argc, char** argv) {
                 x_out_array, h_all_array, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
                 batch_size, n_threads);
+            if (local_decode)
+                for (int b = 0; b < batch_size; b++)
+                    run_local_patch(x_out_array[b], d_model, &LDW);
+        } else if (mode == 4) {
+            memset(mode4_h_all, 0, n_layers * d_model * sizeof(float));
+            /* Calibrate only on the very first warmup iteration. */
+            int do_cal = (w == 0) ? pipe_calibrate : 0;
+            forward_full_mad_pipeline((const float* const*)mode4_x_in,
+                mode4_x_out, mode4_h_all, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
+                pipe_chunk, mode4_pin,
+                pipe_stages, do_cal);
+            if (local_decode)
+                for (int p = 0; p < pipe_chunk; p++)
+                    run_local_patch(mode4_x_out[p], d_model, &LDW);
         }
     }
     printf(" OK\n");
@@ -375,6 +469,7 @@ int main(int argc, char** argv) {
             memset(h_all, 0, n_layers * d_model * sizeof(float));
             forward_full_mad_st(x_in, x_out, h_all, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
+            if (local_decode) run_local_patch(x_out, d_model, &LDW);
         } else if (mode == 3) {
             for (int b = 0; b < batch_size; b++)
                 memset(h_all_array[b], 0, n_layers * d_model * sizeof(float));
@@ -382,30 +477,26 @@ int main(int argc, char** argv) {
                 x_out_array, h_all_array, layers,
                 n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
                 batch_size, n_threads);
+            if (local_decode)
+                for (int b = 0; b < batch_size; b++)
+                    run_local_patch(x_out_array[b], d_model, &LDW);
         } else if (mode == 4) {
-            /* Global decode (ST) + 4 local_decode_step passes */
-            memset(h_all, 0, n_layers * d_model * sizeof(float));
-            forward_full_mad_st(x_in, x_out, h_all, layers,
-                n_layers, d_model, d_ff, fp_rank, pfnet_hidden);
-            /* local decoder weights stored in mode4_* below */
-            int32_t generated[4] = {0};
-            float logits[256];
-            for (int kb = 0; kb < 4; kb++) {
-                generated[kb] = kb * 17 % 256; /* dummy bytes */
-                local_decode_step(
-                    x_out,
-                    mode4_W_hproj, 0.01f,
-                    mode4_byte_emb, mode4_pos_emb,
-                    generated, kb,
-                    d_model, 128, 4, 512, 4,
-                    mode4_norm1_w,
-                    mode4_W_q, 0.01f, mode4_W_k, 0.01f,
-                    mode4_W_v, 0.01f, mode4_W_o, 0.01f,
-                    mode4_norm2_w,
-                    mode4_W_gate, 0.01f, mode4_W_up, 0.01f,
-                    mode4_W_down, 0.01f,
-                    mode4_W_out, 0.01f,
-                    1e-6f, logits);
+            /* Layer-pipeline single-stream: process pipe_chunk patches */
+            /* through pipe_stages worker threads. Split was already    */
+            /* calibrated during warmup; here we always pass do_cal=0   */
+            /* so the partition is recomputed cheaply (even split fall- */
+            /* back) — the dominant cost is per-patch compute.          */
+            forward_full_mad_pipeline((const float* const*)mode4_x_in,
+                mode4_x_out, mode4_h_all, layers,
+                n_layers, d_model, d_ff, fp_rank, pfnet_hidden,
+                pipe_chunk, mode4_pin,
+                pipe_stages, 0);
+            if (local_decode) {
+                /* Local decode is autoregressive within a patch but */
+                /* embarrassingly parallel across patches. Use OMP. */
+                #pragma omp parallel for schedule(static) num_threads(pipe_stages)
+                for (int p2 = 0; p2 < pipe_chunk; p2++)
+                    run_local_patch(mode4_x_out[p2], d_model, &LDW);
             }
         }
         times[p] = get_time_sec() - t0;
@@ -418,17 +509,28 @@ int main(int argc, char** argv) {
     double p50 = times[n_patches / 2];
     double p95 = times[(int)(n_patches * 0.95)];
 
-    // Real patches/sec: in mode 3, each iteration processes batch_size patches
-    double actual_patches = (mode == 3) ? (double)(n_patches * batch_size) : (double)n_patches;
+    // Real patches/sec:
+    //   mode 3: each iteration processes batch_size patches in parallel
+    //   mode 4: each iteration processes pipe_chunk patches through pipeline
+    double actual_patches;
+    if      (mode == 3) actual_patches = (double)(n_patches * batch_size);
+    else if (mode == 4) actual_patches = (double)(n_patches * pipe_chunk);
+    else                actual_patches = (double)n_patches;
     double pps = actual_patches / total;
     double bw  = (total_bytes / 1e6) * pps;
 
     printf("\n=================================================================\n");
-    const char* mode_names[] = { "forward_full_mad (OMP)", "per-layer", "forward_full_mad_st (ST)", "batch" };
+    const char* mode_names[] = {
+        "forward_full_mad (OMP)", "per-layer",
+        "forward_full_mad_st (ST)", "batch (4 streams)",
+        "pipeline (4-stage layer pipeline, 1 stream)" };
     printf("Mode: %s\n", mode_names[mode]);
     if (mode == 3) {
         printf("Iterations: %d (batch_size=%d, total patches: %d)  Warmup: %d\n",
                n_patches, batch_size, (int)actual_patches, n_warmup);
+    } else if (mode == 4) {
+        printf("Iterations: %d (pipe_chunk=%d, total patches: %d)  Warmup: %d\n",
+               n_patches, pipe_chunk, (int)actual_patches, n_warmup);
     } else {
         printf("Patches: %d  Warmup: %d\n", n_patches, n_warmup);
     }
@@ -450,6 +552,16 @@ int main(int argc, char** argv) {
         free(x_in_array);
         free(x_out_array);
         free(h_all_array);
+    }
+
+    if (mode == 4) {
+        for (int p = 0; p < pipe_chunk; p++) {
+            free_aligned(mode4_x_in[p]);
+            free_aligned(mode4_x_out[p]);
+        }
+        free(mode4_x_in);
+        free(mode4_x_out);
+        free_aligned(mode4_h_all);
     }
 
     free_aligned(x_in); free_aligned(x_out); free_aligned(h_all);
