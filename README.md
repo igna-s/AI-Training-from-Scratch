@@ -10,12 +10,12 @@
 |---|---|
 | `d_model` | 1024 |
 | `n_layers` | 14 |
-| `d_ff` | 2730 (SwiGLU, ~8/3 × d_model) |
+| `d_ff` | 2730 (PyTorch `model.py::D_FF`, ~8/3 × 1024) / 2688 (C benchmark default, rounded to multiple of 64) |
 | `vocab_size` | 256 (byte-level) |
 | `patch_size` | 4 bytes |
 | `fp_rank` | 8 (FPResidual low-rank correction) |
 | `pfnet_hidden` | 64 (PFNet hidden dim, 224 KB total across all layers) |
-| `mlgru_state` | 28 KB (14 × 1024 × 2 bytes — fixed, fits in L2) |
+| `mlgru_state` | 28 KB fp16 / 56 KB fp32 (14 × 1024 × {2, 4} bytes — fixed, fits in L2) |
 | **Total parameters** | **~170M** |
 
 ### Key Components
@@ -24,7 +24,7 @@
 - **BytePatchEmbeddingV2** — Converts 4-byte patches to `d_model` dims: BitEmbedding (8 dims/byte) → concat (32 dims) → BitLinear → d_model.
 - **BitLinear** — Ternary weight projection with Straight-Through Estimator (STE).
 - **FPResidual** — Low-rank FP16 correction branches (rank-8) in parallel with BitLinear, initialized to zero.
-- **PFNet** — 2-layer ternary MLP residual per block (hidden=64). All PFNet weights across 14 layers (224 KB) fit in L2 alongside the MLGRU state (28 KB), staying cache-resident while main weights stream from RAM.
+- **PFNet** — 2-layer ternary MLP residual per block (hidden=64). All PFNet weights across 14 layers (224 KB) fit in L2 alongside the MLGRU state (28 KB fp16 / 56 KB fp32), staying cache-resident while main weights stream from RAM.
 - **MatMulFreeTokenMixer (MLGRU)** — GRU-style recurrence with Hadamard products only, no Q@K^T (arXiv 2406.02528). O(d_model) per token, zero KV cache.
 - **SwiGLU FFN** — Gated feed-forward with fully ternary weights.
 - **BitHead** — 4 ternary prediction heads (one per byte in next patch).
@@ -34,7 +34,7 @@
 
 | Component | v1 (Attention) | v2 (MLGRU + PFNet) |
 |---|---|---|
-| Token mixer state | 80 MB (KV cache) | **28 KB** (14 × 1024 × 2B) — L2 |
+| Token mixer state | 80 MB (KV cache) | **28 KB fp16** / **56 KB fp32** (14 × 1024 × {2,4}B) — L2 |
 | PFNet weights | — | **224 KB** (all layers) — L2 |
 | Active layer weights | — | ~3.1 MB (1 layer) — L3 |
 | Full model weights | — | ~44 MB — RAM streaming |
@@ -84,18 +84,16 @@ CPU-1's advantage compounds at long context: LFM2.5's KV cache grows linearly (6
 
 ### Inference Strategy
 
-Two execution modes, selected via `USE_C_KERNELS` in `inference/inference.py`:
+Two execution paths — both live in the current tree, but in different places:
 
-| Mode | Flag | When to use |
+| Path | Where it lives | When to use |
 |---|---|---|
-| **PyTorch** (default) | `USE_C_KERNELS = False` | All ablation runs — fair comparison, same framework for every architecture |
-| **C++ T-MAC LUT** | `USE_C_KERNELS = True` | Production benchmark with the final chosen model only |
+| **PyTorch** (ablation / training) | `model.py` forward pass, driven by `train.py` and the `eval/` suite | All ablation runs — fair comparison, same framework for every architecture |
+| **C++ LUT** (production) | `inference/kernels.cpp` + `inference/benchmark.c` standalone driver | Production benchmark with the final chosen model |
 
-> **T-MAC is NOT used in any ablation run.** All ablation BPB/perplexity numbers are measured with `USE_C_KERNELS = False` (pure PyTorch). This is by design: using the C++ LUT kernel only on ternary MLGRU models (run_05 onward) while the FP16 Transformer baselines (run_01–run_03) use PyTorch would conflate kernel speed with architecture quality — making the comparison unfair.
->
-> **Current state of the file:** `USE_C_KERNELS` is currently set to `True` in `inference/inference.py`. This is intentional for local production testing (235 TPS benchmark), but **must be set to `False` before running any ablation evaluation** to ensure reproducible, comparable metrics.
+> **The C++ LUT kernels are NOT used in any ablation run.** All ablation BPB/perplexity numbers are measured in pure PyTorch via `model.py`. This is by design: running the C++ LUT only on ternary MLGRU models (run_05 onward) while the FP16 Transformer baselines (run_01–run_03) stay in PyTorch would conflate kernel speed with architecture quality — making the comparison unfair.
 
-The C++ kernel path (`kernels.cpp`) provides: AVX2 `ternary_lut_matmul_omp`, fused MLGRU gate scan (`mlgru_scan_fusion`), INT8 GEMV (`ternary_i8_fused_gemv_avx2`), and RMSNorm + SwiGLU C patches — all irrelevant to the ablation quality study. A separate production benchmark with `USE_C_KERNELS = True` reports: **~235 patches/sec** on the final ternary MLGRU model (17.4× faster than the INT8 PyTorch baseline).
+The C++ path (`inference/kernels.cpp`) provides: AVX2 `ternary_lut_matmul_omp`, fused MLGRU gate scan (`mlgru_scan_fusion`), INT8 GEMV (`ternary_i8_fused_gemv_avx2`), RMSNorm + SwiGLU, the `forward_full_mad_*` family (modes 0–4) and `local_decode_step` for the MegaByte local decoder. The standalone `inference/benchmark.c` driver — **not a Python engine** — is the authoritative consumer; current numbers are in *CPU-1 170M Performance — Current C Benchmark Status* below. The legacy `inference.py` Python engine has been removed in favour of the C driver.
 
 ### Extended Architecture (v3)
 
@@ -105,7 +103,7 @@ CPU-1 v3 extends the base architecture with three optional modules:
 
 - **DeleteGate** (MrT5-inspired): Placed after layer N//2, learns to discard uninformative states before the remaining layers. Reduces active states by up to 40%, activated only in training Phase 2.
 
-- **EmbeddingAligner** (arXiv 2602): Aligns the student's hidden space with the teacher's embedding space via cosine similarity loss. Trained in Phase 1 only, frozen in Phase 2.
+- **EmbeddingAligner** (Distilling Token-Trained Models into Byte-Level Models, see [papers/distilling-token-models-into-byte-level.pdf](papers/distilling-token-models-into-byte-level.pdf)): Aligns the student's hidden space with the teacher's embedding space via cosine similarity loss. Trained in Phase 1 only, frozen in Phase 2.
 
 All three modules are optional and controlled by config flags:
 ```
@@ -120,12 +118,12 @@ use_embedding_alignment: false # set true for embedding distillation
 |---|---|---|
 | [Scalable MatMul-free LM (arXiv 2406.02528)](https://arxiv.org/abs/2406.02528) | MLGRU token mixer — Hadamard-only, no Q@K^T | ✅ `MatMulFreeTokenMixer` |
 | [Slender-Mamba (COLING 2025)](https://aclanthology.org/2025.coling-main.316/) | Ternary embedding and prediction heads | ✅ `BitEmbedding`, `BitLinear` |
-| [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) | LUT-based zero-multiply inference on CPU | ✅ `CPU1InferenceEngineLUT` |
+| [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) | LUT-based zero-multiply inference on CPU | ✅ `inference/kernels.cpp::ternary_lut_matmul_omp` + `forward_full_mad_*` |
 | [BitNet b1.58 (arXiv 2402.17764)](https://arxiv.org/abs/2402.17764) | 1.58-bit weight quantization with STE | ✅ `BitLinear` |
 | [Bolmo (arXiv 2410.20771)](https://arxiv.org/abs/2410.20771) | Dynamic byte patches via boundary prediction | ✅ `BoundaryPredictor` |
-| [MrT5 (arXiv 2512.15586)](https://arxiv.org/abs/2512.15586) | Token deletion gate — prunes 40% of states | ✅ `DeleteGate` |
-| [Distilling Byte-Level Models (arXiv 2602.01007)](https://arxiv.org/abs/2602.01007) | Embedding alignment distillation loss | ✅ `EmbeddingAligner` (CE-only for ablation) |
-| [LFM2 (arXiv 2511.23404)](https://arxiv.org/abs/2511.23404) | Hybrid CNN + GQA architecture (LiquidAI) | ⚠️ **Not implemented** — external benchmark only (LFM2-350M GGUF) |
+| [MrT5](papers/mrt5-dynamic-token-merging-byte-level-lm.pdf) | Token deletion gate — prunes 40% of states | ✅ `DeleteGate` |
+| [Distilling Token-Trained Models into Byte-Level Models](papers/distilling-token-models-into-byte-level.pdf) | Embedding alignment distillation loss | ✅ `EmbeddingAligner` (CE-only for ablation) |
+| [LFM2 (arXiv 2511.23404)](https://arxiv.org/abs/2511.23404) | Hybrid CNN + GQA architecture (LiquidAI) | ⚠️ **Not implemented** — external benchmark only (`models/LFM2.5-350M/` safetensors; a Q4_K_M GGUF is also benchmarked via `eval_external`) |
 | [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) | KL + CE distillation loss, T=4.0 | ✅ `train.py` distillation mode |
 
 ### Papers directory (`papers/`)
@@ -145,14 +143,17 @@ use_embedding_alignment: false # set true for embedding distillation
 | `bolmo-byteifying-next-gen-language-models.pdf` | Bolmo: Byteifying the Next Generation of Language Models |
 | `distilling-token-models-into-byte-level.pdf` | Distilling Token-Trained Models into Byte-Level Models |
 | `tide-token-informed-depth-execution-early-exit.pdf` | TIDE: Token-Informed Depth Execution for Per-Token Early Exit in LLM Inference |
+| `MEGABYTE-Predicting-byte-sequences.pdf` | MegaByte: Predicting Million-byte Sequences with Multiscale Transformers (Yu et al., 2023) — drives `LocalByteDecoder` |
 
 ---
 
-## Ablation Study — 10 Progressive Runs (50M) + 4 Scale Runs (10M)
+## Ablation Study — 14 Progressive Runs (50M) + 4 Scale Runs (10M)
 
 The ablation tells a story: starting from a standard FP16 Transformer baseline, we add **one CPU-1 design choice per run** until we reach the full architecture. Each step isolates the contribution of a single component.
 
 All runs: CE-only training from scratch, 50M params, same data/optimizer/steps.
+
+The 50M track holds 14 configs: the linear chain `run_01 … run_12` plus two sibling variants branching off `run_09` (CPU-1 COMPLETE) — `run_17` (TIDE early exit) and `new_1` (Bolmo integrated gating). See `RUN_CONFIGS` in `ablation.py` for the authoritative list.
 
 **Architecture constraint:** 1.58-bit ternary weights (BitLinear/BitEmbedding). No activation×activation matrix multiplications at inference (MLGRU uses Hadamard products only; Folded Transformer uses bounded local attention O(N·w)).
 
@@ -215,7 +216,7 @@ Note: the `--legacy-heads` flag (pass `config['legacy_heads']=True`) allows load
 
 In short: the architectural skeleton matches the paper. Remaining differences are modern activation/norm choices (SwiGLU, RMSNorm) or project-specific constraints (ternary). A reviewer familiar with MegaByte would recognise this as a faithful implementation.
 
-### Progressive Design — 50M runs (run_01 to run_12, run_17)
+### Progressive Design — 50M runs (run_01 to run_12, run_17, new_1)
 
 ```
 run_01: Transformer  + BPE   + FP16                    ← absolute baseline
@@ -236,7 +237,9 @@ run_09: CPU-1 core   + Bolmo + DeleteGate              ← CPU-1 COMPLETE ⭐
 run_10: CPU-1 COMPLETE + PFNet (pfnet_hidden=32)       ← +cache-resident MLP
 run_11: CPU-1 COMPLETE + per-channel decay (RWKV/HGRN2) ← +learned forgetting (~12KB)
 run_12: CPU-1 COMPLETE + periodic state reset           ← structural forgetting, 0 params
+          ↓ siblings of run_09 — not on the main chain
 run_17: CPU-1 COMPLETE + TIDE exit                     ← +per-token early exit (post-train)
+new_1:  CPU-1 COMPLETE + Bolmo integrated gating       ← boundary scorer inside patch embedding
 ```
 
 Key questions answered:
@@ -254,10 +257,11 @@ Key questions answered:
 - `run_09 → run_12`: Does periodic state reset improve long-sequence generalization?
 - `run_11 vs run_12`: Learned dissipation vs structural forgetting — which wins?
 - `run_09 → run_17`: Does TIDE early exit reduce CPU-1 FLOPs without quality loss?
+- `run_09 → new_1`: Does embedding-level boundary gating beat the external BoundaryPredictor used in run_09?
 
 ### TIDE Early Exit (run_17)
 
-Most tokens "converge" well before the final layer — their hidden representation stops changing significantly mid-network. **TIDE** (Token-Informed Depth Execution, [arXiv 2603.21365](https://arxiv.org/abs/2603.21365)) adds a tiny 2-layer MLP classifier per block that is calibrated **post-training** (2K wikitext samples, < 3 min) and predicts *"has this token converged?"* at each layer. Converged tokens skip all remaining layers. Zero base model retraining.
+Most tokens "converge" well before the final layer — their hidden representation stops changing significantly mid-network. **TIDE** (Token-Informed Depth Execution, see [papers/tide-token-informed-depth-execution-early-exit.pdf](papers/tide-token-informed-depth-execution-early-exit.pdf)) adds a tiny 2-layer MLP classifier per block that is calibrated **post-training** (2K wikitext samples, < 3 min) and predicts *"has this token converged?"* at each layer. Converged tokens skip all remaining layers. Zero base model retraining.
 
 For CPU-1 @ 50M (d_model=512, 12 layers):
 
@@ -303,25 +307,37 @@ Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale
 
 ## Local Checkpoint Mapping
 
-The checkpoint folders under `models/ablation_models/` use the full descriptive name that matches the `.py` file that generated them. The run ID (as used in `ablation.py` and `train.py --run`) is the short key.
+The checkpoint folders under `models/ablation_models/` hold the **untrained initial weights** (`checkpoint.pt`) generated by `zave_ablation_models.py`, plus the matching `run_XX_*.py` source file (tracked since commit `9a71cdb`). The disk sizes below are for those FP32 initial dumps — final packed sizes are listed in *Projected final checkpoint sizes* further down.
 
-> **Note:** The `small_*` folders pre-date the unified numbering. They correspond to `run_13`–`run_16` in the current `ablation.py`. The disk sizes below are for the **untrained initial weights** (`checkpoint.pt`) generated by `zave_ablation_models.py`.
+> **Numbering drift — disk folders vs current `ablation.py`.** The `run_XX_*.py` files and folders on disk were frozen at a previous revision where the linear chain was still `run_06 = cpu1_core`, `run_07 = cpu1_bolmo`, `run_08 = cpu1_deletegate`, `run_09 = folded_transformer`, `run_10 = cpu1_complete`, `run_11 = cpu1_pfnet`. The current `ablation.py` `RUN_CONFIGS` collapsed `cpu1_core` into `run_05` and shifted the rest by one. The *Progressive Design* tree and all other tables in this README reflect the **current** `ablation.py`; the disk-folder column below is the archival layout. The column *Current `ablation.py` run ID* shows where each archival folder maps after the shift (or `—` if the config no longer exists as a separate run). Either re-run `zave_ablation_models.py` to regenerate with the new numbering, or keep treating the folder names as frozen archival labels.
 
-### 50M Runs
+> **`small_*` folders** predate the unified numbering and map to `run_13`–`run_16` in the current `ablation.py` (no drift inside that block — see *10M Runs* below).
 
-| Run ID | Local folder | Architecture summary | Checkpoint size |
-|--------|-------------|----------------------|-----------------|
-| `run_01` | `run_01_transformer_bpe_fp16/` | Transformer + BPE + FP16 | 738.84 MB |
-| `run_02` | `run_02_transformer_byte_fp16/` | Transformer + Byte + FP16 | 146.91 MB |
-| `run_03` | `run_03_mlgru_bpe_fp16/` | MLGRU + BPE + FP16 | 726.86 MB |
-| `run_04` | `run_04_mlgru_byte_fp16/` | MLGRU + Byte + FP16 | 134.93 MB |
-| `run_05` | `run_05_mlgru_byte_ternary/` | MLGRU + Byte + Ternary | 134.94 MB |
-| `run_06` | `run_06_cpu1_core/` | + FPResidual — CPU-1 core ⭐ | 135.49 MB |
-| `run_07` | `run_07_cpu1_bolmo/` | + Bolmo (dynamic patches) | 135.50 MB |
-| `run_08` | `run_08_cpu1_deletegate/` | + DeleteGate | 135.61 MB |
-| `run_09` | `run_09_folded_transformer/` | Folded Transformer + Byte + Ternary | 146.91 MB |
-| `run_10` | `run_10_cpu1_complete/` | CPU-1 COMPLETE (Bolmo + DeleteGate) ⭐ | 135.63 MB |
-| `run_11` | `run_11_cpu1_pfnet/` | CPU-1 COMPLETE + PFNet | 137.16 MB |
+### 50M Runs (disk folders — archival numbering)
+
+| Disk folder | Current `ablation.py` run ID | Architecture summary | Initial size (FP32) |
+|---|---|---|---|
+| `run_01_transformer_bpe_fp16/` | `run_01` | Transformer + BPE + FP16 | 738.84 MB |
+| `run_02_transformer_byte_fp16/` | `run_02` | Transformer + Byte + FP16 | 146.91 MB |
+| `run_03_mlgru_bpe_fp16/` | — (current `run_03` = MLGRU + **Byte** + FP16) | MLGRU + BPE + FP16 (archival) | 726.86 MB |
+| `run_04_mlgru_byte_fp16/` | `run_03` | MLGRU + Byte + FP16 | 134.93 MB |
+| `run_05_mlgru_byte_ternary/` | `run_04` | MLGRU + Byte + Ternary (no FPRes) | 134.94 MB |
+| `run_06_cpu1_core/` | `run_05` | + FPResidual — CPU-1 core ⭐ | 135.49 MB |
+| `run_07_cpu1_bolmo/` | `run_06` | + Bolmo (dynamic patches) | 135.50 MB |
+| `run_08_cpu1_deletegate/` | `run_07` | + DeleteGate | 135.61 MB |
+| `run_09_folded_transformer/` | `run_08` | Folded Transformer + Byte + Ternary | 146.91 MB |
+| `run_10_cpu1_complete/` | `run_09` | CPU-1 COMPLETE (Bolmo + DeleteGate) ⭐ | 135.63 MB |
+| `run_11_cpu1_pfnet/` | `run_10` | CPU-1 COMPLETE + PFNet | 137.16 MB |
+| `run_400M_cpu1_kernel_optimal.py` | — (kernel-optimal scale-up, see *400M* section) | CPU-1 @ 1280 × 24 × 3328 | generator only — no checkpoint |
+
+**Current-only runs with no archival folder yet** (generate via `zave_ablation_models.py` if needed):
+
+| Current run ID | `name` | Architecture summary |
+|---|---|---|
+| `run_11` | `cpu1_decay_learned` | CPU-1 COMPLETE + per-channel learnable decay (RWKV/HGRN2-style, ~12 KB params) |
+| `run_12` | `cpu1_decay_reset` | CPU-1 COMPLETE + periodic MLGRU state reset (Stuffed Mamba, 0 params) |
+| `run_17` | `cpu1_tide_exit` | CPU-1 COMPLETE + TIDE per-token early exit (post-training calibration) |
+| `new_1`  | `cpu1_bolmo_dynamic` | CPU-1 COMPLETE + Bolmo integrated gating inside `BolmoPatchEmbedding` |
 
 ### 10M Runs
 
@@ -337,8 +353,8 @@ The checkpoint folders under `models/ablation_models/` use the full descriptive 
 - `run_13` (BPE @ 10M): uses a compact 4K-token vocabulary → embedding `4096 × 320` → only 44 MB.
 - All byte-level models share a tiny vocab (256 bytes) → embedding is negligible; size is driven almost entirely by the `d_model²` backbone.
 
-**Why adding features barely changes the size (run_05 → run_11):**
-All extras (BoundaryPredictor ~2 KB, DeleteGate ~33 KB, PFNet 393K params ~1.5 MB) are orders of magnitude smaller than the ~50M-param backbone. The table below shows the cumulative overhead:
+**Why adding features barely changes the size (archival `run_05` → `run_11` = MLGRU+byte+ternary → +PFNet):**
+All extras (BoundaryPredictor ~2 KB, DeleteGate ~33 KB, PFNet 393K params ~1.5 MB) are orders of magnitude smaller than the ~50M-param backbone. The table below shows the cumulative overhead (disk-folder numbering):
 
 | Addition | Extra params | Δ disk |
 |----------|--------------|--------|
@@ -373,12 +389,12 @@ Raw Text Corpus
       │
       ▼
 ┌─────────────────────────────┐
-│  inference.py               │  CPU-optimized generation
-│                             │  INT8 packing  or  T-MAC LUT
+│  inference/benchmark.c      │  CPU-optimized generation
+│  + inference/kernels.cpp    │  T-MAC LUT + layer pipeline (mode 4)
 └─────────────────────────────┘
 ```
 
-### Ablation Pipeline (50M × 10 runs on Lightning.ai T4)
+### Ablation Pipeline (50M × 13 runs on Lightning.ai T4)
 
 #### Lightning Studio Setup — Files to Upload
 
@@ -523,7 +539,7 @@ For the paper: *"10M models trained with Chinchilla-optimal scaling (200M tokens
 ```bash
 python train.py --mode ablation --run run_13   # BPE baseline (~1h)
 python train.py --mode ablation --run run_14   # byte + teacher (~1h)
-python train.py --mode ablation --run run_15 --complement_ckpt checkpoints/run_13.pt
+python train.py --mode ablation --run run_15 --complement_ckpt models/ablation_models/small_01_cpu1_bpe/checkpoint.pt
 python train.py --mode ablation --run run_16   # raw bytes, no teacher (~1h)
 ```
 
@@ -533,46 +549,25 @@ python train.py --mode ablation --run run_16   # raw bytes, no teacher (~1h)
 
 The `kaggle/` directory contains scripts ready to run directly in Kaggle notebooks (T4 GPU):
 
-| Script | Purpose |
+| File | Purpose |
 |---|---|
-| `kaggle/cpu1-create-dataset.py` | Runs Qwen2.5-3B teacher (Batch 5 aligned for 4GB VRAM free), builds and uploads the shared dataset to HF Hub |
-| `kaggle/cpu1-training.py` | Trains a specific ablation run; configure `RUN_NAME` and `PHASE` at the top |
+| `kaggle/cpu1-create-dataset.py` | Runs Qwen2.5-3B teacher (batch aligned for ~4GB VRAM free), builds and uploads the shared dataset to HF Hub |
+| `kaggle/upload_dataset.py` | One-shot uploader for local shards → `Cukinator/cpu1-ablation-dataset` |
+| `kaggle/create-dataset-metadata.json` | Kaggle kernel metadata (used by `kaggle kernels push`) |
 
-Both scripts read `HF_TOKEN` from Kaggle Secrets automatically. To push an updated script:
+All scripts read `HF_TOKEN` from Kaggle Secrets automatically. Training runs are launched from `train.py --mode ablation --run <run_id>` directly on the Kaggle VM after `pip install -r requirements.txt`. To push an updated kernel:
 
 ```bash
-kaggle kernels push -p kaggle/  # uses kernel-metadata.json / training-metadata.json
+kaggle kernels push -p kaggle/  # reads create-dataset-metadata.json
 ```
 
 ---
 
 ## Inference
 
-Two engines, both accessible via `inference.py`.
+Production inference is the standalone C driver `inference/benchmark.c` linked against `inference/kernels.cpp` — there is no Python inference engine in the current tree. The kernels are ultra-optimized for the MLGRU architecture: OpenMP, explicit AVX2 + FMA SIMD, Deep Data Dependency Unrolling (DDU), `thread_local` scratch reuse (zero-allocation steady state), and a layer-pipeline mode that keeps each stage's weight slice warm in L2/L3.
 
-```python
-# INT8 — ternary weights as quantized float32 + torch.compile
-engine = CPU1InferenceEngine.from_checkpoint('checkpoint.pt', config)
-output = engine.generate(b"Buenos dias", max_bytes=200)
-
-# T-MAC C++ LUT Kernels — zero allocations, SIMD unrolled, precomputed lookup table + gather
-engine = CPU1InferenceEngineLUT.from_checkpoint_with_lut(
-    'checkpoint.pt', config, group_size=4
-)
-output = engine.generate(b"Buenos dias", max_bytes=200)
-```
-
-### CPU-1 350M Performance (Local C++ Engine)
-
-The custom C++ kernels (`inference/kernels.cpp`) are ultra-optimized for the MLGRU architecture. They bypass the PyTorch dispatcher and leverage OpenMP, explicit SIMD instructions, Deep Data Dependency Unrolling (DDU), and `thread_local` memory reuse (Zero-Allocation).
-
-**Benchmark on 350M Ablation Model (6 Threads)**:
-| Engine | Throughput (Patches/sec) | Latency p50 (ms) | Bandwidth (Bytes/sec) | Speedup |
-|---|---|---|---|---|
-| INT8 Baseline (PyTorch) | 13.5 TPS | 18.48 ms | ~54 B/s | 1.0x |
-| **C++ T-MAC LUT** | **234.8 TPS** | **1.63 ms** | **~939 B/s** | **17.4x** 🚀 |
-
-Since `patch_size = 4`, the 235 TPS translates to generating **almost 1 KB of text per second** entirely locally on a consumer CPU without GPU VRAM constraints.
+The PyTorch forward pass in `model.py` remains the reference used by `train.py` and the `eval/` suite — it is never benchmarked for throughput, only for numerical correctness and ablation quality.
 
 ### CPU-1 170M Performance — Current C Benchmark Status
 
@@ -731,87 +726,89 @@ The DP calibrator confirms a perfect split for 24 layers / 6 stages: `[4, 4, 4, 
 1.58bits/
 │
 │  Core
-├── model.py              # Full CPU-1 architecture: MLGRU + PFNet + FPResidual +
-│                         #   BoundaryPredictor + DeleteGate + EmbeddingAligner
-├── train.py              # Training loop — two modes:
-│                         #   default: 170M production model
-│                         #   --mode ablation --run run_XX: ablation run
-├── ablation.py           # Ablation system: BASE_CONFIG + 10 progressive RUN_CONFIGS,
-│                         #   configurable model variants, analysis + LaTeX tables
-├── create_dataset.py     # Full dataset pipeline: teacher logprob extraction,
-│                         #   BPE→byte marginalization, HuggingFace Hub upload
-├── inference.py          # CPU inference: INT8 packing + T-MAC LUT engine
-├── hf_mount.py           # Lazy HF filesystem mount via NFS — fetches dataset
-│                         #   on-demand without downloading the full ~5 GB
+├── model.py                 # Full CPU-1 architecture: MLGRU + PFNet + FPResidual +
+│                            #   BoundaryPredictor + DeleteGate + EmbeddingAligner +
+│                            #   MegaByte LocalByteDecoder
+├── train.py                 # Training loop — two modes:
+│                            #   default: 170M production model
+│                            #   --mode ablation --run run_XX: ablation run
+│                            #   (also hosts the `from hf_mount import mount_bucket`
+│                            #    lazy-load path used via --hf-mount on Kaggle VMs)
+├── ablation.py              # Ablation system: BASE_CONFIG + RUN_CONFIGS + SMALL_RUN_CONFIGS,
+│                            #   configurable model variants, analysis + LaTeX tables
+├── create_dataset.py        # Full dataset pipeline: teacher logprob extraction,
+│                            #   BPE→byte marginalization, HuggingFace Hub upload
+├── main_ligtning_studio.py  # Lightning.ai studio entry point (sets up env + launches train)
+│
+│  Inference (C / C++ only — no Python engine)
+├── inference/
+│   ├── benchmark.c          # Standalone driver — allocates random ternary weights and
+│   │                        #   times the global pass + MegaByte LocalByteDecoder per patch
+│   ├── kernels.cpp          # All AVX2 + FMA kernels: GEMV, RMSNorm, SiLU, MLGRU, PFNet,
+│   │                        #   FPResidual, forward_full_mad_{st,batch,pipeline}, local_decode_step
+│   ├── benchmark.exe        # Compiled driver (gitignored — regenerate with the command in links.md)
+│   └── links.md             # Build instructions + paper references
 │
 │  Kaggle
 ├── kaggle/
-│   ├── cpu1-create-dataset.py   # Kaggle script: build + upload shared dataset (T4)
-│   ├── cpu1-training.py         # Kaggle script: train ablation run (T4)
-│   ├── create-dataset-metadata.json
-│   ├── kernel-metadata.json
-│   └── training-metadata.json
+│   ├── cpu1-create-dataset.py        # Kaggle script: build + upload shared dataset (T4)
+│   ├── upload_dataset.py             # Local → Hub uploader for pre-built shards
+│   └── create-dataset-metadata.json  # Kaggle kernel metadata
 │
-│  Evaluation
+│  Evaluation (single-engine, multi-architecture — see "Evaluation Suite" below)
 ├── eval/
-│   ├── run_all_tests.py         # Runs all 21 tests, saves report to resultados/
-│   ├── verify_all.py            # Quick correctness check
-│   ├── eval_cpu.py              # CPU performance benchmark
-│   ├── benchmark_external.py    # External model comparison
-│   ├── bpe_vs_bytebatch_benchmark.py
-│   ├── helpers.py
-│   ├── test_01_forward.py … test_21_mlgru_state_size.py
-│   └── test_26_benchmark_llama_cpp.py  # llama-bench native benchmark
-│
-│  llama.cpp
-├── llamacpp/                # llama.cpp source + builds
-│   ├── build_optimized/     #   GCC + AVX2 + FMA + Ninja (-march=native -O3)
-│   └── build_ninja/         #   Previous Ninja build
+│   ├── run_eval.py          # Unified runner — 14 checks across 5 modules
+│   ├── run_all_models.py    # Batch-runs `run_eval.py` over every model in models/
+│   ├── helpers.py           # Creates the shared engine + hardware introspection
+│   ├── eval_correctness.py  # forward_shapes, probs, determinism, state_prop, ternary_weights, state_size
+│   ├── eval_performance.py  # throughput+latency+jitter (fused), context_scaling, ram
+│   ├── eval_quality.py      # generation+utf8 (fused), perplexity
+│   ├── eval_dataset.py      # teacher_coverage, teacher_entropy (no model needed)
+│   └── eval_external.py     # llama-bench native benchmark on GGUFs
 │
 │  Models
 ├── models/
-│   ├── cpu1-170M/              # CPU-1 170M (ternary, byte-level, MLGRU) — in training
-│   ├── LFM2-350M-GGUF/        # LFM2-350M Q4_K_M (219 MB) — mlGRU architecture
-│   └── distilgpt2-GGUF/       # distilgpt2 Q4_K_M (60 MB) — transformer baseline
+│   ├── cpu1-170M/               # CPU-1 170M checkpoint — in training
+│   ├── LFM2.5-350M/             # LFM2.5-350M (HF safetensors) — mlGRU reference
+│   ├── gpt2-medium/             # GPT-2 medium (HF safetensors) — transformer baseline
+│   └── ablation_models/         # One sub-folder + `.py` per run (run_01…run_11 archival,
+│                                #   run_400M_cpu1_kernel_optimal.py, small_01…small_04)
+│                                #   + `zave_ablation_models.py` regenerator.
+│                                #   Current-only runs (run_12, run_17, new_1) have no
+│                                #   sub-folder yet — regenerate if needed.
+│
+│  Standalone scripts
+├── benchmark_optimized.exe  # Pre-built C benchmark (6-stage pipeline, calibrated)
+├── benchmark_test.exe       # Smaller smoke-test binary
 │
 │  Results & Reference
-├── checkpoints/          # Training checkpoints
-├── resultados/           # Benchmark reports (markdown) per model
-├── papers/               # Reference PDFs
-└── Prompts/              # Design documents per pipeline stage
+├── resultados/              # Benchmark reports (markdown + json) per model/thread config
+├── papers/                  # Reference PDFs (see table above)
+└── Prompts/                 # Design documents per pipeline stage (00_master_pipeline.md …)
 ```
 
 ---
 
 ## Evaluation Suite
 
-### Why this architecture
+### Design
 
-The original eval suite had **26 separate test files** (`test_01_forward.py` through `test_26_benchmark_llama_cpp.py`), each reimplementing its own inference loop — loading the model raw, calling `model.forward()` directly, and bypassing all the optimizations in `inference.py` (INT8 packing, torch.compile, weight transposition, zero-alloc generation). The benchmarks measured the unoptimized model, not what actually runs in production.
-
-Additionally:
-- The model was loaded up to **26 times** when running the full suite
-- Tests 06, 07, 08 each ran separate benchmark loops (200-500 tokens) to measure throughput, latency, and jitter — **three runs for what's a single measurement**
-- Tests 12, 13 generated text independently (2 generation calls for quality + UTF-8 checks)
-- Tests 14-16, 19-20 were ablation comparisons that don't belong in an inference eval suite
-- Tests 22 reimplemented `_freeze_bitlinear_for_inference()` — code that already exists in `inference.py`
-- **None of the tests worked with `AblationModel`** — they were hardcoded for `CPU1ModelV2`
-
-### Current design
-
-14 checks across 5 modules. All inference goes through `CPU1InferenceEngine` from `inference.py` — zero duplicated inference code. The engine is created **once** and reused across all checks.
+14 checks across 5 modules. All inference goes through a single engine created in `eval/helpers.py::create_engine` — the engine is instantiated **once** and reused across all checks, so the model is loaded exactly once per run. This replaced an older 26-file-per-test layout (`test_01_forward.py` … `test_26_benchmark_llama_cpp.py`) that reloaded the model for every check and duplicated benchmark loops across files.
 
 The suite is **multi-architecture**: it auto-detects the model type via `ModelInfo` and adapts each check. Ternary weight checks are skipped for FP16 models, state propagation is skipped for Transformers, generation quality is skipped for BPE models, etc.
 
 ```bash
 # Basic (11 checks, no dataset needed)
-python eval/run_eval.py --model checkpoints/run_10.pt
+python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt
 
 # With dataset (adds perplexity + dataset quality checks)
-python eval/run_eval.py --model checkpoints/run_10.pt --dataset path/
+python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt --dataset path/
 
 # Skip external benchmarks (llama.cpp)
-python eval/run_eval.py --model checkpoints/run_10.pt --skip-external
+python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt --skip-external
+
+# Against an ablation snapshot
+python eval/run_eval.py --model models/ablation_models/run_10_cpu1_complete/checkpoint.pt
 ```
 
 | Module | Checks | Description |
@@ -834,13 +831,13 @@ python eval/run_eval.py --model checkpoints/run_10.pt --skip-external
 
 ---
 
-## llama.cpp Optimization Analysis — LFM2-350M on i7-8750H
+## llama.cpp Optimization Analysis — LFM2.5-350M on i7-8750H
 
-Systematic optimization and benchmarking of the LFM2-350M model running via llama.cpp on consumer CPU hardware (Intel i7-8750H, 6C/12T, Coffee Lake).
+Systematic benchmarking of the **LFM2.5-350M** model running via llama.cpp on consumer CPU hardware (Intel i7-8750H, 6C/12T, Coffee Lake). llama.cpp is consumed externally through the `llama-cpp-python` wheel pinned in `requirements.txt` (AVX2 build) — there is no `llamacpp/` source checkout inside this repository. The `eval/eval_external.py` module invokes `llama-bench` directly on GGUFs.
 
 ### Build Optimization
 
-The llama.cpp project was compiled from source with full CPU optimization:
+For reference, if you clone llama.cpp separately and want to match the settings used for the numbers below:
 
 ```
 cmake -G Ninja -B build_optimized \
@@ -850,7 +847,7 @@ cmake -G Ninja -B build_optimized \
   -DGGML_NATIVE=ON
 ```
 
-Verified via `CMakeCache.txt`: `-march=native` activates **AVX2 + FMA** on this CPU (Coffee Lake does **not** support AVX-512). Build completed successfully (272/272 targets).
+`-march=native` activates **AVX2 + FMA** on this CPU (Coffee Lake does **not** support AVX-512). The pip wheel (`llama-cpp-python==0.3.19` via `https://abetlen.github.io/llama-cpp-python/whl/cpu-avx2`) is built with equivalent flags, which is why the numbers in the eval reports under `resultados/` match a from-source build.
 
 ### Runtime Configurations Tested
 
@@ -864,10 +861,12 @@ Methodology: 900 tokens prefill + 100 tokens decode × 3 repetitions (matching [
 
 ### Benchmark Results
 
+Per-model reports are in `resultados/` (`gpt2-medium_q{4,8}_{1,6}t.md`, `checkpoint_{1,6}t.md`).
+
 | Model | Quant | Decode (tok/s) | Config | Notes |
 |---|---|---|---|---|
-| **distilgpt2 (82M)** | Q4_K_M | **141.7** | ULTRA | Transformer — parallelizable |
-| **LFM2-350M** | Q4_K_M | **~41** | ULTRA | mlGRU — sequential decode |
+| **gpt2-medium (355M)** | Q4_K_M | see `resultados/gpt2-medium_q4_6t.md` | llama.cpp, 6 threads | Transformer — parallelizable |
+| **LFM2.5-350M** | Q4_K_M | **~41** | llama.cpp, 1 thread, ULTRA | mlGRU — sequential decode |
 
 ### Comparison vs Official Benchmarks
 
@@ -884,7 +883,7 @@ Methodology: 900 tokens prefill + 100 tokens decode × 3 repetitions (matching [
 
 Two hardware/architecture bottlenecks limit decode throughput:
 
-**1. mlGRU sequential dependency.** The LFM2 architecture uses mlGRU (MatMul-free GRU) for token mixing. Each decode step depends on the hidden state from the previous step — this is inherently sequential and cannot be parallelized. By contrast, transformer models (like distilgpt2) with KV-cache allow parallel computation within each decode step. This architectural difference explains the **3.6× gap** between distilgpt2 (141.7 tok/s) and LFM2-350M (~41 tok/s) despite LFM2 being only 2.7× larger.
+**1. mlGRU sequential dependency.** The LFM2.5 architecture uses mlGRU (MatMul-free GRU) for token mixing. Each decode step depends on the hidden state from the previous step — this is inherently sequential and cannot be parallelized. By contrast, transformer models (like `gpt2-medium`) with KV-cache allow parallel computation within each decode step. This architectural difference explains the bulk of the gap between the GPT-2 baseline and LFM2.5-350M despite the similar parameter count.
 
 **2. Memory bandwidth ceiling.** Decode throughput is memory-bandwidth-bound (streaming weights from RAM each token). This system has **mismatched DIMMs** (2667 MHz + 2400 MHz), forcing the memory controller to operate at the slower speed with potential additional timing penalties. Theoretical peak: ~38.4 GB/s. The AMD Ryzen AI Max 395+ has ~128 GB/s (DDR5) — a **3.4× advantage** in raw bandwidth, compounded by AVX-512 (2× SIMD width) and superior Zen5 IPC.
 
@@ -892,17 +891,16 @@ Two hardware/architecture bottlenecks limit decode throughput:
 
 ### Key Finding
 
-> The build_optimized and previous build_ninja builds already had `-march=native` active — **AVX2 was never missing**. The performance ceiling is imposed by the mlGRU architecture and memory bandwidth, not by compiler flags or runtime configuration.
+> The AVX2-prebuilt pip wheel already runs with equivalent `-march=native` kernels — **AVX2 was never missing**. The performance ceiling is imposed by the mlGRU architecture and memory bandwidth, not by compiler flags or runtime configuration.
 
 ### Paths to 100+ tok/s
 
 | Strategy | Expected Impact | Effort |
 |---|---|---|
-| **Upgrade to LFM2.5-350M** | ~2× faster decode (hybrid arch, less sequential) | Download new GGUF |
 | Re-quantize to Q4_0 | +5–15% (simpler kernel, less compute overhead) | Run `llama-quantize` |
 | Use llamafile | +10–30% prefill, marginal decode gain (tinyBLAS kernels) | Download binary |
 | Match RAM DIMMs (2×2667) | +10% bandwidth (eliminate timing penalty) | Hardware upgrade |
-| **All combined** | **~100–140 tok/s estimate** | — |
+| **All combined** | **~50–70 tok/s estimate** on this hardware | — |
 
 For this project's CPU-1 model (fully ternary MLGRU), the bottleneck analysis confirms the architecture choice is sound for the target use case: streaming generation on CPU with minimal memory footprint (28 KB recurrent state vs 80 MB KV cache). The tradeoff is lower peak tok/s compared to transformer architectures, compensated by constant-memory inference regardless of context length.
 
@@ -936,16 +934,21 @@ The ablation dataset is ~5 GB. Downloading it in full on each Kaggle session was
 pip install -r requirements.txt
 ```
 
-Key packages:
+Key packages (see `requirements.txt` for the full list and exact pins):
 ```
-torch==2.6.0+cu124          # CUDA 12.4 build (compatible with 12.6 driver)
-transformers==5.3.0
-datasets==4.8.4
-huggingface_hub==1.8.0
-bitsandbytes==0.49.2        # 4-bit NF4 for teacher model
-pyarrow==23.0.1
-numpy==2.4.3
-tqdm==4.67.3
+torch==2.6.0+cu124             # CUDA 12.4 build (compatible with CUDA 12.6 driver)
+transformers>=4.47.0
+datasets>=3.2.0
+huggingface_hub>=0.27.0
+bitsandbytes>=0.45.0           # 4-bit NF4 for the Qwen2.5-3B teacher
+torchao>=0.7.0                 # FP8 inference (Float8DynamicActivationFloat8WeightConfig)
+llama-cpp-python==0.3.19       # CPU-AVX2 wheel — consumed by eval/eval_external.py
+lightning>=2.4.0
+kaggle>=1.6.0
+pyarrow>=18.0.0
+numpy>=1.26.0
+psutil>=5.9.0
+tqdm>=4.66.0
 ```
 
 ---
@@ -954,55 +957,58 @@ tqdm==4.67.3
 
 ### Implemented
 
-- **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (`model.py`)
-- **Extended techniques (v3)** — BoundaryPredictor (Bolmo), DeleteGate (MrT5), EmbeddingAligner (arXiv 2602), two-phase training
+- **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (`model.py`); MegaByte LocalByteDecoder for intra-patch byte autoregression
+- **Extended techniques (v3)** — BoundaryPredictor (Bolmo), DeleteGate (MrT5), EmbeddingAligner (Distilling Token-Trained Models into Byte-Level Models), two-phase training
 - **Dataset pipeline** — Teacher logprob extraction + BPE→byte marginalization + HF Hub upload (`create_dataset.py`)
-- **HF-mount** — Lazy NFS-based dataset access, no full download needed (`hf_mount.py`)
+- **HF-mount streaming** — `train.py --hf-mount` lazy-loads shards from the Hub without the ~5 GB full download (module imported on demand; no local `hf_mount.py` yet)
 - **Training** — AMP, gradient accumulation, distillation loss, both main and ablation modes in one script (`train.py`)
-- **Ablation system** — 13 progressive runs (run_01–run_12 + run_17, 50M) + 4 scale runs (run_13–run_16, 10M), configurable variants, shared dataset, LaTeX table generation (`ablation.py`)
-- **CPU inference** — Multi-architecture engine with auto-detection (`ModelInfo`), INT8 packing, torch.compile, T-MAC LUT (`inference.py`)
+- **Ablation system** — 14 progressive runs (run_01–run_12, run_17 and new_1 at 50M) + 4 scale runs (run_13–run_16, 10M) + `run_400M` kernel-optimal variant (`ablation.py`, `models/ablation_models/`)
+- **C inference kernels** — `inference/kernels.cpp` + `inference/benchmark.c` standalone driver; 6-stage DP-calibrated layer pipeline (mode 4) and 6-stream batch (mode 3)
 - **Evaluation suite** — 14 checks in 5 modules, multi-architecture adaptive, single engine load, fused benchmarks (`eval/`)
-- **Kaggle scripts** — Ready-to-run notebooks for dataset creation and training on T4 (`kaggle/`)
+- **Kaggle scripts** — Ready-to-run notebooks for dataset creation on T4 (`kaggle/`)
 
 ### Models
 
 | Model | Size | Architecture | Status |
 |---|---|---|---|
-| CPU-1 170M | ~170M params (~44 MB ternary) | MLGRU + Byte + Ternary + FPResidual + PFNet | 🔄 Training |
-| LFM2-350M (GGUF) | 219 MB (Q4_K_M) | mlGRU (LiquidAI) | ✅ Benchmark reference |
-| distilgpt2 (GGUF) | 60 MB (Q4_K_M) | Transformer | ✅ Baseline reference |
+| `models/cpu1-170M/` | ~170M params (~44 MB 2-bit packed) | MLGRU + Byte + Ternary + FPResidual + PFNet + MegaByte LocalDecoder | 🔄 Training |
+| `models/LFM2.5-350M/` | HF safetensors | mlGRU (LiquidAI) | ✅ Benchmark reference (llama.cpp Q4 via `eval_external`) |
+| `models/gpt2-medium/` | HF safetensors | Transformer | ✅ Baseline reference (`resultados/gpt2-medium_q{4,8}_{1,6}t.md`) |
+| `models/ablation_models/run_*` | initial checkpoints | Per-run architecture | ✅ Generated by `zave_ablation_models.py` |
 
 ### Pending
 
-- Run the 13 ablation experiments (run_01–run_12, run_17) + 4 scale runs (run_13–run_16) on Kaggle T4 and collect metrics
+- Run the 14 ablation experiments (run_01–run_12, run_17, new_1) + 4 scale runs (run_13–run_16) on Kaggle T4 and collect metrics
 - Scale winning ablation config to 170M and train on full dataset
-- ~~T-MAC C++ kernel integration (bitnet.cpp / llama.cpp)~~ ✅ **Done** (reached 235 TPS)
+- ~~T-MAC C++ kernel integration~~ ✅ **Done** — current numbers in *CPU-1 170M Performance* (mode 4: 521 pps, mode 3 6t: 726 pps)
+- ~~C benchmark for 400M kernel-optimal config~~ ✅ **Done** — 193 pps (mode 4), 270 pps (mode 3)
 
 ---
 
-## License
+## Projected final checkpoint sizes
 
-MIT
+The initial checkpoint under `models/ablation_models/run_XX/` is the **untrained** model serialized in FP32. After training and the final-packing pass (BF16 for non-ternary weights, 2-bit packed for ternary weights — see *3. Checkpoint Formats*) the on-disk size drops substantially, especially for ternary runs:
 
-Agregar:
+| Run ID | Weight type | Initial (FP32) | Final (estimated) |
+|---|---|---:|---:|
+| run_01 | FP16 (BPE vocab 152K) | 738.84 MB | ~369 MB ¹ |
+| run_02 | FP16 (Byte) | 146.91 MB | ~73 MB |
+| run_03 | FP16 (BPE vocab 152K) | 726.86 MB | ~363 MB ¹ |
+| run_04 | FP16 (Byte) | 134.93 MB | ~67 MB |
+| run_05 | Ternary | 134.94 MB | ~14 MB |
+| run_06 | Ternary + FPRes | 135.49 MB | ~14 MB |
+| run_07 | Ternary + FPRes + Bolmo | 135.50 MB | ~14 MB |
+| run_08 | Ternary + FPRes + DeleteGate | 135.61 MB | ~14 MB |
+| run_09 | Ternary (Folded Transformer) | 146.91 MB | ~15 MB ² |
+| run_10 | Ternary + FPRes + Bolmo + DG | 135.63 MB | ~14 MB |
+| run_11 | Ternary + PFNet | 137.16 MB | ~14 MB |
+| run_13 | Ternary (BPE 4K) | 44.75 MB | ~4.6 MB |
+| run_14 | Ternary (Byte) | 36.05 MB | ~3.7 MB |
+| run_15 | Ternary (Complement) | 36.05 MB | ~3.7 MB |
+| run_16 | Ternary (Raw bytes) | 36.05 MB | ~3.7 MB |
 
-
-Run ID	Tipo de pesos	Inicial (FP32)	Final estimado
-run_01	FP16 (BPE vocab 152K)	738.84 MB	~369 MB ¹
-run_02	FP16 (Byte)	146.91 MB	~73 MB
-run_03	FP16 (BPE vocab 152K)	726.86 MB	~363 MB ¹
-run_04	FP16 (Byte)	134.93 MB	~67 MB
-run_05	Ternary	134.94 MB	~14 MB
-run_06	Ternary + FPRes	135.49 MB	~14 MB
-run_07	Ternary + FPRes + Bolmo	135.50 MB	~14 MB
-run_08	Ternary + FPRes + DeleteGate	135.61 MB	~14 MB
-run_09	Ternary (Folded Transformer)	146.91 MB	~15 MB ²
-run_10	Ternary + FPRes + Bolmo + DG	135.63 MB	~14 MB
-run_11	Ternary + PFNet	137.16 MB	~14 MB
-run_13	Ternary (BPE 4K)	44.75 MB	~4.6 MB
-run_14	Ternary (Byte)	36.05 MB	~3.7 MB
-run_15	Ternary (Complement)	36.05 MB	~3.7 MB
-run_16	Ternary (Raw bytes)	36.05 MB	~3.7 MB
+¹ FP16-to-FP16 halving: the checkpoint is already FP16 on disk but the initial dump uses the FP32 master copy. The final dump drops optimizer state and re-packs weights as raw FP16 — roughly ½ of the initial size.
+² Folded Transformer has a slightly larger non-ternary portion (attention norms + bounded-window buffers) than the MLGRU runs, hence ~15 MB rather than ~14 MB.
 
 ---
 
@@ -1059,3 +1065,9 @@ The test constructs random global hidden states `h ∈ ℝ^{B×S×d_model}` and
 random target byte tensors, then asserts `max|forward_logit[k] - step_logit[k]| < 1e-4`
 for each patch position `k ∈ {0, 1, 2, 3}`.  The tolerance accounts for
 float32 reorder differences; the true diff is typically `< 1e-6`.
+
+---
+
+## License
+
+MIT

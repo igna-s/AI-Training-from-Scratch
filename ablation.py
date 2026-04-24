@@ -465,6 +465,50 @@ RUN_CONFIGS = {
             'TIDE (Jaber et al., 2026)',
         ],
     },
+
+    # ------------------------------------------------------------------
+    # new_1: CPU-1 COMPLETE + Bolmo integrated boundary gating
+    # ------------------------------------------------------------------
+    # runs 06/09/10/11/12 cite Bolmo/BLT but only train the external
+    # BoundaryPredictor as an aux loss — the fixed 4-byte patch embedding
+    # never sees the boundary signal. This run replaces that with a
+    # BolmoPatchEmbedding whose internal scorer modulates byte embeddings
+    # inside each patch: boundaries amplify, non-boundaries stay flat.
+    # Shape is still P=4 (no variable-length sequences), so the rest of
+    # the pipeline is untouched — what varies is the *content* of each
+    # patch embedding, which becomes boundary-aware.
+    # Aux loss supervises the integrated scorer with natural-boundary
+    # targets (space, newline, UTF-8 multibyte start), same signal as the
+    # external BoundaryPredictor in run_09 — but the gradient now flows
+    # into the embedding itself.
+    # Extra params: Conv1d(8→1, kernel=3) ≈ 25 floats per model (negligible).
+    # Question: does embedding-level dynamic grouping beat the external
+    # predictor, or is the aux-only supervision already enough?
+    # ------------------------------------------------------------------
+    'new_1': {
+        'name':                   'cpu1_bolmo_dynamic',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_boundary_predictor': False,   # replaced by integrated gating
+        'use_delete_gate':        True,
+        'use_bolmo_gating':       True,
+        'description':  (
+            'CPU-1 COMPLETE + Bolmo integrated boundary gating. '
+            'Boundary-aware byte-patch embedding — internal scorer amplifies '
+            'byte embeddings at boundary positions, supervised by the same '
+            'natural-boundary aux loss as run_09. '
+            'run_09 → new_1: does embedding-level dynamic grouping help?'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'BLT / Bolmo (Pagnoni et al., 2024)',
+            'MrT5 (Pagliardini et al., 2024)',
+            'Slender-Mamba (Yu et al., 2025)',
+        ],
+    },
 }
 
 
@@ -707,16 +751,85 @@ class AblationBytePatchEmbedding(nn.Module):
 
 
 # ============================================================
+# Bolmo / BLT — boundary-gated byte-patch embedding (dynamic)
+# ============================================================
+
+class BolmoPatchEmbedding(nn.Module):
+    """Byte-patch embedding with integrated boundary gating (Bolmo / BLT-style).
+
+    Unlike AblationBytePatchEmbedding (which mixes all P bytes uniformly),
+    this module:
+      1. Embeds each byte in the patch.
+      2. Scores each byte position for boundary likelihood via a tiny 1D conv
+         over the whole byte sequence.
+      3. Amplifies byte embeddings at high-boundary positions by a factor
+         (1 + sigmoid(score)) before the patch projection.
+      4. Caches the pre-sigmoid logits in `last_boundary_logits` so that
+         AblationModel.forward can apply a BCE loss against natural-boundary
+         targets (space, newline, UTF-8 multibyte start).
+
+    Shape stays fixed (P bytes per patch, S patches per sequence), so the
+    rest of the pipeline is unchanged — only the *content* of each patch
+    embedding becomes boundary-aware rather than position-uniform.
+    """
+
+    def __init__(self, d_model: int, patch_size: int = 4,
+                 bytes_per_embed: int = 8, use_ternary: bool = True):
+        super().__init__()
+        self.patch_size = patch_size
+        self.bytes_per_embed = bytes_per_embed
+        self.byte_embed = make_embedding(256, bytes_per_embed, use_ternary)
+        self.patch_proj = make_linear(
+            patch_size * bytes_per_embed, d_model, use_ternary
+        )
+        # Small FP16 scorer — needs to be well-calibrated for gating to be
+        # useful, and it's narrow enough that the extra cost is negligible.
+        self.boundary_scorer = nn.Conv1d(
+            in_channels=bytes_per_embed,
+            out_channels=1,
+            kernel_size=3,
+            padding=1,
+        )
+        self.last_boundary_logits: Tensor | None = None
+
+    def forward(self, patches: Tensor) -> Tensor:
+        B, S, P = patches.shape
+        d_b = self.bytes_per_embed
+        byte_feats = self.byte_embed(patches.long())                # [B, S, P, d_b]
+
+        conv_in = byte_feats.reshape(B, S * P, d_b).transpose(1, 2) # [B, d_b, S*P]
+        bndry_logits = self.boundary_scorer(conv_in).squeeze(1)     # [B, S*P]
+        self.last_boundary_logits = bndry_logits
+
+        gate = torch.sigmoid(bndry_logits).reshape(B, S, P, 1)
+        byte_feats = byte_feats * (1.0 + gate)
+
+        flat = byte_feats.reshape(B, S, P * d_b)
+        return self.patch_proj(flat)
+
+
+# ============================================================
 # Configurable MLGRU token mixer
 # ============================================================
 
 class AblationMLGRU(nn.Module):
-    """MatMul-free token mixer (MLGRU), configurable quantization."""
+    """MatMul-free token mixer (MLGRU), configurable quantization.
+
+    Optional extensions:
+      - per_channel_decay (RWKV/HGRN2): learnable per-dim decay scalar that
+        modulates the forget gate, so each hidden dim has its own time
+        constant. Effective gate becomes decay[i] * f_t[i].
+      - state_reset_period (Stuffed Mamba): every N tokens the hidden state
+        is zeroed, preventing unbounded context accumulation. Zero params.
+    """
 
     def __init__(self, d_model: int, use_ternary: bool = True,
-                 fp_rank: int = 4):
+                 fp_rank: int = 4,
+                 per_channel_decay: bool = False,
+                 state_reset_period: int = 0):
         super().__init__()
         self.d_model = d_model
+        self.state_reset_period = state_reset_period
         self.forget_proj = make_linear(d_model, d_model, use_ternary)
         self.cand_proj = make_linear(d_model, d_model, use_ternary)
         self.output_proj = make_linear(d_model, d_model, use_ternary)
@@ -725,6 +838,10 @@ class AblationMLGRU(nn.Module):
             if use_ternary and fp_rank > 0 else None
         )
         self.register_buffer('h_init', torch.zeros(d_model))
+        # log_decay = 0 → softplus = ln(2) ≈ 0.693 → decay = exp(-0.693) ≈ 0.5
+        self.log_decay = (
+            nn.Parameter(torch.zeros(d_model)) if per_channel_decay else None
+        )
 
     def forward(self, x: Tensor, h: Tensor | None = None) -> tuple[Tensor, Tensor]:
         B, S, D = x.shape
@@ -735,9 +852,16 @@ class AblationMLGRU(nn.Module):
         c = F.silu(self.cand_proj(x))
         g = torch.sigmoid(self.output_proj(x))
 
+        if self.log_decay is not None:
+            decay = torch.exp(-F.softplus(self.log_decay))  # [D] ∈ (0, 1)
+            f = decay * f  # broadcast over batch + seq; keeps f in (0,1)
+
         # torch.lerp(c, h, f) = f*h + (1-f)*c — una sola op vectorizada, sin temporales
         outputs = torch.empty_like(f)  # [B, S, D] pre-alocado
+        reset = self.state_reset_period
         for t in range(S):
+            if reset > 0 and t > 0 and t % reset == 0:
+                h = torch.zeros_like(h)
             h = torch.lerp(c[:, t], h, f[:, t])
             outputs[:, t] = g[:, t] * h
 
@@ -822,7 +946,11 @@ class AblationBlock(nn.Module):
         mixer = config.get('token_mixer', 'mlgru')
         if mixer == 'mlgru':
             self.mixer_type = 'mlgru'
-            self.token_mixer = AblationMLGRU(d_model, use_ternary, fp_rank)
+            self.token_mixer = AblationMLGRU(
+                d_model, use_ternary, fp_rank,
+                per_channel_decay=config.get('mlgru_per_channel_decay', False),
+                state_reset_period=config.get('state_reset_period', 0),
+            )
         else:
             self.mixer_type = 'transformer'
             self.token_mixer = SlidingWindowAttention(
@@ -1050,9 +1178,16 @@ class AblationModel(nn.Module):
         tok = config['tokenization']
         use_ternary = config.get('use_ternary', True)
 
-        # Embedding — byte_dynamic uses same embedding as byte
+        # Embedding — byte_dynamic uses same embedding as byte, unless
+        # use_bolmo_gating is set (new_1) in which case we swap in the
+        # integrated-scorer variant.
+        self.use_bolmo_gating = config.get('use_bolmo_gating', False)
         if tok in ('byte', 'byte_dynamic'):
-            self.embedding = AblationBytePatchEmbedding(
+            emb_cls = (
+                BolmoPatchEmbedding if self.use_bolmo_gating
+                else AblationBytePatchEmbedding
+            )
+            self.embedding = emb_cls(
                 d_model,
                 patch_size=config.get('patch_size', 4),
                 use_ternary=use_ternary,
@@ -1232,6 +1367,21 @@ class AblationModel(nn.Module):
             targets = ((raw_bytes == 32) | (raw_bytes == 10) | (raw_bytes >= 192)).float()
             extra_losses['boundary'] = F.binary_cross_entropy(
                 boundary_probs, targets
+            )
+
+        # Bolmo integrated gating — supervise the embedding's internal scorer
+        # with the same natural-boundary targets. Logits were cached by
+        # BolmoPatchEmbedding.forward during the embedding step above.
+        # Reuses the 'boundary' key so train.py picks it up automatically;
+        # safe because new_1 sets use_boundary_predictor=False, so the two
+        # writers are mutually exclusive.
+        if (self.use_bolmo_gating and self.training
+                and self.tokenization in ('byte', 'byte_dynamic')):
+            raw_bytes = x.reshape(x.shape[0], -1).long()
+            bndry_logits = self.embedding.last_boundary_logits  # [B, S*P]
+            targets = ((raw_bytes == 32) | (raw_bytes == 10) | (raw_bytes >= 192)).float()
+            extra_losses['boundary'] = F.binary_cross_entropy_with_logits(
+                bndry_logits, targets
             )
 
         return logits, new_states, extra_losses
