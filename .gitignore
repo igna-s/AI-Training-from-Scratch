@@ -56,7 +56,15 @@ Prompts/
 prompts/
 
 # Large Files & External Repos
-models/
+#   Top-level model checkpoint dirs: ignored entirely
+models/cpu1-170M/
+models/LFM2.5-350M/
+models/gpt2-medium/
+#   Ablation: keep the *.py source files and __init__, ignore checkpoints + caches
+models/ablation_models/__pycache__/
+models/ablation_models/run_*/
+models/ablation_models/small_*/
+models/ablation_models/checkpoint*
 llamacpp/
 
 # Build artifacts
