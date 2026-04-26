@@ -10,7 +10,7 @@
 |---|---|
 | `d_model` | 1024 |
 | `n_layers` | 14 |
-| `d_ff` | 2730 (PyTorch `model.py::D_FF`, ~8/3 × 1024) / 2688 (C benchmark default, rounded to multiple of 64) |
+| `d_ff` | 2730 (PyTorch `utilities.D_FF`, ~8/3 × 1024) / 2688 (C benchmark default, rounded to multiple of 64) |
 | `vocab_size` | 256 (byte-level) |
 | `patch_size` | 4 bytes |
 | `fp_rank` | 8 (FPResidual low-rank correction) |
@@ -88,10 +88,10 @@ Two execution paths — both live in the current tree, but in different places:
 
 | Path | Where it lives | When to use |
 |---|---|---|
-| **PyTorch** (ablation / training) | `model.py` forward pass, driven by `train.py` and the `eval/` suite | All ablation runs — fair comparison, same framework for every architecture |
+| **PyTorch** (ablation / training) | Modules in `utilities.py` (BitLinear, MLGRU, LocalByteDecoder, …) driven by `train_final.py` / `train_ablation.py` and the `eval/` suite | All ablation runs — fair comparison, same framework for every architecture |
 | **C++ LUT** (production) | `inference/kernels.cpp` + `inference/benchmark.c` standalone driver | Production benchmark with the final chosen model |
 
-> **The C++ LUT kernels are NOT used in any ablation run.** All ablation BPB/perplexity numbers are measured in pure PyTorch via `model.py`. This is by design: running the C++ LUT only on ternary MLGRU models (run_05 onward) while the FP16 Transformer baselines (run_01–run_03) stay in PyTorch would conflate kernel speed with architecture quality — making the comparison unfair.
+> **The C++ LUT kernels are NOT used in any ablation run.** All ablation BPB/perplexity numbers are measured in pure PyTorch via the modules in `utilities.py`. This is by design: running the C++ LUT only on ternary MLGRU models (run_05 onward) while the FP16 Transformer baselines (run_01–run_03) stay in PyTorch would conflate kernel speed with architecture quality — making the comparison unfair.
 
 The C++ path (`inference/kernels.cpp`) provides: AVX2 `ternary_lut_matmul_omp`, fused MLGRU gate scan (`mlgru_scan_fusion`), INT8 GEMV (`ternary_i8_fused_gemv_avx2`), RMSNorm + SwiGLU, the `forward_full_mad_*` family (modes 0–4) and `local_decode_step` for the MegaByte local decoder. The standalone `inference/benchmark.c` driver — **not a Python engine** — is the authoritative consumer; current numbers are in *CPU-1 170M Performance — Current C Benchmark Status* below. The legacy `inference.py` Python engine has been removed in favour of the C driver.
 
@@ -124,7 +124,7 @@ use_embedding_alignment: false # set true for embedding distillation
 | [MrT5](papers/mrt5-dynamic-token-merging-byte-level-lm.pdf) | Token deletion gate — prunes 40% of states | ✅ `DeleteGate` |
 | [Distilling Token-Trained Models into Byte-Level Models](papers/distilling-token-models-into-byte-level.pdf) | Embedding alignment distillation loss | ✅ `EmbeddingAligner` (CE-only for ablation) |
 | [LFM2 (arXiv 2511.23404)](https://arxiv.org/abs/2511.23404) | Hybrid CNN + GQA architecture (LiquidAI) | ⚠️ **Not implemented** — external benchmark only (`models/LFM2.5-350M/` safetensors; a Q4_K_M GGUF is also benchmarked via `eval_external`) |
-| [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) | KL + CE distillation loss, T=4.0 | ✅ `train.py` distillation mode |
+| [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) | KL + CE distillation loss, T=4.0 | ✅ `train_final.py` distillation mode |
 
 ### Papers directory (`papers/`)
 
@@ -147,13 +147,25 @@ use_embedding_alignment: false # set true for embedding distillation
 
 ---
 
-## Ablation Study — 14 Progressive Runs (50M) + 4 Scale Runs (10M)
+## Ablation Study — 12 Progressive Runs (50M) + 4 Scale Runs (10M)
 
 The ablation tells a story: starting from a standard FP16 Transformer baseline, we add **one CPU-1 design choice per run** until we reach the full architecture. Each step isolates the contribution of a single component.
 
-All runs: CE-only training from scratch, 50M params, same data/optimizer/steps.
+All runs: CE-only training from scratch under **Chinchilla scaling** (`tokens ≈ 20 × N_params`), same seed (42) as `create_dataset.py`. `total_steps` is recomputed per run from the actual parameter count inside `train_run` — see *Chinchilla & Checkpointing* below.
 
-The 50M track holds 14 configs: the linear chain `run_01 … run_12` plus two sibling variants branching off `run_09` (CPU-1 COMPLETE) — `run_17` (TIDE early exit) and `new_1` (Bolmo integrated gating). See `RUN_CONFIGS` in `ablation.py` for the authoritative list.
+**Dataset routing** (matches the upstream pipeline in `create_dataset.py`):
+
+| Runs | Dataset | Why |
+|---|---|---|
+| `run_01` … `run_12` (50M) | `HuggingFaceFW/fineweb` `sample-10BT`, streamed | Chinchilla 50M needs ~1B tokens — the pre-processed `Cukinator/cpu1-ablation-dataset` only holds ~37.5M, sized for the 10M scale. The 50M runs use `FineWebStreamingDataset` to consume FineWeb directly with the **same params `create_dataset.py` uses** (seed=42, seq_len=5000, patch_size=4, max 700 BPE tokens / 2800 bytes per doc, 95/5 train/val split modulo doc index 20). On-the-fly UTF-8 byte packing for byte runs, on-the-fly Qwen tokenization for `run_01` (clamped to its 16K vocab cap). |
+| `run_13`, `run_14`, `run_15` (10M) | `Cukinator/cpu1-ablation-dataset` (2 subsets) | The pre-processed dataset has two subsets that match each run: `bpe_tokenized/` for `run_13`, `byte_marginalized/` for `run_14`/`run_15`. 10M × 20 = 200M tokens → ~5× cycling over the 37.5M tokens. |
+| `run_16` (10M, "no teacher") | `HuggingFaceFW/fineweb`, streamed | Same path as the 50M runs — the run *is* the "skip the Qwen teacher" ablation. |
+
+The 50M track is the linear chain `run_01 … run_12`. See `RUN_CONFIGS` in `train_ablation.py` for the authoritative list.
+
+> **Parked for follow-up papers** (not in this ablation):
+> - **TIDE early exit** — post-training calibration of per-layer exit classifiers on a frozen CPU-1 checkpoint. Inference-only optimization, decoupled from architectural choices, so it belongs in a deployment paper rather than this study.
+> - **Bolmo integrated boundary gating** — embedding-level scorer that replaces the external `BoundaryPredictor`. Worth a dedicated tokenizer-paper comparison vs Pagnoni et al., but mutually exclusive with run_06/09's Bolmo formulation.
 
 **Architecture constraint:** 1.58-bit ternary weights (BitLinear/BitEmbedding). No activation×activation matrix multiplications at inference (MLGRU uses Hadamard products only; Folded Transformer uses bounded local attention O(N·w)).
 
@@ -216,10 +228,10 @@ Note: the `--legacy-heads` flag (pass `config['legacy_heads']=True`) allows load
 
 In short: the architectural skeleton matches the paper. Remaining differences are modern activation/norm choices (SwiGLU, RMSNorm) or project-specific constraints (ternary). A reviewer familiar with MegaByte would recognise this as a faithful implementation.
 
-### Progressive Design — 50M runs (run_01 to run_12, run_17, new_1)
+### Progressive Design — 50M runs (run_01 to run_12)
 
 ```
-run_01: Transformer  + BPE   + FP16                    ← absolute baseline
+run_01: Transformer  + BPE   + FP16                    ← absolute baseline (16K vocab cap)
           ↓ swap tokenizer
 run_02: Transformer  + Byte  + FP16                    ← +byte patches
           ↓ swap mixer + keep byte
@@ -233,14 +245,13 @@ run_06: CPU-1 core   + Bolmo (dynamic byte patches)    ← +boundary predictor
 run_07: CPU-1 core   + DeleteGate (state elimination)  ← +MrT5-style compression
 run_08: FoldedXfmr   + Byte  + Ternary (w=128)        ← alternative: local attention
 run_09: CPU-1 core   + Bolmo + DeleteGate              ← CPU-1 COMPLETE ⭐
-          ↓ add nonlinear residual / study memory dissipation / adaptive depth
+          ↓ add nonlinear residual / study memory dissipation
 run_10: CPU-1 COMPLETE + PFNet (pfnet_hidden=32)       ← +cache-resident MLP
 run_11: CPU-1 COMPLETE + per-channel decay (RWKV/HGRN2) ← +learned forgetting (~12KB)
 run_12: CPU-1 COMPLETE + periodic state reset           ← structural forgetting, 0 params
-          ↓ siblings of run_09 — not on the main chain
-run_17: CPU-1 COMPLETE + TIDE exit                     ← +per-token early exit (post-train)
-new_1:  CPU-1 COMPLETE + Bolmo integrated gating       ← boundary scorer inside patch embedding
 ```
+
+`run_01` caps the BPE vocab at **16 384** (top-K by frequency, dataset IDs above the cap collapse to OOV in `BPEDataset`); the full 152 K Qwen vocab would consume ~78 MB just on the embedding and overflow the 50M budget on its own.
 
 Key questions answered:
 - `run_01 → run_02`: Does byte-level tokenization hurt a FP16 Transformer?
@@ -256,23 +267,80 @@ Key questions answered:
 - `run_09 → run_11`: Does per-channel learnable decay improve over fixed gate?
 - `run_09 → run_12`: Does periodic state reset improve long-sequence generalization?
 - `run_11 vs run_12`: Learned dissipation vs structural forgetting — which wins?
-- `run_09 → run_17`: Does TIDE early exit reduce CPU-1 FLOPs without quality loss?
-- `run_09 → new_1`: Does embedding-level boundary gating beat the external BoundaryPredictor used in run_09?
 
-### TIDE Early Exit (run_17)
+### Chinchilla & Checkpointing
 
-Most tokens "converge" well before the final layer — their hidden representation stops changing significantly mid-network. **TIDE** (Token-Informed Depth Execution, see [papers/tide-token-informed-depth-execution-early-exit.pdf](papers/tide-token-informed-depth-execution-early-exit.pdf)) adds a tiny 2-layer MLP classifier per block that is calibrated **post-training** (2K wikitext samples, < 3 min) and predicts *"has this token converged?"* at each layer. Converged tokens skip all remaining layers. Zero base model retraining.
+Each run trains to its own Chinchilla-optimal horizon: `total_steps = (20 × N_params) ÷ (batch × accum × seq_len)`, recomputed inside `train_run` once `build_ablation_model` reports `N_params`. Both `warmup_steps` (5% of horizon) and `save_every_steps` (5% of horizon) are derived from this rescaled `total_steps`, so every run gets the **same warmup ratio and the same checkpoint cadence** regardless of param count. Override with `--total_steps N` to fall back to a fixed budget (smoke tests) or set `chinchilla=False` in the run config.
 
-For CPU-1 @ 50M (d_model=512, 12 layers):
+Checkpoints upload to `Cukinator/cpu1-ablation-checkpoints` on HF Hub via `save_ablation_checkpoint`, named `ablation/checkpoint_<run>_step<N>.pt`. The local file is rotated (only the latest step on disk) but every step is preserved on the Hub for later learning-curve fits and intermediate eval.
 
-| Component | Cost |
-|---|---|
-| Exit classifiers | 12 × (512 → 64 → 1) ≈ 394K params (~800 KB) |
-| Calibration | 2K samples, ~3 min on GPU, post-training only |
-| Expected savings | Frequent tokens ("the", ".", ",") exit at layer 4–6 → ~40–50% FLOPs saved |
-| Quality target | ≥ 99% of run_09 perplexity (matching TIDE paper results) |
+| Setting | Where | Default |
+|---|---|---|
+| `chinchilla` | `BASE_CONFIG` | `True` |
+| `chinchilla_tokens_per_param` | `BASE_CONFIG` | `20` |
+| `warmup_ratio` | `BASE_CONFIG` | `0.05` (5% of Chinchilla horizon) |
+| `checkpoint_fraction` | `BASE_CONFIG` | `0.05` (≈ 20 checkpoints) |
+| `checkpoint_repo` | `BASE_CONFIG` | `Cukinator/cpu1-ablation-checkpoints` |
+| `seed` | `BASE_CONFIG` | `42` (matches `create_dataset.SEED`) |
 
-Reference result: on DeepSeek R1 Distill 8B, TIDE achieves 100% prefill exit rate, 7.2% lower latency, with 99% decode quality preserved on A100.
+Smoke-test sizes (verified):
+
+| Run | N_params | Chinchilla steps | Warmup (5%) | Save every | Tokens / step |
+|---|---|---|---|---|---|
+| `run_01` (FP16 BPE 16K) | 54.7 M | 9 122 | 456 | 456 | 120 K |
+| `run_05` (CPU-1 core) | 35.6 M | 5 926 | 296 | 296 | 120 K |
+| `run_09` (CPU-1 COMPLETE) | 35.6 M | 5 932 | 296 | 296 | 120 K |
+| `run_10` (+ PFNet) | 36.0 M | 5 999 | 299 | 299 | 120 K |
+| `run_13` (10M BPE 4K) | 11.7 M | 1 953 | 97 | 97 | 120 K |
+| `run_14` (10M byte) | 9.6 M | 1 600 | 80 | 80 | 120 K |
+
+### Hyperparameter Audit — what's equal, what isn't, why
+
+All ablation runs share the **same training recipe** so quality differences are attributable to architectural choices, not hyperparameter drift. Audited 2026-04-25 across the 16 active runs:
+
+| Hyperparameter | Value | Equal across all runs? |
+|---|---|---|
+| `seed` | 42 | ✅ — matches `create_dataset.py:987` `SEED=42` |
+| `dataset_repo` | varies by scale (see *Dataset routing* above) | 50M + run_16 → `HuggingFaceFW/fineweb` (streamed); 10M run_13/14/15 → `Cukinator/cpu1-ablation-dataset`. The two paths both follow `create_dataset.py` params (same seed, seq_len, patch_size, max-doc-tokens). |
+| `lr` / `min_lr` | 3e-4 / 3e-5 | ✅ |
+| `batch_per_gpu` × `accum` × `seq_len` | 24 × 1 × 5000 = 120 K tok/step | ✅ |
+| `warmup_ratio` | 0.05 of `total_steps` | ✅ (was a bug — see below) |
+| `chinchilla_tokens_per_param` | 20 | ✅ |
+| `weight_decay_bitlinear` / `_heads` | 0.1 / 0.01 | ✅ |
+| `grad_clip` | 1.0 | ✅ |
+| `temperature` / `alpha_kl` / `alpha_ce` | 4.0 / 0.9 / 0.1 | ✅ (unused: `training_signal='ce_only'`) |
+| `checkpoint_fraction` | 0.05 | ✅ |
+
+**Two datasets, both anchored to `create_dataset.py`:**
+
+- The **upstream raw corpus** is `HuggingFaceFW/fineweb` `sample-10BT` (10B tokens). `create_dataset.py:1225` streams it with `SEED=42` and runs it through Qwen2.5-3B to build the pre-processed dataset.
+- The **pre-processed product** is `Cukinator/cpu1-ablation-dataset` (~37.5M tokens, two subsets: `byte_marginalized/`, `bpe_tokenized/`).
+- 50M runs (`run_01` … `run_12`) and `run_16` consume the *raw upstream* directly via `FineWebStreamingDataset` — same SEED, same SEQ_LEN, same PATCH_SIZE, same per-doc cap as the build pipeline. Reading raw is necessary for them: Chinchilla at 50M needs ~1B tokens, and the pre-processed dataset doesn't have that many.
+- 10M runs `run_13`/`run_14`/`run_15` consume the pre-processed product, picking the matching subset by tokenization.
+
+**Intentional per-run overrides** (these *are* the ablation, not hyperparameter drift):
+
+| Run | Override | Reason |
+|---|---|---|
+| `run_01` | `bpe_vocab_size=16384` | full Qwen 152K vocab → 78 MB embedding alone, busts 50M budget. Top-16K by frequency, rest collapses to OOV in `BPEDataset._clamp_ids`. |
+| `run_08` | `window_size=128` | the run *is* "best CPU-friendly local-attention baseline" |
+| `run_10` | `pfnet_hidden=32` | enables the component being ablated |
+| `run_11` | `mlgru_per_channel_decay=True` | enables the component being ablated |
+| `run_12` | `state_reset_period=512` | enables the component being ablated |
+| `run_13` | `bpe_vocab_size=4096`, `use_boundary_predictor=False` | 10M budget cap; BPE has its own subword boundaries |
+| `run_15` | `complement_from='run_13'` | warm-start checkpoint, by design |
+| `run_16` | `dataset_repo='HuggingFaceFW/fineweb'`, `raw_bytes_only=True` | this run *is* the "no-teacher, raw bytes" ablation question |
+
+**Bugs found and fixed during audit:**
+
+1. **`run_01` BPE vocab overflow** — was defaulting to 152 064 tokens (Qwen2.5), which makes the embedding alone 78 M params and overflows the 50 M budget. Fixed: `bpe_vocab_size=16384` + clamp in `BPEDataset`.
+2. **Warmup ratio drift under Chinchilla** — fixed `warmup_steps=500` against a Chinchilla-rescaled `total_steps` produced 5.5% warmup at `run_01` (9122 steps) but 12.8% at `run_13` (1953 steps). Replaced with `warmup_ratio=0.05` so every run gets the same 5% warmup regardless of horizon.
+3. **`run_16` had no implementation backing** — its config declared `dataset_repo='HuggingFaceFW/fineweb'` and `raw_bytes_only=True`, but the original loader only knew how to read pre-processed Cukinator parquet shards. The same gap was about to bite the 50M runs, which can't fit in Cukinator under Chinchilla. Fixed by adding `FineWebStreamingDataset` (mirrors `create_dataset.py` params, now in `utilities.py`) and a routing branch in `load_ablation_dataset` keyed on `dataset_repo`. `run_16` now actually runs end-to-end on FineWeb; the 50M runs (`run_01` … `run_12`) inherit the same path via `BASE_CONFIG`.
+4. **`run_16` Cukinator → FineWeb routing assumed by config but unused at training time** — the bug above also meant `run_16` would have silently fallen back to Cukinator's `byte_marginalized/` subset (defeating the whole "no teacher" question). Same fix as above.
+
+**Parked for future papers** (deliberately not in this study, see also `train_ablation.py` header):
+- **TIDE per-token early exit** (arXiv 2603.21365) — post-training calibration of per-layer exit classifiers on a frozen `run_09` checkpoint. Inference-FLOPs optimization, not an architectural choice. Belongs in a follow-up deployment paper.
+- **Bolmo integrated boundary gating** — `BolmoPatchEmbedding` with embedding-level scorer, mutually exclusive with `run_06`/`run_09`'s external `BoundaryPredictor`. Worth a dedicated tokenizer-paper comparison vs Pagnoni et al.
 
 ### Justified with Citations (no runs needed)
 
@@ -307,15 +375,15 @@ Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale
 
 ## Local Checkpoint Mapping
 
-The checkpoint folders under `models/ablation_models/` hold the **untrained initial weights** (`checkpoint.pt`) generated by `zave_ablation_models.py`, plus the matching `run_XX_*.py` source file (tracked since commit `9a71cdb`). The disk sizes below are for those FP32 initial dumps — final packed sizes are listed in *Projected final checkpoint sizes* further down.
+The checkpoint folders under `models/ablation_models/` hold **untrained initial weights** (`checkpoint.pt` + `config.json`) — frozen archival dumps used for benchmarks pre-training. The disk sizes below are for those FP32 initial dumps; final packed sizes are in *Projected final checkpoint sizes* further down.
 
-> **Numbering drift — disk folders vs current `ablation.py`.** The `run_XX_*.py` files and folders on disk were frozen at a previous revision where the linear chain was still `run_06 = cpu1_core`, `run_07 = cpu1_bolmo`, `run_08 = cpu1_deletegate`, `run_09 = folded_transformer`, `run_10 = cpu1_complete`, `run_11 = cpu1_pfnet`. The current `ablation.py` `RUN_CONFIGS` collapsed `cpu1_core` into `run_05` and shifted the rest by one. The *Progressive Design* tree and all other tables in this README reflect the **current** `ablation.py`; the disk-folder column below is the archival layout. The column *Current `ablation.py` run ID* shows where each archival folder maps after the shift (or `—` if the config no longer exists as a separate run). Either re-run `zave_ablation_models.py` to regenerate with the new numbering, or keep treating the folder names as frozen archival labels.
+> **Numbering drift — disk folders vs current `train_ablation.py`.** The on-disk folders were frozen at a previous revision where the linear chain was still `run_06 = cpu1_core`, `run_07 = cpu1_bolmo`, `run_08 = cpu1_deletegate`, `run_09 = folded_transformer`, `run_10 = cpu1_complete`, `run_11 = cpu1_pfnet`. The current `RUN_CONFIGS` in `train_ablation.py` collapsed `cpu1_core` into `run_05` and shifted the rest by one. The *Progressive Design* tree and all other tables in this README reflect the **current** numbering; the disk-folder column below is the archival layout. The *Current run ID* column shows where each archival folder maps after the shift (or `—` if the config no longer exists as a separate run). Treat the folder names as frozen archival labels.
 
-> **`small_*` folders** predate the unified numbering and map to `run_13`–`run_16` in the current `ablation.py` (no drift inside that block — see *10M Runs* below).
+> **`small_*` folders** predate the unified numbering and map to `run_13`–`run_16` (no drift inside that block — see *10M Runs* below).
 
 ### 50M Runs (disk folders — archival numbering)
 
-| Disk folder | Current `ablation.py` run ID | Architecture summary | Initial size (FP32) |
+| Disk folder | Current run ID | Architecture summary | Initial size (FP32) |
 |---|---|---|---|
 | `run_01_transformer_bpe_fp16/` | `run_01` | Transformer + BPE + FP16 | 738.84 MB |
 | `run_02_transformer_byte_fp16/` | `run_02` | Transformer + Byte + FP16 | 146.91 MB |
@@ -328,16 +396,13 @@ The checkpoint folders under `models/ablation_models/` hold the **untrained init
 | `run_09_folded_transformer/` | `run_08` | Folded Transformer + Byte + Ternary | 146.91 MB |
 | `run_10_cpu1_complete/` | `run_09` | CPU-1 COMPLETE (Bolmo + DeleteGate) ⭐ | 135.63 MB |
 | `run_11_cpu1_pfnet/` | `run_10` | CPU-1 COMPLETE + PFNet | 137.16 MB |
-| `run_400M_cpu1_kernel_optimal.py` | — (kernel-optimal scale-up, see *400M* section) | CPU-1 @ 1280 × 24 × 3328 | generator only — no checkpoint |
 
-**Current-only runs with no archival folder yet** (generate via `zave_ablation_models.py` if needed):
+**Current-only runs with no archival folder yet** (build manually with `from models.ablation_models import build_run; build_run("run_11")`):
 
 | Current run ID | `name` | Architecture summary |
 |---|---|---|
 | `run_11` | `cpu1_decay_learned` | CPU-1 COMPLETE + per-channel learnable decay (RWKV/HGRN2-style, ~12 KB params) |
 | `run_12` | `cpu1_decay_reset` | CPU-1 COMPLETE + periodic MLGRU state reset (Stuffed Mamba, 0 params) |
-| `run_17` | `cpu1_tide_exit` | CPU-1 COMPLETE + TIDE per-token early exit (post-training calibration) |
-| `new_1`  | `cpu1_bolmo_dynamic` | CPU-1 COMPLETE + Bolmo integrated gating inside `BolmoPatchEmbedding` |
 
 ### 10M Runs
 
@@ -382,9 +447,9 @@ Raw Text Corpus
       │
       ▼
 ┌─────────────────────────────┐
-│  train.py                   │  Student training with distillation
+│  train_final.py             │  Student training with distillation
 │  (AMP, gradient             │  → Checkpoints → HuggingFace Hub
-│   accumulation)             │
+│   accumulation)             │  Imports primitives + datasets from utilities.py
 └─────────────────────────────┘
       │
       ▼
@@ -394,7 +459,7 @@ Raw Text Corpus
 └─────────────────────────────┘
 ```
 
-### Ablation Pipeline (50M × 13 runs on Lightning.ai T4)
+### Ablation Pipeline (50M × 12 runs on Lightning.ai T4)
 
 #### Lightning Studio Setup — Files to Upload
 
@@ -402,24 +467,57 @@ Minimum set of files needed to train any ablation run on a Lightning Studio T4 i
 
 | File | Purpose |
 |---|---|
-| `model.py` | CPU-1 architecture — imported by `ablation.py` and `train.py` |
-| `train.py` | Training loop with `--mode ablation` |
-| `ablation.py` | Ablation configs and configurable model variants |
+| `utilities.py` | Shared primitives (BitLinear, MLGRU, …) + training infrastructure (datasets, loss, LR, checkpointing) |
+| `train_ablation.py` | Ablation configs + `AblationModel` + `train_run` + multi-GPU orchestration (`--orchestrate`) |
 | `requirements.txt` | Python dependencies |
 
 Everything else is remote or not required:
-- **Dataset** — streamed from `Cukinator/cpu1-ablation-dataset` on HF Hub; use `--hf-mount` to avoid downloading the full ~5 GB
+- **Dataset** — streamed from `Cukinator/cpu1-ablation-dataset` (or `HuggingFaceFW/fineweb` for the 50M chain) on HF Hub; use `--hf-mount` to avoid downloading
 - **Credentials** — set `HF_TOKEN` as a Lightning Secret (Settings → Secrets), not via `.env`
+- `train_final.py` — only needed for the production 170M training, not the ablation chain
 - `create_dataset.py` — dataset already built and on HF Hub
 - `inference/`, `kaggle/`, `eval/` — not needed at training time
 
 ```bash
-# On the Lightning VM after uploading the four files above:
+# On the Lightning VM after uploading the files above:
 pip install -r requirements.txt
 
-# Train any run with lazy dataset streaming (no full download):
-python train.py --mode ablation --run run_10 --hf-mount
+# A) Single ablation run with lazy dataset streaming:
+python train_ablation.py --run run_10 --hf-mount
+
+# B) Full ablation in parallel groups (one process per GPU):
+python train_ablation.py --orchestrate
 ```
+
+#### Parallel groups — running 4 ablations simultaneously on a 4×T4 instance
+
+`train_ablation.py` declares `PARALLEL_GROUPS: list[list[str]]`. Every sublist is a *group*: when invoked with `--orchestrate`, its runs launch concurrently as subprocesses of the same script (each spawned with `--run <name>`), one per GPU pinned via `CUDA_VISIBLE_DEVICES`. Groups themselves run sequentially. The launcher detects DeleteGate runs (`run_07`, `run_09`) and chains Phase 1 → Phase 2 inside the same GPU slot, and orders `run_15` (warm-start from `run_13`) into a later group.
+
+Default groups:
+
+| Group | Runs | Notes |
+|---|---|---|
+| 0 | `run_01 run_02 run_03 run_04` | Mixer / tokenizer / quantization sweep |
+| 1 | `run_05 run_06 run_07 run_08` | CPU-1 core + branches (run_07 is two-phase) |
+| 2 | `run_09 run_10 run_11 run_12` | CPU-1 COMPLETE + extensions (run_09 is two-phase) |
+| 3 | `run_13 run_14 run_16` | 10M scale-consistency |
+| 4 | `run_15` | warm-start from `run_13` checkpoint |
+
+Each subprocess streams stdout/stderr to `run_logs/<run_name>.log`, so a 4×T4 box completes a whole group of four ablations in one wall-clock pass without log interleaving.
+
+```bash
+python train_ablation.py --orchestrate                       # all groups
+python train_ablation.py --orchestrate --groups 0 2          # only groups 0 and 2
+python train_ablation.py --orchestrate --runs run_05 run_09  # ad-hoc single group
+python train_ablation.py --orchestrate --max-parallel 1      # force fully sequential
+python train_ablation.py --orchestrate --dry-run             # 10-step smoke test
+```
+
+Sized for **one full T4 (16 GB) per run**: `batch_per_gpu=24`, `gradient_accumulation_steps=1` (was 8 / 2). At `d_model=512`, `seq_len=5000`, 12 layers, AMP + grad-checkpointing, this fills ~10–12 GB and leaves room for the prefetch buffers below.
+
+#### CUDA latency hiding
+
+`train_ablation.py` wraps the DataLoader in `utilities.CUDAPrefetcher`, which issues host→device copies for batch *N+1* on a side `cuda.Stream` while the main stream computes batch *N*. Combined with `pin_memory=True`, `non_blocking=True`, six DataLoader workers and `prefetch_factor=4`, the H2D copy is fully overlapped with compute on a saturated T4 (large batch, AMP fp16). `cudnn.benchmark=True` and `torch.compile(mode="reduce-overhead")` are also enabled for steady-state throughput.
 
 #### 1. Build Shared Dataset (once)
 
@@ -442,13 +540,13 @@ Teacher (Qwen2.5-3B in 4-bit NF4 or FP8) runs **once**. Produces:
 
 ```bash
 # Single ablation run (GPU)
-python train.py --mode ablation --run run_10
+python train_ablation.py --run run_10
 
 # Dry run (no GPU, synthetic data)
-python train.py --mode ablation --run run_01 --dry_run --total_steps 10
+python train_ablation.py --run run_01 --dry_run --total_steps 10
 
 # With HF-mount (lazy dataset streaming, no full download)
-python train.py --mode ablation --run run_10 --hf-mount
+python train_ablation.py --run run_10 --hf-mount
 ```
 
 #### Two-Phase Training (runs 07 and 09 — DeleteGate)
@@ -456,29 +554,27 @@ python train.py --mode ablation --run run_10 --hf-mount
 For runs that include DeleteGate (MrT5-style), training proceeds in two phases:
 
 - **Phase 1 (CE pretraining):** Standard CE training. DeleteGate disabled (elimination_rate=0).
-  `python train.py --mode ablation --run run_07 --phase 1`
+  `python train_ablation.py --run run_07 --phase 1`
 
 - **Phase 2 (Compression):** DeleteGate activated. Elimination rate anneals to 40% over training.
-  `python train.py --mode ablation --run run_07 --phase 2 --phase1_ckpt <path>`
+  `python train_ablation.py --run run_07 --phase 2 --phase1_ckpt <path>`
+
+The `--orchestrate` runner detects two-phase configs automatically and chains Phase 1 → Phase 2 inside the same GPU slot.
 
 #### 3. Checkpoint Formats
 
-Two checkpoint formats are saved automatically:
+Two checkpoint formats are saved automatically by `utilities.save_ablation_checkpoint`:
 
 | Format | When | Contents | Size (50M) | Size (170M) |
 |---|---|---|---|---|
 | **Resume** (intermediate) | Every N steps | BF16 model + BF16 optimizer state | ~214 MB | ~700 MB |
 | **Final** (inference) | End of training | 2-bit packed model, no optimizer | **~14 MB** | **~44 MB** |
 
-The final inference checkpoint uses 2-bit ternary packing: {-1, 0, 1} → {0, 1, 2}, 4 values per byte. Non-ternary weights (norms, gates) are stored as BF16. Load with `unpack_compact_state()` from `model.py`.
+The final inference checkpoint uses 2-bit ternary packing: {-1, 0, 1} → {0, 1, 2}, 4 values per byte. Non-ternary weights (norms, gates) are stored as BF16. Load with `utilities.unpack_compact_state()`.
 
 #### 4. Analyze Results
 
-```bash
-python ablation.py --metrics_dir .
-```
-
-Generates a text table for terminal and a LaTeX table for the paper (`ablation_table.tex`).
+End-of-run validation metrics (`perplexity`, `tokens_per_sec_cpu`, `ram_mb`, `val_loss`, `n_params_M`) are written to `metrics_<run>.json` by `utilities.evaluate_run`. The full evaluation suite (correctness, quality, perplexity, external comparisons) lives in `eval/` — see *Evaluation Suite* below.
 
 ---
 
@@ -537,10 +633,10 @@ For the paper: *"10M models trained with Chinchilla-optimal scaling (200M tokens
 | `run_13` → `run_15` | Quality gain from adapting a BPE model to byte-level |
 
 ```bash
-python train.py --mode ablation --run run_13   # BPE baseline (~1h)
-python train.py --mode ablation --run run_14   # byte + teacher (~1h)
-python train.py --mode ablation --run run_15 --complement_ckpt models/ablation_models/small_01_cpu1_bpe/checkpoint.pt
-python train.py --mode ablation --run run_16   # raw bytes, no teacher (~1h)
+python train_ablation.py --run run_13   # BPE baseline (~1h)
+python train_ablation.py --run run_14   # byte + teacher (~1h)
+python train_ablation.py --run run_15 --complement_ckpt models/ablation_models/small_01_cpu1_bpe/checkpoint.pt
+python train_ablation.py --run run_16   # raw bytes, no teacher (~1h)
 ```
 
 ---
@@ -555,7 +651,7 @@ The `kaggle/` directory contains scripts ready to run directly in Kaggle noteboo
 | `kaggle/upload_dataset.py` | One-shot uploader for local shards → `Cukinator/cpu1-ablation-dataset` |
 | `kaggle/create-dataset-metadata.json` | Kaggle kernel metadata (used by `kaggle kernels push`) |
 
-All scripts read `HF_TOKEN` from Kaggle Secrets automatically. Training runs are launched from `train.py --mode ablation --run <run_id>` directly on the Kaggle VM after `pip install -r requirements.txt`. To push an updated kernel:
+All scripts read `HF_TOKEN` from Kaggle Secrets automatically. Training runs are launched from `train_ablation.py --run <run_id>` directly on the Kaggle VM after `pip install -r requirements.txt`. To push an updated kernel:
 
 ```bash
 kaggle kernels push -p kaggle/  # reads create-dataset-metadata.json
@@ -567,7 +663,7 @@ kaggle kernels push -p kaggle/  # reads create-dataset-metadata.json
 
 Production inference is the standalone C driver `inference/benchmark.c` linked against `inference/kernels.cpp` — there is no Python inference engine in the current tree. The kernels are ultra-optimized for the MLGRU architecture: OpenMP, explicit AVX2 + FMA SIMD, Deep Data Dependency Unrolling (DDU), `thread_local` scratch reuse (zero-allocation steady state), and a layer-pipeline mode that keeps each stage's weight slice warm in L2/L3.
 
-The PyTorch forward pass in `model.py` remains the reference used by `train.py` and the `eval/` suite — it is never benchmarked for throughput, only for numerical correctness and ablation quality.
+The PyTorch forward path defined in `utilities.py` (and assembled into `CPU1ModelV2` in `train_final.py`) remains the reference used by training and the `eval/` suite — it is never benchmarked for throughput, only for numerical correctness and ablation quality.
 
 ### CPU-1 170M Performance — Current C Benchmark Status
 
@@ -678,9 +774,7 @@ g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math \
 
 ### 400M kernel-optimal config — same kernel, scaled up
 
-The same kernel handles a **~430M parameter** ablation variant
-([models/ablation_models/run_400M_cpu1_kernel_optimal.py](models/ablation_models/run_400M_cpu1_kernel_optimal.py))
-designed so that all dims are kernel-friendly:
+The same C kernel handles a **~430M parameter** scale-up driven directly via `benchmark.exe` CLI flags (`--d_model 1280 --n_layers 24 --d_ff 3328 --fp_rank 8`), with all dims chosen to be kernel-friendly:
 
 | Hyperparameter | 170M (production) | 400M (kernel-optimal) | Notes |
 |---|---:|---:|---|
@@ -725,20 +819,26 @@ The DP calibrator confirms a perfect split for 24 layers / 6 stages: `[4, 4, 4, 
 ```
 1.58bits/
 │
-│  Core
-├── model.py                 # Full CPU-1 architecture: MLGRU + PFNet + FPResidual +
-│                            #   BoundaryPredictor + DeleteGate + EmbeddingAligner +
-│                            #   MegaByte LocalByteDecoder
-├── train.py                 # Training loop — two modes:
-│                            #   default: 170M production model
-│                            #   --mode ablation --run run_XX: ablation run
-│                            #   (also hosts the `from hf_mount import mount_bucket`
-│                            #    lazy-load path used via --hf-mount on Kaggle VMs)
-├── ablation.py              # Ablation system: BASE_CONFIG + RUN_CONFIGS + SMALL_RUN_CONFIGS,
-│                            #   configurable model variants, analysis + LaTeX tables
+│  Core (training)
+├── utilities.py             # Shared primitives + training infrastructure:
+│                            #   BitLinear, BitEmbedding, RMSNorm, FPResidual, PFNet,
+│                            #   MLGRU mixers, LocalByteDecoder, BoundaryPredictor,
+│                            #   DeleteGate, EmbeddingAligner. Plus CUDAPrefetcher,
+│                            #   datasets (Distillation, ByteLevel, BPE, FineWebStreaming,
+│                            #   DryRun), distillation/CE loss, LR schedules, param groups,
+│                            #   checkpoint serialization (2-bit pack/unpack), evaluate_run.
+├── train_final.py           # Production CPU-1 training:
+│                            #   CPU1ModelV2 + CPU1ModelV2WithGates,
+│                            #   train() (Phase 1 distillation) + train_phase2() (DeleteGate)
+├── train_ablation.py        # Ablation training + multi-GPU orchestration:
+│                            #   BASE_CONFIG + RUN_CONFIGS (12 50M) + SMALL_RUN_CONFIGS (4 10M),
+│                            #   AblationModel + build_ablation_model + train_run,
+│                            #   PARALLEL_GROUPS launcher (--orchestrate) — spawns one
+│                            #   subprocess per GPU (CUDA_VISIBLE_DEVICES) and chains
+│                            #   two-phase DeleteGate runs (run_07/run_09) inside the
+│                            #   same GPU slot.
 ├── create_dataset.py        # Full dataset pipeline: teacher logprob extraction,
 │                            #   BPE→byte marginalization, HuggingFace Hub upload
-├── main_ligtning_studio.py  # Lightning.ai studio entry point (sets up env + launches train)
 │
 │  Inference (C / C++ only — no Python engine)
 ├── inference/
@@ -771,11 +871,10 @@ The DP calibrator confirms a perfect split for 24 layers / 6 stages: `[4, 4, 4, 
 │   ├── cpu1-170M/               # CPU-1 170M checkpoint — in training
 │   ├── LFM2.5-350M/             # LFM2.5-350M (HF safetensors) — mlGRU reference
 │   ├── gpt2-medium/             # GPT-2 medium (HF safetensors) — transformer baseline
-│   └── ablation_models/         # One sub-folder + `.py` per run (run_01…run_11 archival,
-│                                #   run_400M_cpu1_kernel_optimal.py, small_01…small_04)
-│                                #   + `zave_ablation_models.py` regenerator.
-│                                #   Current-only runs (run_12, run_17, new_1) have no
-│                                #   sub-folder yet — regenerate if needed.
+│   └── ablation_models/         # One sub-folder per run with archival initial weights
+│                                #   (`checkpoint.pt` + `config.json`) for benchmarks pre-training.
+│                                #   `__init__.py` exposes `build_run("run_XX")` →
+│                                #   `train_ablation.build_ablation_model(get_run_config("run_XX"))`.
 │
 │  Standalone scripts
 ├── benchmark_optimized.exe  # Pre-built C benchmark (6-stage pipeline, calibrated)
@@ -957,12 +1056,12 @@ tqdm>=4.66.0
 
 ### Implemented
 
-- **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (`model.py`); MegaByte LocalByteDecoder for intra-patch byte autoregression
+- **Architecture** — 170M model: d_model=1024, 14 layers, MLGRU + PFNet + fully ternary (primitives in `utilities.py`, assembled in `train_final.py::CPU1ModelV2`); MegaByte LocalByteDecoder for intra-patch byte autoregression
 - **Extended techniques (v3)** — BoundaryPredictor (Bolmo), DeleteGate (MrT5), EmbeddingAligner (Distilling Token-Trained Models into Byte-Level Models), two-phase training
 - **Dataset pipeline** — Teacher logprob extraction + BPE→byte marginalization + HF Hub upload (`create_dataset.py`)
-- **HF-mount streaming** — `train.py --hf-mount` lazy-loads shards from the Hub without the ~5 GB full download (module imported on demand; no local `hf_mount.py` yet)
-- **Training** — AMP, gradient accumulation, distillation loss, both main and ablation modes in one script (`train.py`)
-- **Ablation system** — 14 progressive runs (run_01–run_12, run_17 and new_1 at 50M) + 4 scale runs (run_13–run_16, 10M) + `run_400M` kernel-optimal variant (`ablation.py`, `models/ablation_models/`)
+- **HF-mount streaming** — `train_ablation.py --hf-mount` lazy-loads shards from the Hub without the ~5 GB full download (module imported on demand; no local `hf_mount.py` yet)
+- **Training** — AMP, gradient accumulation, distillation loss; production model in `train_final.py`, ablation runs in `train_ablation.py`, shared infrastructure in `utilities.py`
+- **Ablation system** — 12 progressive runs (run_01–run_12 at 50M) + 4 scale runs (run_13–run_16, 10M), all in `train_ablation.py`; archival initial weights in `models/ablation_models/`. Chinchilla-scaled `total_steps`, 5%-of-horizon HF-Hub checkpointing, parallel multi-GPU launcher integrated as `train_ablation.py --orchestrate`. TIDE early-exit and Bolmo integrated gating are parked for follow-up papers.
 - **C inference kernels** — `inference/kernels.cpp` + `inference/benchmark.c` standalone driver; 6-stage DP-calibrated layer pipeline (mode 4) and 6-stream batch (mode 3)
 - **Evaluation suite** — 14 checks in 5 modules, multi-architecture adaptive, single engine load, fused benchmarks (`eval/`)
 - **Kaggle scripts** — Ready-to-run notebooks for dataset creation on T4 (`kaggle/`)
@@ -974,11 +1073,11 @@ tqdm>=4.66.0
 | `models/cpu1-170M/` | ~170M params (~44 MB 2-bit packed) | MLGRU + Byte + Ternary + FPResidual + PFNet + MegaByte LocalDecoder | 🔄 Training |
 | `models/LFM2.5-350M/` | HF safetensors | mlGRU (LiquidAI) | ✅ Benchmark reference (llama.cpp Q4 via `eval_external`) |
 | `models/gpt2-medium/` | HF safetensors | Transformer | ✅ Baseline reference (`resultados/gpt2-medium_q{4,8}_{1,6}t.md`) |
-| `models/ablation_models/run_*` | initial checkpoints | Per-run architecture | ✅ Generated by `zave_ablation_models.py` |
+| `models/ablation_models/run_*` | initial checkpoints | Per-run architecture | ✅ Archival initial weights (FP32, untrained) |
 
 ### Pending
 
-- Run the 14 ablation experiments (run_01–run_12, run_17, new_1) + 4 scale runs (run_13–run_16) on Kaggle T4 and collect metrics
+- Run the 12 ablation experiments (run_01–run_12) + 4 scale runs (run_13–run_16) on Lightning.ai 4×T4 (via `train_ablation.py --orchestrate`) and collect metrics
 - Scale winning ablation config to 170M and train on full dataset
 - ~~T-MAC C++ kernel integration~~ ✅ **Done** — current numbers in *CPU-1 170M Performance* (mode 4: 521 pps, mode 3 6t: 726 pps)
 - ~~C benchmark for 400M kernel-optimal config~~ ✅ **Done** — 193 pps (mode 4), 270 pps (mode 3)
@@ -1023,7 +1122,7 @@ To load an old checkpoint without migrating it, pass `legacy_heads=True` in the
 model config:
 
 ```python
-from model import CPU1ModelV2
+from train_final import CPU1ModelV2
 model = CPU1ModelV2({'legacy_heads': True})
 ckpt  = torch.load('old_checkpoint.pt', map_location='cpu', weights_only=False)
 model.load_state_dict(ckpt['model_state_dict'])
@@ -1047,24 +1146,13 @@ the default config will always use `local_decoder.*`.
 
 ## Paper conformance check
 
-Verifies that `LocalByteDecoder.forward()` (teacher-forced, parallel) and
-`LocalByteDecoder.generate_step()` (autoregressive, sequential) produce
-**identical logits** for every byte position in every patch.
+The MegaByte teacher-forced ↔ autoregressive parity check (`LocalByteDecoder.forward()` vs a sequential `generate_step()` loop) used to live as a self-test in the old `model.py`. With the refactor it moves to the dedicated test in `eval/eval_correctness.py` (`check_state_propagation` covers the analogous invariants on the global model). Run it via the unified evaluation suite:
 
 ```bash
-python model.py   # runs all self-tests including test_local_decoder_parity()
+python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt
 ```
 
-Expected output:
-
-```
-[OK] LocalByteDecoder training↔inference parity: diff=0
-```
-
-The test constructs random global hidden states `h ∈ ℝ^{B×S×d_model}` and
-random target byte tensors, then asserts `max|forward_logit[k] - step_logit[k]| < 1e-4`
-for each patch position `k ∈ {0, 1, 2, 3}`.  The tolerance accounts for
-float32 reorder differences; the true diff is typically `< 1e-6`.
+The expected behaviour is unchanged: `max|forward_logit[k] - step_logit[k]| < 1e-4` for each patch position `k ∈ {0, 1, 2, 3}`, with the true diff typically `< 1e-6`.
 
 ---
 

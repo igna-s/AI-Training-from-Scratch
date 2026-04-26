@@ -38,7 +38,7 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ablation import get_run_config, build_ablation_model, ALL_RUN_CONFIGS
+from train_ablation import get_run_config, build_ablation_model, ALL_RUN_CONFIGS
 
 
 def build_run(run_name: str):

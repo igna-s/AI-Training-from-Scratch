@@ -26,7 +26,8 @@ from inference import (  # noqa: E402
     ModelInfo,
     detect_model_info,
 )
-from model import CPU1ModelV2, BitLinear  # noqa: E402
+from train_final import CPU1ModelV2  # noqa: E402
+from utilities import BitLinear  # noqa: E402
 
 
 def create_engine(checkpoint_path: str,
