@@ -19,7 +19,14 @@ Two modes of execution:
 The orchestration spawns subprocesses of this same script with --run, so
 each ablation run owns one GPU end-to-end.
 
-Inference belongs in `inference/` (C/C++ kernels).
+  3. PyTorch inference — load an ablation checkpoint and generate bytes.
+        Edit the INFER_CONFIG dict at the top of this file and flip
+        TRAIN=False / INFER=True. Then:
+            python train_ablation.py
+        Pure PyTorch path (byte / byte_dynamic runs only). The C/C++ kernels
+        in `inference/` are for the production model — this entry point is
+        for evaluating ablation checkpoints directly.
+
 The full evaluation suite lives in `eval/`.
 """
 
@@ -52,7 +59,43 @@ from utilities import (
     load_ablation_dataset, compute_loss,
     get_lr_from_config, measure_cpu_throughput, evaluate_run,
     save_ablation_checkpoint,
+    # Checkpoint codec
+    unpack_compact_state,
 )
+
+
+# =============================================================================
+# 0. Mode switch — flip one of the two bools to choose what this script does
+# =============================================================================
+# TRAIN  : run training (single run or orchestration; CLI flags still apply).
+# INFER  : load a checkpoint and generate bytes from a prompt — pure PyTorch,
+#          NO CLI needed (just edit INFER_CONFIG below).
+#
+# Rules:
+#   - Exactly one of {TRAIN, INFER} must be True. Setting none or both is an
+#     error and the script exits with a clear message.
+
+TRAIN = True
+INFER = False
+
+# --- INFER_CONFIG ------------------------------------------------------------
+# Used only when INFER=True. Edit and run `python train_ablation.py`.
+# Works with ANY ablation checkpoint:
+#   - byte / byte_dynamic runs → max_new_bytes counts bytes.
+#   - bpe runs (run_01, run_13) → max_new_bytes counts BPE tokens; the
+#     Qwen2.5-3B tokenizer is loaded automatically (needs `transformers`).
+# For Phase-2 (DeleteGate) checkpoints, set elimination_rate>0.
+
+INFER_CONFIG = {
+    'ckpt':             'checkpoint_run_10_final.pt',
+    'prompt':           'Once upon a time',
+    'max_new_bytes':    256,    # bytes for byte runs, tokens for bpe runs
+    'temperature':      0.8,    # <=0 → greedy
+    'top_k':            0,      # 0 → disabled
+    'top_p':            0.0,    # 0 → disabled
+    'elimination_rate': 0.0,    # >0 only with Phase-2 (DeleteGate) ckpts
+    'device':           None,   # None → cuda if available, else cpu
+}
 
 
 # =============================================================================
@@ -129,6 +172,16 @@ BASE_CONFIG = {
     'chinchilla':                  True,
     'chinchilla_tokens_per_param': 20,
     'warmup_ratio':                0.05,
+
+    # DeleteGate Phase-2 target elimination rate. Read by both the gate's
+    # internal rate (set at Phase-2 entry) and forward_train(target_rate=...)
+    # so both paths agree. Only effective in runs with use_delete_gate=True.
+    'target_elimination':          0.4,
+
+    # Phase-2 (DeleteGate fine-tune) budget as a fraction of the Chinchilla
+    # horizon used in Phase-1. 0.5 ≈ half the pre-train length — enough to
+    # train the gate without re-paying the full pre-train cost.
+    'phase2_budget_fraction':      0.5,
 }
 
 
@@ -761,21 +814,25 @@ def train_run(run_name: str, dry_run: bool = False,
     model = build_ablation_model(config).to(device)
 
     # Chinchilla rescale: total_steps / warmup / save cadence from N_params.
+    # Applied on both phases so Phase-2 (DeleteGate fine-tune) inherits the
+    # param-scaled horizon instead of falling back to the BASE_CONFIG default.
     if (config.get('chinchilla', True)
             and total_steps_override is None
-            and not dry_run
-            and phase == 1):
+            and not dry_run):
         n_params = sum(p.numel() for p in model.parameters())
-        new_total = chinchilla_total_steps(config, n_params)
+        phase_frac = float(config.get('phase2_budget_fraction', 0.5)) if phase == 2 else 1.0
+        new_total = max(int(chinchilla_total_steps(config, n_params) * phase_frac),
+                        int(config.get('warmup_steps', 100)) + 100)
         new_save = chinchilla_save_every(new_total, config.get('checkpoint_fraction', 0.05))
         new_warmup = chinchilla_warmup(new_total, config.get('warmup_ratio', 0.05))
         tokens_per_step = (
             config['batch_per_gpu'] * config['gradient_accumulation_steps']
             * config['seq_len']
         )
+        tag = f"Phase-{phase} (×{phase_frac:g})"
         print(
-            f"[Chinchilla] N={n_params/1e6:.1f}M params · "
-            f"target={n_params * config.get('chinchilla_tokens_per_param', 20)/1e6:.1f}M tokens · "
+            f"[Chinchilla {tag}] N={n_params/1e6:.1f}M params · "
+            f"target={n_params * config.get('chinchilla_tokens_per_param', 20) * phase_frac/1e6:.1f}M tokens · "
             f"tokens/step={tokens_per_step:,} · "
             f"total_steps {config.get('total_steps')} → {new_total} · "
             f"warmup {config.get('warmup_steps')} → {new_warmup} ({config.get('warmup_ratio', 0.05)*100:.0f}% of horizon) · "
@@ -785,19 +842,51 @@ def train_run(run_name: str, dry_run: bool = False,
         config['warmup_steps'] = new_warmup
         config['save_every_steps'] = new_save
 
-    # Phase 2: load Phase 1 checkpoint, activate DeleteGate, freeze EmbAligner
+    # Complement warm-start: load a sibling run's final checkpoint (e.g. run_15
+    # warm-starts from run_13's BPE checkpoint, then finetunes byte_dynamic).
+    # Architecture differs (embeddings/heads), so strict=False is required;
+    # only matching keys (MLGRU blocks, RMSNorm, DeleteGate) transfer.
+    complement = config.get('complement_from')
+    if phase == 1 and complement and not dry_run:
+        ckpt_path = f"checkpoint_{complement}_final.pt"
+        if Path(ckpt_path).exists():
+            print(f"[Complement] Warm-starting from {ckpt_path}")
+            ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+            fmt = ckpt.get('format', 'bf16')
+            if fmt == 'compact_2bit':
+                comp_state = unpack_compact_state(ckpt['compact'])
+            else:
+                comp_state = ckpt['model_state_dict']
+            target = model.module if hasattr(model, 'module') else model
+            missing, unexpected = target.load_state_dict(comp_state, strict=False)
+            transferred = sum(1 for k in comp_state if k not in unexpected)
+            print(f"[Complement] Transferred {transferred} keys "
+                  f"(skipped {len(unexpected)} incompatible, "
+                  f"{len(missing)} fresh-init)")
+        else:
+            print(f"[Complement] WARNING: {ckpt_path} not found — training from scratch")
+
+    # Phase 2: load Phase 1 checkpoint, activate DeleteGate, freeze EmbAligner.
+    # Phase-1 final ckpt is compact_2bit (no 'model_state_dict'); intermediate
+    # bf16 ckpts have it. Handle both.
     if phase == 2 and phase1_ckpt:
         print(f"[Phase 2] Loading Phase 1 checkpoint: {phase1_ckpt}")
         ckpt = torch.load(phase1_ckpt, map_location='cpu', weights_only=False)
-        model.load_state_dict(ckpt['model_state_dict'], strict=False)
-        if hasattr(model, 'delete_gate'):
-            model.delete_gate.set_elimination_rate(
+        fmt = ckpt.get('format', 'bf16')
+        if fmt == 'compact_2bit':
+            p1_state = unpack_compact_state(ckpt['compact'])
+        else:
+            p1_state = ckpt['model_state_dict']
+        target = model.module if hasattr(model, 'module') else model
+        target.load_state_dict(p1_state, strict=False)
+        if hasattr(target, 'delete_gate'):
+            target.delete_gate.set_elimination_rate(
                 config.get('target_elimination', 0.4)
             )
-        if hasattr(model, 'embedding_aligner'):
-            for p in model.embedding_aligner.parameters():
+        if hasattr(target, 'embedding_aligner'):
+            for p in target.embedding_aligner.parameters():
                 p.requires_grad = False
-        print("[Phase 2] DeleteGate active, EmbAligner frozen")
+        print(f"[Phase 2] DeleteGate active, EmbAligner frozen (format={fmt})")
 
     if n_gpus > 1:
         model = torch.nn.DataParallel(model)
@@ -831,19 +920,31 @@ def train_run(run_name: str, dry_run: bool = False,
         drop_last=False,
     )
 
+    # Param-group routing for AdamW weight decay:
+    #   bitlinear: ternary projections inside mixers/FFN/local_decoder attn+ffn
+    #              and the LocalByteDecoder global lift (h_proj).
+    #   heads:     final byte/BPE prediction projections — both the standalone
+    #              AblationByte/BPEHead under `heads.*` and LocalByteDecoder's
+    #              `out_proj` (functionally a head).
+    #   other:     embeddings, RMSNorm, scales, FPResidual U/V — no decay.
+    BITLINEAR_KEYS = (
+        'forget_proj', 'cand_proj', 'output_proj',
+        'gate_proj', 'up_proj', 'down_proj',
+        'q_proj', 'k_proj', 'v_proj', 'o_proj',
+        # LocalByteDecoder internals (not matched by the *_proj names above)
+        'local_decoder.h_proj', 'local_decoder.ffn_gate',
+        'local_decoder.ffn_up', 'local_decoder.ffn_down',
+    )
     bitlinear_params = []
     head_params = []
     other_params = []
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if 'weight' in name and any(
-            k in name for k in ['forget_proj', 'cand_proj', 'output_proj',
-                                 'gate_proj', 'up_proj', 'down_proj',
-                                 'q_proj', 'k_proj', 'v_proj', 'o_proj']
-        ):
+        if 'weight' in name and any(k in name for k in BITLINEAR_KEYS):
             bitlinear_params.append(p)
-        elif 'heads.' in name and 'proj.weight' in name:
+        elif (('heads.' in name and 'proj.weight' in name)
+              or 'local_decoder.out_proj.weight' in name):
             head_params.append(p)
         else:
             other_params.append(p)
@@ -858,11 +959,19 @@ def train_run(run_name: str, dry_run: bool = False,
     scaler = torch.amp.GradScaler() if use_amp else None
 
     # torch.compile gives 10-20% throughput on T4 for 50M models. Not compatible
-    # with DataParallel — skip when multi-GPU.
+    # with DataParallel — skip when multi-GPU. MLGRU runs use a Python loop
+    # over S=5000 timesteps, which is hostile to CUDA Graphs ("reduce-overhead")
+    # — fall back to mode="default" for those, keep "reduce-overhead" for the
+    # transformer runs where the graph is static.
     if device.type == 'cuda' and not dry_run and n_gpus <= 1:
+        compile_mode = (
+            "reduce-overhead"
+            if config.get('token_mixer', 'mlgru') == 'transformer'
+            else "default"
+        )
         try:
-            model = torch.compile(model, mode="reduce-overhead")
-            print("[Opt] torch.compile enabled for training")
+            model = torch.compile(model, mode=compile_mode)
+            print(f"[Opt] torch.compile enabled (mode={compile_mode})")
         except Exception as e:
             print(f"[Opt] torch.compile failed ({e}), using eager mode")
 
@@ -1019,13 +1128,320 @@ def train_run(run_name: str, dry_run: bool = False,
 
 
 # =============================================================================
+# 6.5. PyTorch inference (all ablations: byte, byte_dynamic, bpe)
+# =============================================================================
+# Loads a checkpoint saved by `save_ablation_checkpoint` (either bf16 resume
+# or final compact 2-bit format) and generates autoregressively. Three paths,
+# selected by config['tokenization']:
+#
+#   byte / byte_dynamic + LocalByteDecoder:
+#       prompt bytes → P-byte patches → global stack (carry MLGRU state) →
+#       LocalByteDecoder produces P bytes per patch (intra-patch AR).
+#   byte / byte_dynamic + 4 independent heads (no LocalDecoder):
+#       same global stack, but each new patch's 4 bytes are sampled
+#       independently from the 4 heads (no intra-patch chain).
+#   bpe:
+#       Qwen2.5-3B tokenizer (vocab clamped to bpe_vocab_size, matching
+#       training). One token per step. MLGRU runs carry state; transformer
+#       runs re-forward the trailing window (sliding-window attn, no KV cache).
+#
+# The C/C++ kernels in inference/ are NOT used here — pure PyTorch.
+
+def load_ablation_checkpoint(ckpt_path: str) -> tuple[dict, dict]:
+    """Return (state_dict_fp32, config) from a bf16 or compact_2bit checkpoint."""
+    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+    config = ckpt.get('config')
+    if config is None:
+        raise ValueError(f"Checkpoint {ckpt_path} has no 'config' field")
+
+    fmt = ckpt.get('format', 'bf16')
+    if fmt == 'compact_2bit':
+        state = unpack_compact_state(ckpt['compact'])
+    else:
+        state = {
+            k: (v.to(torch.float32) if torch.is_tensor(v) and v.is_floating_point() else v)
+            for k, v in ckpt['model_state_dict'].items()
+        }
+    return state, config
+
+
+@torch.no_grad()
+def _global_pass(
+    model: 'AblationModel',
+    patches: Tensor,
+    hidden_states: list,
+    elimination_rate: float,
+) -> tuple[Tensor, list]:
+    """Embedding → blocks (carry MLGRU state) → optional DeleteGate → final norm.
+
+    Returns (h_post_norm [B, S, d_model], new_hidden_states).
+    """
+    h = model.embedding(patches)
+    new_states: list = []
+    for i, block in enumerate(model.blocks):
+        h, h_new = block(h, hidden_states[i])
+        new_states.append(h_new)
+
+        if (model.use_delete_gate
+                and i == model.delete_gate_pos
+                and elimination_rate > 0.0):
+            scores = model.delete_gate.scorer(h).squeeze(-1)
+            mask = torch.sigmoid(scores / model.delete_gate.temperature)
+            h = h * mask.unsqueeze(-1)
+
+    return model.norm(h), new_states
+
+
+def _sample_logits(
+    logits: Tensor,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+) -> int:
+    """Sample one byte from a [256] logits tensor. Greedy when temperature<=0."""
+    if temperature <= 0.0:
+        return int(logits.argmax().item())
+
+    logits = logits.float() / temperature
+    if top_k > 0:
+        kth = torch.topk(logits, k=min(top_k, logits.numel())).values[-1]
+        logits = torch.where(logits < kth, torch.full_like(logits, -1e30), logits)
+
+    probs = F.softmax(logits, dim=-1)
+
+    if 0.0 < top_p < 1.0:
+        sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+        cum = sorted_probs.cumsum(dim=-1)
+        cutoff = (cum > top_p).nonzero()
+        keep = (cutoff[0, 0].item() + 1) if cutoff.numel() > 0 else sorted_probs.numel()
+        kept_idx = sorted_idx[:keep]
+        kept_probs = sorted_probs[:keep]
+        kept_probs = kept_probs / kept_probs.sum()
+        choice = torch.multinomial(kept_probs, num_samples=1).item()
+        return int(kept_idx[choice].item())
+
+    return int(torch.multinomial(probs, num_samples=1).item())
+
+
+@torch.no_grad()
+def _generate_byte(
+    model: 'AblationModel',
+    prompt_bytes: bytes,
+    max_new: int,
+    config: dict,
+    device: torch.device,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    elimination_rate: float,
+) -> bytes:
+    """Byte / byte_dynamic generation, P bytes per global step.
+
+    Uses LocalByteDecoder if present (autoregressive intra-patch); otherwise
+    falls back to the 4 independent byte heads.
+    """
+    P = int(config.get('patch_size', 4))
+    has_local = getattr(model, 'use_local_decoder', False)
+
+    pad = (P - (len(prompt_bytes) % P)) % P
+    padded = prompt_bytes + b'\x00' * pad
+    if not padded:
+        padded = b'\x00' * P
+    arr = torch.frombuffer(bytearray(padded), dtype=torch.uint8).long()
+    patches = arr.reshape(1, -1, P).to(device)
+
+    hidden_states: list = [None] * len(model.blocks)
+    h_post, hidden_states = _global_pass(
+        model, patches, hidden_states, elimination_rate
+    )
+    h_last = h_post[:, -1:, :]
+
+    out = bytearray()
+    while len(out) < max_new:
+        new_patch = torch.zeros(1, 1, P, dtype=torch.long, device=device)
+        if has_local:
+            for k in range(P):
+                logits_tup = model.local_decoder(h_last, new_patch)
+                b = _sample_logits(logits_tup[k][0, 0], temperature, top_k, top_p)
+                new_patch[0, 0, k] = b
+                out.append(b)
+                if len(out) >= max_new:
+                    break
+        else:
+            for k, head in enumerate(model.heads):
+                logits_k = head(h_last)[0, 0]
+                b = _sample_logits(logits_k, temperature, top_k, top_p)
+                new_patch[0, 0, k] = b
+                out.append(b)
+                if len(out) >= max_new:
+                    break
+        if len(out) >= max_new:
+            break
+
+        h_post, hidden_states = _global_pass(
+            model, new_patch, hidden_states, elimination_rate
+        )
+        h_last = h_post[:, -1:, :]
+
+    return bytes(out[:max_new])
+
+
+_BPE_TOKENIZER = None
+
+def _get_qwen_tokenizer():
+    """Lazy-load Qwen2.5-3B tokenizer (matches training)."""
+    global _BPE_TOKENIZER
+    if _BPE_TOKENIZER is None:
+        from transformers import AutoTokenizer
+        _BPE_TOKENIZER = AutoTokenizer.from_pretrained(
+            'Qwen/Qwen2.5-3B', trust_remote_code=True
+        )
+    return _BPE_TOKENIZER
+
+
+@torch.no_grad()
+def _generate_bpe(
+    model: 'AblationModel',
+    prompt: str,
+    max_new: int,
+    config: dict,
+    device: torch.device,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    elimination_rate: float,
+) -> str:
+    """BPE generation — Qwen2.5-3B tokenizer, one token per step.
+
+    MLGRU runs carry per-layer recurrent state (incremental forward of the
+    last token only). Transformer runs re-forward the full sequence each
+    step (sliding-window attention bounds the cost).
+    """
+    tok = _get_qwen_tokenizer()
+    vocab_cap = int(config.get('bpe_vocab_size', 152064))
+    is_mlgru = config.get('token_mixer', 'mlgru') == 'mlgru'
+
+    enc = tok.encode(prompt, return_tensors='pt').to(device)  # [1, S]
+    enc = torch.where(enc < vocab_cap, enc, torch.zeros_like(enc))
+    generated = enc.clone()
+
+    hidden_states: list = [None] * len(model.blocks)
+    if is_mlgru:
+        h_post, hidden_states = _global_pass(
+            model, generated, hidden_states, elimination_rate
+        )
+
+    for _ in range(max_new):
+        if is_mlgru:
+            last_tok = generated[:, -1:]
+            h_post, hidden_states = _global_pass(
+                model, last_tok, hidden_states, elimination_rate
+            )
+            logits = model.heads[0](h_post)[0, -1]
+        else:
+            window = config.get('window_size', 512)
+            ctx = generated[:, -window:] if generated.shape[1] > window else generated
+            h_post, _ = _global_pass(model, ctx, hidden_states, elimination_rate)
+            logits = model.heads[0](h_post)[0, -1]
+
+        if logits.shape[-1] > vocab_cap:
+            logits = logits[..., :vocab_cap]
+
+        nxt = _sample_logits(logits, temperature, top_k, top_p)
+        generated = torch.cat(
+            [generated, torch.tensor([[nxt]], dtype=torch.long, device=device)],
+            dim=1,
+        )
+
+    return tok.decode(generated[0].tolist(), skip_special_tokens=True)
+
+
+@torch.no_grad()
+def generate(
+    model: 'AblationModel',
+    prompt: str,
+    max_new: int,
+    config: dict,
+    device: torch.device,
+    temperature: float = 1.0,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    elimination_rate: float = 0.0,
+) -> str:
+    """Dispatch to the right generation path based on config['tokenization'].
+
+    `max_new` counts BYTES for byte/byte_dynamic runs and TOKENS for bpe.
+    Returns the full decoded text (prompt + continuation).
+    """
+    model.eval()
+    tok = config.get('tokenization', 'byte')
+
+    if tok in ('byte', 'byte_dynamic'):
+        prompt_bytes = prompt.encode('utf-8')
+        out_bytes = _generate_byte(
+            model, prompt_bytes, max_new, config, device,
+            temperature, top_k, top_p, elimination_rate,
+        )
+        return (prompt_bytes + out_bytes).decode('utf-8', errors='replace')
+
+    if tok == 'bpe':
+        return _generate_bpe(
+            model, prompt, max_new, config, device,
+            temperature, top_k, top_p, elimination_rate,
+        )
+
+    raise ValueError(f"Unknown tokenization: {tok!r}")
+
+
+def infer_run(
+    ckpt_path: str,
+    prompt: str,
+    max_new_bytes: int = 256,
+    temperature: float = 0.8,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    elimination_rate: float = 0.0,
+    device: str | None = None,
+) -> str:
+    """Top-level entry: load ckpt, build model, generate, return decoded text.
+
+    `max_new_bytes` counts bytes for byte runs and tokens for BPE runs.
+    """
+    state, config = load_ablation_checkpoint(ckpt_path)
+
+    dev = torch.device(
+        device if device else ('cuda:0' if torch.cuda.is_available() else 'cpu')
+    )
+
+    config['use_gradient_checkpointing'] = False
+    model = build_ablation_model(config)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing:
+        print(f"[Infer] Missing keys: {len(missing)} (e.g. {missing[:3]})")
+    if unexpected:
+        print(f"[Infer] Unexpected keys: {len(unexpected)} (e.g. {unexpected[:3]})")
+    model = model.to(dev).eval()
+
+    print(f"[Infer] device={dev} run={config.get('name', '?')} "
+          f"tok={config.get('tokenization')} mixer={config.get('token_mixer')} "
+          f"T={temperature} top_k={top_k} top_p={top_p} elim={elimination_rate}")
+
+    return generate(
+        model, prompt, max_new_bytes, config, dev,
+        temperature=temperature, top_k=top_k, top_p=top_p,
+        elimination_rate=elimination_rate,
+    )
+
+
+# =============================================================================
 # 7. Lightning Studio orchestration — multi-GPU group runner
 # =============================================================================
 #
 # PARALLEL_GROUPS: each sublist is a *group* whose runs execute concurrently
 # (one process per GPU). Groups are processed in order. Runs with DeleteGate
-# (run_07, run_09) chain Phase 1 → Phase 2 in the same GPU slot. run_15 needs
-# to come after run_13 because it warm-starts from run_13's checkpoint.
+# (TWO_PHASE_RUNS, derived from use_delete_gate) chain Phase 1 → Phase 2 in
+# the same GPU slot. run_15 needs to come after run_13 because it warm-starts
+# from run_13's checkpoint via complement_from.
 
 PARALLEL_GROUPS: list[list[str]] = [
     ["run_01", "run_02", "run_03", "run_04"],
@@ -1035,7 +1451,13 @@ PARALLEL_GROUPS: list[list[str]] = [
     ["run_15"],
 ]
 
-TWO_PHASE_RUNS = {"run_07", "run_09"}
+# Any run with use_delete_gate=True needs Phase 2 to actually train the gate;
+# Phase 1 alone instantiates DeleteGate but never activates it (forward gates
+# on training_phase==2). Derive from configs so this stays in sync.
+TWO_PHASE_RUNS = {
+    name for name, cfg in ALL_RUN_CONFIGS.items()
+    if cfg.get('use_delete_gate', False)
+}
 
 
 def install_requirements() -> None:
@@ -1289,6 +1711,35 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
+    # Dispatch on the two top-of-file bools — exactly one must be True.
+    if TRAIN and INFER:
+        raise SystemExit(
+            "Both TRAIN and INFER are True. Set exactly one (top of file)."
+        )
+    if not TRAIN and not INFER:
+        raise SystemExit(
+            "Neither TRAIN nor INFER is True. Set exactly one (top of file)."
+        )
+
+    if INFER:
+        cfg = INFER_CONFIG
+        if not cfg.get('ckpt'):
+            raise SystemExit("INFER_CONFIG['ckpt'] is empty — set the checkpoint path.")
+        text = infer_run(
+            ckpt_path=cfg['ckpt'],
+            prompt=cfg.get('prompt', ''),
+            max_new_bytes=cfg.get('max_new_bytes', 256),
+            temperature=cfg.get('temperature', 0.8),
+            top_k=cfg.get('top_k', 0),
+            top_p=cfg.get('top_p', 0.0),
+            elimination_rate=cfg.get('elimination_rate', 0.0),
+            device=cfg.get('device'),
+        )
+        print("\n----- generated -----")
+        print(text)
+        sys.exit(0)
+
+    # TRAIN mode — existing CLI behaviour (single run or orchestration).
     args = parse_args()
 
     if args.orchestrate:

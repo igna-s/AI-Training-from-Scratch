@@ -1,33 +1,34 @@
 """
 models/ablation_models — Arquitecturas de los runs de ablación de CPU-1.
 
-Cada módulo define la config exacta y una función build() que devuelve
-el AblationModel correspondiente.
+Construye el AblationModel correspondiente a cualquier run definido en
+train_ablation.RUN_CONFIGS / SMALL_RUN_CONFIGS.
 
 Runs 50M (progresivos):
     run_01  Transformer + BPE + FP16            ← baseline absoluto
     run_02  Transformer + Byte + FP16
-    run_03  MLGRU + BPE + FP16
-    run_04  MLGRU + Byte + FP16
-    run_05  MLGRU + Byte + Ternary
-    run_06  MLGRU + Byte + Ternary + FPResidual ← CPU-1 core  ⭐
-    run_07  CPU-1 core + Bolmo
-    run_08  CPU-1 core + DeleteGate
-    run_09  Folded Transformer + Byte + Ternary
-    run_10  CPU-1 COMPLETE (Bolmo + DeleteGate) ← propuesto    ⭐
-    run_11  CPU-1 COMPLETE + PFNet              ← extra
+    run_03  MLGRU + Byte + FP16
+    run_04  MLGRU + Byte + Ternary
+    run_05  MLGRU + Byte + Ternary + FPResidual ← CPU-1 core  ⭐
+    run_06  CPU-1 core + Bolmo
+    run_07  CPU-1 core + DeleteGate
+    run_08  Folded Transformer + Byte + Ternary
+    run_09  CPU-1 COMPLETE (Bolmo + DeleteGate) ← propuesto    ⭐
+    run_10  CPU-1 COMPLETE + PFNet
+    run_11  CPU-1 COMPLETE + per-channel decay
+    run_12  CPU-1 COMPLETE + state reset
 
 Runs 10M (scaling check):
-    small_01  CPU-1 COMPLETE + BPE 4K
-    small_02  CPU-1 COMPLETE + byte             ← propuesto small ⭐
-    small_03  CPU-1 COMPLETE + complement (BPE→byte)
-    small_04  CPU-1 COMPLETE + raw bytes (sin teacher)
+    run_13  CPU-1 COMPLETE + BPE 4K
+    run_14  CPU-1 COMPLETE + byte               ← propuesto small ⭐
+    run_15  CPU-1 COMPLETE + complement (BPE→byte, warm-start desde run_13)
+    run_16  CPU-1 COMPLETE + raw bytes (sin teacher)
 
 Uso:
     from models.ablation_models import build_run
 
-    model = build_run("run_06")   # CPU-1 core
-    model = build_run("run_10")   # CPU-1 COMPLETE
+    model = build_run("run_05")   # CPU-1 core
+    model = build_run("run_09")   # CPU-1 COMPLETE
 """
 
 import sys
