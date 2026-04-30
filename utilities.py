@@ -45,6 +45,24 @@ VOCAB_SIZE = 256
 PATCH_SIZE = 4
 
 
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    """Strip DataParallel and torch.compile wrappers so state_dict keys are clean.
+
+    `torch.compile` exposes the inner module as `_orig_mod`; `DataParallel` as
+    `module`. Wrapped state_dicts carry a `_orig_mod.` prefix that silently
+    breaks load_state_dict(strict=False) — a Phase-2 ckpt saved from a compiled
+    model would load zero keys. Always unwrap before serializing or measuring.
+    """
+    seen = set()
+    while id(model) not in seen:
+        seen.add(id(model))
+        if hasattr(model, '_orig_mod'):
+            model = model._orig_mod
+        elif hasattr(model, 'module') and isinstance(model.module, nn.Module):
+            model = model.module
+    return model
+
+
 # =============================================================================
 # 2. Quantization primitives
 # =============================================================================
@@ -63,8 +81,16 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: Tensor) -> Tensor:
-        norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        return x * norm * self.weight
+        # Compute the variance in fp32: with d_model=512 and post-residual
+        # magnitudes that grow with depth, x.pow(2).sum() can overflow fp16
+        # under autocast (>~12 in any channel pushes the sum past 65 504).
+        # Preserve the input dtype on output so downstream layers see what
+        # they expect.
+        dtype = x.dtype
+        x_f32 = x.float()
+        norm = torch.rsqrt(x_f32.pow(2).mean(-1, keepdim=True) + self.eps)
+        out = x_f32 * norm * self.weight.float()
+        return out.to(dtype)
 
 
 class BitLinear(nn.Module):
@@ -656,11 +682,13 @@ class BoundaryPredictor(nn.Module):
     def __init__(self, embed_dim: int = 8, hidden_dim: int = 32):
         super().__init__()
         self.byte_embed = nn.Embedding(256, embed_dim)
+        # Returns LOGITS (no Sigmoid) so downstream BCE can use the
+        # autocast-safe `binary_cross_entropy_with_logits`. A trailing Sigmoid
+        # under fp16 saturates to exact 1.0, then `log(1 - 1.0) = -inf` → NaN.
         self.predictor = nn.Sequential(
             nn.Linear(embed_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),
         )
 
     def forward_train(
@@ -668,13 +696,19 @@ class BoundaryPredictor(nn.Module):
         bytes_seq: Tensor,
         threshold: float = 0.5,
     ) -> Tensor:
+        """Return per-byte boundary LOGITS (shape [B, T]).
+
+        The last byte is forced to be a boundary; we represent that with a
+        large positive logit (sigmoid(10) ≈ 0.99995) so it pairs cleanly with
+        binary_cross_entropy_with_logits at the call site.
+        """
         b_curr = self.byte_embed(bytes_seq[:, :-1].long())
         b_next = self.byte_embed(bytes_seq[:, 1:].long())
         ctx = torch.cat([b_curr, b_next], dim=-1)
-        probs = self.predictor(ctx).squeeze(-1)
-        last = torch.ones(bytes_seq.shape[0], 1,
-                          device=bytes_seq.device, dtype=probs.dtype)
-        return torch.cat([probs, last], dim=1)
+        logits = self.predictor(ctx).squeeze(-1)
+        last = torch.full((bytes_seq.shape[0], 1), 10.0,
+                          device=bytes_seq.device, dtype=logits.dtype)
+        return torch.cat([logits, last], dim=1)
 
     @staticmethod
     def get_natural_boundaries(byte_seq: bytes) -> list[bool]:
@@ -1191,7 +1225,7 @@ def save_checkpoint(
     hf_repo: str = "Cukinator/cpu1-checkpoints",
 ):
     """Save a full resume checkpoint and optionally push to HF Hub."""
-    model_to_save = model.module if hasattr(model, 'module') else model
+    model_to_save = _unwrap_model(model)
     checkpoint = {
         'step': step,
         'model_state_dict': model_to_save.state_dict(),
@@ -1205,6 +1239,7 @@ def save_checkpoint(
         try:
             from huggingface_hub import HfApi
             api = HfApi()
+            api.create_repo(hf_repo, repo_type="model", exist_ok=True)
             api.upload_file(
                 path_or_fileobj=path,
                 path_in_repo=Path(path).name,
@@ -1241,7 +1276,9 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
         else f"checkpoint_{run_name}_step{step}.pt"
     )
 
-    model_to_save = model.module if hasattr(model, 'module') else model
+    # Strip DataParallel + torch.compile wrappers; otherwise state_dict keys
+    # carry an `_orig_mod.` prefix that breaks Phase-2 / complement loads.
+    model_to_save = _unwrap_model(model)
 
     if is_final:
         torch.save({
@@ -1282,6 +1319,7 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
         try:
             from huggingface_hub import HfApi
             api = HfApi()
+            api.create_repo(hub_repo, repo_type="model", exist_ok=True)
             api.upload_file(
                 path_or_fileobj=path,
                 path_in_repo=f"ablation/{path}",
@@ -1599,7 +1637,8 @@ class FineWebStreamingDataset(torch.utils.data.IterableDataset):
             streaming=True,
         )
         worker_seed = self.seed + 1000 * worker_id
-        ds = ds.shuffle(seed=worker_seed, buffer_size=10_000)
+        buf_size = int(os.environ.get('SMOKE_BUFFER_SIZE', '10000'))
+        ds = ds.shuffle(seed=worker_seed, buffer_size=buf_size)
         for i, doc in enumerate(ds):
             if i % num_workers != worker_id:
                 continue
@@ -1756,6 +1795,9 @@ def measure_cpu_throughput(model: nn.Module, config: dict,
     Heavy benchmarks live in `eval/eval_performance.py`; this is the lightweight
     end-of-run number that gets stamped into the metrics JSON.
     """
+    # Unwrap torch.compile / DataParallel before moving to CPU: an
+    # OptimizedModule on CPU re-triggers Dynamo compilation on each forward.
+    model = _unwrap_model(model)
     original_device = next(model.parameters()).device
     model_cpu = model.cpu()
     model_cpu.eval()
@@ -1793,10 +1835,11 @@ def evaluate_run(model: nn.Module, val_ds, config: dict, device) -> dict:
 
     val_loader = DataLoader(val_ds, batch_size=4, shuffle=False)
     tok = config['tokenization']
+    max_batches = int(os.environ.get('SMOKE_MAX_VAL_BATCHES', '100'))
 
     with torch.no_grad():
         for batch in val_loader:
-            if n_batches >= 100:
+            if n_batches >= max_batches:
                 break
 
             if tok in ('byte', 'byte_dynamic'):

@@ -61,6 +61,7 @@ from utilities import (
     save_ablation_checkpoint,
     # Checkpoint codec
     unpack_compact_state,
+    _unwrap_model,
 )
 
 
@@ -702,12 +703,16 @@ class AblationModel(nn.Module):
 
         if self.use_boundary and self.training and self.tokenization == 'byte_dynamic':
             raw_bytes = x.reshape(x.shape[0], -1).long()
-            boundary_probs = self.boundary_predictor.forward_train(raw_bytes)
+            # BoundaryPredictor returns LOGITS so we can use the autocast-safe
+            # `binary_cross_entropy_with_logits`. Plain BCE on a fp16 sigmoid
+            # output saturates to log(0) = -inf → NaN → GradScaler skips every
+            # step and the run silently stalls.
+            boundary_logits = self.boundary_predictor.forward_train(raw_bytes)
             targets = (
                 (raw_bytes == 32) | (raw_bytes == 10) | (raw_bytes >= 192)
             ).float()
-            extra_losses['boundary'] = F.binary_cross_entropy(
-                boundary_probs, targets
+            extra_losses['boundary'] = F.binary_cross_entropy_with_logits(
+                boundary_logits, targets
             )
 
         # Bolmo integrated gating: supervise the embedding's internal scorer
@@ -857,12 +862,22 @@ def train_run(run_name: str, dry_run: bool = False,
                 comp_state = unpack_compact_state(ckpt['compact'])
             else:
                 comp_state = ckpt['model_state_dict']
-            target = model.module if hasattr(model, 'module') else model
+            target = _unwrap_model(model)
             missing, unexpected = target.load_state_dict(comp_state, strict=False)
             transferred = sum(1 for k in comp_state if k not in unexpected)
             print(f"[Complement] Transferred {transferred} keys "
                   f"(skipped {len(unexpected)} incompatible, "
                   f"{len(missing)} fresh-init)")
+            # Sanity check: a corrupt complement (e.g. ckpt with `_orig_mod.`
+            # prefix from a compiled save) would transfer zero keys silently.
+            n_target = sum(1 for _ in target.state_dict())
+            if transferred < max(10, n_target // 4):
+                raise RuntimeError(
+                    f"[Complement] Suspicious load: only {transferred}/{n_target} "
+                    f"keys transferred from {ckpt_path}. Refusing to start "
+                    f"training from near-random weights. Check that the source "
+                    f"checkpoint was unwrapped before save."
+                )
         else:
             print(f"[Complement] WARNING: {ckpt_path} not found — training from scratch")
 
@@ -877,8 +892,22 @@ def train_run(run_name: str, dry_run: bool = False,
             p1_state = unpack_compact_state(ckpt['compact'])
         else:
             p1_state = ckpt['model_state_dict']
-        target = model.module if hasattr(model, 'module') else model
-        target.load_state_dict(p1_state, strict=False)
+        target = _unwrap_model(model)
+        missing, unexpected = target.load_state_dict(p1_state, strict=False)
+        # Phase-1 ckpts saved from a compiled model (without unwrap) end up
+        # with an `_orig_mod.` prefix in every key. strict=False silently
+        # discards them all → Phase-2 trains from random init with the gate
+        # active. Fail loud instead.
+        n_target = sum(1 for _ in target.state_dict())
+        loaded = n_target - len(missing)
+        if loaded < max(10, n_target // 2):
+            raise RuntimeError(
+                f"[Phase 2] Refusing to start: only {loaded}/{n_target} keys "
+                f"loaded from {phase1_ckpt} (missing={len(missing)}, "
+                f"unexpected={len(unexpected)}). Likely the ckpt was saved "
+                f"from a torch.compile-wrapped model without unwrapping; "
+                f"keys carry an `_orig_mod.` prefix."
+            )
         if hasattr(target, 'delete_gate'):
             target.delete_gate.set_elimination_rate(
                 config.get('target_elimination', 0.4)
@@ -907,7 +936,11 @@ def train_run(run_name: str, dry_run: bool = False,
                                    dry_run=dry_run, mount_path=mount_path)
 
     n_workers = 0 if dry_run else 6
+    if (override := os.environ.get('SMOKE_N_WORKERS')) is not None:
+        n_workers = int(override)
     total_batch = config['batch_per_gpu'] * max(n_gpus, 1)
+    if (override := os.environ.get('SMOKE_BATCH_PER_GPU')) is not None:
+        total_batch = int(override) * max(n_gpus, 1)
     is_iterable = isinstance(train_ds, torch.utils.data.IterableDataset)
     train_loader = DataLoader(
         train_ds,
@@ -931,6 +964,8 @@ def train_run(run_name: str, dry_run: bool = False,
         'forget_proj', 'cand_proj', 'output_proj',
         'gate_proj', 'up_proj', 'down_proj',
         'q_proj', 'k_proj', 'v_proj', 'o_proj',
+        # Embedding's BitLinear projection (byte and Bolmo paths)
+        'patch_proj',
         # LocalByteDecoder internals (not matched by the *_proj names above)
         'local_decoder.h_proj', 'local_decoder.ffn_gate',
         'local_decoder.ffn_up', 'local_decoder.ffn_down',
@@ -963,7 +998,8 @@ def train_run(run_name: str, dry_run: bool = False,
     # over S=5000 timesteps, which is hostile to CUDA Graphs ("reduce-overhead")
     # — fall back to mode="default" for those, keep "reduce-overhead" for the
     # transformer runs where the graph is static.
-    if device.type == 'cuda' and not dry_run and n_gpus <= 1:
+    if (device.type == 'cuda' and not dry_run and n_gpus <= 1
+            and os.environ.get('SMOKE_NO_COMPILE') != '1'):
         compile_mode = (
             "reduce-overhead"
             if config.get('token_mixer', 'mlgru') == 'transformer'
@@ -1107,8 +1143,8 @@ def train_run(run_name: str, dry_run: bool = False,
                                              config, optim_step)
                     last_ckpt_time = now
 
-    # Final eval (unwrap DataParallel)
-    model_eval = model.module if hasattr(model, 'module') else model
+    # Final eval (unwrap DataParallel + torch.compile)
+    model_eval = _unwrap_model(model)
     val_metrics = evaluate_run(model_eval, val_ds, config, device)
 
     if not dry_run:
