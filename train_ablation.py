@@ -538,6 +538,22 @@ SMALL_RUN_CONFIGS = {
         'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
         'is_proposed':            True,
     },
+    'run_15': {
+        'name':                   'small_cpu1_byte_hidden',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'use_embedding_alignment': True,
+        'description':            'CPU-1 COMPLETE @ 10M, byte-level. '
+                                  'Same as run_14 but WITH hidden states distillation (EmbeddingAligner). '
+                                  'Does embedding alignment actually help over just logprobs?',
+        'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
+    },
     'run_16': {
         'name':                   'small_cpu1_raw_bytes',
         'token_mixer':            'mlgru',
