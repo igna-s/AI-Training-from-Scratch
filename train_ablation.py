@@ -1223,6 +1223,19 @@ def train_run(run_name: str, dry_run: bool = False,
 
     model.train()
     optim_step = 0
+
+    if not resume_ckpt and not dry_run:
+        run_dir = Path(run_name)
+        if run_dir.exists():
+            step_ckpts = list(run_dir.glob(f"checkpoint_{run_name}_step*.pt"))
+            if step_ckpts:
+                def get_step(p):
+                    try:
+                        return int(p.stem.split('_step')[-1])
+                    except ValueError:
+                        return -1
+                resume_ckpt = str(max(step_ckpts, key=get_step))
+
     if resume_ckpt and Path(resume_ckpt).exists():
         print(f"[Resume] Loading checkpoint from {resume_ckpt}")
         optim_step = load_checkpoint(
