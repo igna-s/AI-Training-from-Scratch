@@ -112,7 +112,7 @@ INFER_CONFIG = {
 #   50M runs (run_01..run_12): HuggingFaceFW/fineweb sample-10BT, streamed and
 #       tokenized on the fly. Mirrors create_dataset.py params (seed=42,
 #       seq_len=5000, patch_size=4, MAX_EXTRACTION_TOKENS=700).
-#   10M runs (run_13..run_15): Cukinator/cpu1-ablation-dataset (~37.5M tokens,
+#   10M runs (run_13/run_14/run_16): Cukinator/cpu1-ablation-dataset (~37.5M tokens,
 #       built by create_dataset.py). Subsets: bpe_tokenized for run_13,
 #       byte_marginalized for run_14/15.
 #   run_16 (10M, "no teacher"): HuggingFaceFW/fineweb directly — same path
@@ -179,6 +179,42 @@ BASE_CONFIG = {
     # so both paths agree. Only effective in runs with use_delete_gate=True.
     'target_elimination':          0.4,
 
+    # ---- Revisión 4 fixes (audit walkthrough §"Cambios aplicados") ---------
+    # MatMul-free LM W_o output projection per layer. ON by default in
+    # ablation runs (closes the audit's #1 gap).  +d_model² params per layer
+    # (~6% of a 50M ablation budget at d=512×12).  Production CPU1Block does
+    # NOT use this flag — its kernel layout is fixed.
+    'mlgru_use_wo':                True,
+    # HGRN2 state expansion factor.  1 = disabled (current capacity), 2 =
+    # doubles hidden state during recurrence (audit-recommended; still fits
+    # the L2 budget at d=512).  Higher values risk L2 spills.
+    'mlgru_state_expansion':       1,
+    # DeleteGate behaviour upgrades — closer to MrT5.
+    'delete_gate_hard':            True,    # STE binary mask in forward
+    'delete_gate_gumbel':          True,    # Gumbel noise during training
+    'delete_gate_merge':           True,    # depthwise-conv neighbour merge
+    'delete_gate_bimodal_lambda':  0.05,
+    # BolmoPatchEmbedding cross-attention heads (0 = legacy gate-only path).
+    'bolmo_cross_attn_heads':      2,
+    # BolmoPatchEmbedding cross-patch window: how many patches each query
+    # attends to (1 = own patch only, 3 = ±1 neighbour = 12 bytes visible).
+    # Approximates BLT variable-length patches via wider fixed attention.
+    'bolmo_cross_patch_window':    3,
+    # When True, the boundary scorer's k=3 conv is left-padded only so it
+    # never sees future bytes — required for strict patch-level causal
+    # streaming inference. Default False keeps existing checkpoints valid.
+    'bolmo_causal_boundary':       False,
+    # When True, the cross-patch attention window covers past patches + own
+    # only (vs. symmetric ±cpw//2). Required alongside bolmo_causal_boundary
+    # for end-to-end causality. Default False matches legacy behaviour.
+    'bolmo_causal_cross_patch':    False,
+    # DeleteGate gather mode: when True, post-gate layers process a compact
+    # [B, K, D] sequence (K = S×(1-rate)) instead of the full S.  Gives
+    # ~20% wall-clock speedup at rate=0.4.  When False, uses mask mode
+    # (forward_train) which keeps shape [B, S, D].  Both produce the same
+    # gradients for the scorer; gather mode additionally reduces MLGRU FLOPs.
+    'use_real_gather':             False,
+
     # Phase-2 (DeleteGate fine-tune) budget as a fraction of the Chinchilla
     # horizon used in Phase-1. 0.5 ≈ half the pre-train length — enough to
     # train the gate without re-paying the full pre-train cost.
@@ -190,27 +226,34 @@ BASE_CONFIG = {
 # 2. Per-run delta configs — 12 progressive 50M runs
 # =============================================================================
 #
-# Story: start from a standard FP16 Transformer baseline and add ONE CPU-1
-# design choice per run until reaching the full architecture.
+# Story: every run on the linear chain adds EXACTLY ONE component vs the
+# previous run, so any Δppl can be attributed to a single design choice.
+# Branches are explicit and labelled with their parent.
 #
-# Progressive chain:
-#   run_01  Transformer + BPE + FP16            (absolute baseline)
-#     ↓ swap tokenizer
-#   run_02  Transformer + Byte + FP16
-#     ↓ swap mixer + keep byte
-#   run_03  MLGRU + Byte + FP16
-#     ↓ quantize
-#   run_04  MLGRU + Byte + Ternary
-#     ↓ correct
-#   run_05  MLGRU + Byte + Ternary + FPRes      ← CPU-1 core
-#     ↓ branch: add components
-#   run_06  CPU-1 core + Bolmo                  (+dynamic byte patches)
-#   run_07  CPU-1 core + DeleteGate             (+state elimination)
-#   run_08  Folded Transformer + Byte + Ternary (alternative: local attn)
-#   run_09  CPU-1 core + Bolmo + DeleteGate     ← CPU-1 COMPLETE ⭐
-#   run_10  CPU-1 COMPLETE + PFNet
-#   run_11  CPU-1 COMPLETE + per-channel decay
-#   run_12  CPU-1 COMPLETE + state reset
+# LINEAR CHAIN (single Δ per arrow):
+#   run_01                    Transformer + BPE + FP16        (absolute baseline)
+#     ↓ +byte tokenization
+#   run_02a_byte_only_heads   Transformer + Byte + 4 heads
+#     ↓ +LocalByteDecoder
+#   run_02                    Transformer + Byte + LBD        (MegaByte head)
+#     ↓ swap mixer to MLGRU
+#   run_03                    MLGRU + Byte + FP16
+#     ↓ +ternary quantization
+#   run_04                    MLGRU + Byte + Ternary
+#     ↓ +FPResidual
+#   run_05                    CPU-1 core (paper-fiel MLGRU)
+#     ↓ +Bolmo (boundary-aware embedding)
+#   run_06                    + Bolmo
+#     ↓ +DeleteGate (MrT5 real gather)
+#   run_07                    CPU-1 COMPLETE ⭐
+#     ↓ +PFNet
+#   run_09                    + PFNet
+#     ↓ +per-channel decay (HGRN2 decay)
+#   run_10                    + decay (chain terminus)
+#
+# BRANCHES (off the linear chain):
+#   run_05b_kernel_strict     ← from run_05  (no W_o — kernel-layout cost)
+#   run_08                    ← from run_05  (alt: folded Transformer mixer)
 
 RUN_CONFIGS = {
     'run_01': {
@@ -225,13 +268,27 @@ RUN_CONFIGS = {
         'description':  'Absolute baseline — FP16 Transformer, BPE tokens (16K vocab), CE-only.',
         'cites':        [],
     },
+    # run_02a isolates byte tokenization alone — uses 4 independent FP16 byte
+    # heads (the MegaByte paper's per-byte logits without local decoder).
+    # run_02 (kept below) layers the LocalByteDecoder on top to measure the
+    # effect of the MegaByte autoregressive intra-patch chain in isolation.
+    'run_02a_byte_only_heads': {
+        'name':         'transformer_byte_fp16_no_lbd',
+        'token_mixer':  'transformer',
+        'tokenization': 'byte',
+        'quantization': 'fp16',
+        'fp_residual':  False,
+        'use_local_decoder': False,
+        'description':  '+Byte patches (no LocalByteDecoder) — FP16 Transformer + 4 independent byte heads. Pure tokenization isolation.',
+        'cites':        ['MegaByte (Yu et al., 2023)'],
+    },
     'run_02': {
         'name':         'transformer_byte_fp16',
         'token_mixer':  'transformer',
         'tokenization': 'byte',
         'quantization': 'fp16',
         'fp_residual':  False,
-        'description':  '+Byte patches — FP16 Transformer with 4-byte patches. Isolates tokenization.',
+        'description':  '+Byte patches + LocalByteDecoder — adds MegaByte intra-patch autoregression on top of run_02a.',
         'cites':        ['MegaByte (Yu et al., 2023)'],
     },
     'run_03': {
@@ -264,59 +321,69 @@ RUN_CONFIGS = {
         ),
         'cites':        ['Slender-Mamba (Yu et al., 2025)', 'BitNet b1.58'],
     },
+    # Kernel-strict MLGRU: same as run_05 BUT without W_o (the 4th matrix the
+    # Zhu 2024 paper specifies that the production C++ kernel cannot afford
+    # because of OMP scheduling). Measures the cost of adopting the kernel
+    # layout in PyTorch ablation. This is the *production-faithful* MLGRU,
+    # NOT the paper-faithful one — run_05 already serves as the paper-faithful
+    # baseline (W_o on, parallel scan on, no extras).
+    'run_05b_kernel_strict': {
+        'name':         'mlgru_kernel_strict',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'mlgru_use_wo':            False,
+        'mlgru_per_channel_decay': False,
+        'mlgru_state_expansion':   1,
+        'state_reset_period':      0,
+        'mlgru_parallel_scan':     True,
+        'description':  (
+            'Kernel-strict MLGRU — run_05 minus W_o, matching the layout the '
+            'production C++ kernel can run. Measures the cost of dropping the '
+            'paper\'s 4th matrix to fit OMP scheduling.'
+        ),
+        'cites':        [
+            'MatMul-free LM (Zhu et al., 2024)',
+            'BitNet b1.58 (Wang et al., 2024)',
+            'Slender-Mamba (Yu et al., 2025)',
+        ],
+    },
     'run_06': {
         'name':         'mlgru_byte_ternary_fpres_bolmo',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
         'quantization': 'ternary',
         'fp_residual':  True,
-        'use_boundary_predictor': True,
+        # Bolmo paper-faithful path: BolmoPatchEmbedding cross-attention +
+        # boundary scorer feeding into the patch encoding (NOT just an
+        # auxiliary BCE on a disconnected scorer).
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
         'description':  (
-            '+Bolmo — dynamic byte patches aligned to word boundaries. '
-            'CPU-1 core + boundary predictor.'
+            '+Bolmo — boundary-aware patch embedding via cross-attention '
+            '(BolmoPatchEmbedding). CPU-1 core + integrated boundary signal.'
         ),
         'cites':        ['BLT (Pagnoni et al., 2024)'],
     },
+    # +DeleteGate — chained from run_06 (Bolmo). Single Δ vs run_06: real
+    # MrT5 gather at layer N//2. This is the new "CPU-1 COMPLETE" identity.
     'run_07': {
-        'name':         'mlgru_byte_ternary_fpres_deletegate',
-        'token_mixer':  'mlgru',
-        'tokenization': 'byte',
-        'quantization': 'ternary',
-        'fp_residual':  True,
-        'use_delete_gate': True,
-        'description':  (
-            '+DeleteGate — MrT5-style state elimination at midpoint (~40%). '
-            'CPU-1 core + delete gate.'
-        ),
-        'cites':        ['MrT5 (Pagliardini et al., 2024)'],
-    },
-    'run_08': {
-        'name':         'folded_transformer_byte_ternary',
-        'token_mixer':  'transformer',
-        'tokenization': 'byte',
-        'quantization': 'ternary',
-        'fp_residual':  False,
-        'window_size':  128,
-        'description':  (
-            'Folded Transformer — ternary sliding-window attention over byte patches. '
-            'O(N·128) vs O(N²). Alternative to MLGRU.'
-        ),
-        'cites':        [
-            'Longformer (Beltagy et al., 2020)',
-            'BitNet b1.58 (Wang et al., 2024)',
-        ],
-    },
-    'run_09': {
         'name':         'cpu1_complete',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
         'quantization': 'ternary',
         'fp_residual':  True,
-        'use_boundary_predictor': True,
-        'use_delete_gate': True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        # Real MrT5 gather: post-gate layers process [B, K, D] with
+        # K = S·(1 - rate), not [B, S, D] with a soft mask. Paper-faithful.
+        'use_real_gather':        True,
         'description':  (
-            'CPU-1 COMPLETE — MLGRU + Bolmo (dynamic byte patches) + ternary + '
-            'FPResidual + DeleteGate. Full proposed architecture.'
+            '+DeleteGate (real gather) — MrT5-style state elimination at '
+            'midpoint (~40%). Layered on run_06 Bolmo. Full proposed '
+            'CPU-1 stack so far ⭐'
         ),
         'cites':        [
             'MatMul-free LM (Zhu et al., 2024)',
@@ -327,18 +394,40 @@ RUN_CONFIGS = {
         ],
         'is_proposed':  True,
     },
-    'run_10': {
+    # Sibling: alternative architecture — folded sliding-window Transformer
+    # instead of MLGRU. Not in the linear chain (different mixer family).
+    'run_08': {
+        'name':         'folded_transformer_byte_ternary',
+        'token_mixer':  'transformer',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  False,
+        'window_size':  128,
+        'description':  (
+            'Folded Transformer — ternary sliding-window attention over byte '
+            'patches. O(N·128) vs O(N²). Alternative to MLGRU; sibling of '
+            'run_05 (no Bolmo / DG / decay layered on top).'
+        ),
+        'cites':        [
+            'Longformer (Beltagy et al., 2020)',
+            'BitNet b1.58 (Wang et al., 2024)',
+        ],
+    },
+    # +PFNet — single Δ vs run_07. Cache-resident nonlinear residual.
+    'run_09': {
         'name':         'cpu1_pfnet',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
         'quantization': 'ternary',
         'fp_residual':  True,
         'pfnet_hidden': 32,
-        'use_boundary_predictor': True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
         'use_delete_gate':        True,
+        'use_real_gather':        True,
         'description':  (
-            'CPU-1 COMPLETE + PFNet (pfnet_hidden=32). '
-            'Cache-resident nonlinear residual — quality gain, zero RAM overhead.'
+            'run_07 + PFNet (pfnet_hidden=32). Cache-resident nonlinear '
+            'residual added per block — quality gain at zero RAM overhead.'
         ),
         'cites':        [
             'MatMul-free LM (Zhu et al., 2024)',
@@ -348,18 +437,24 @@ RUN_CONFIGS = {
             'Slender-Mamba (Yu et al., 2025)',
         ],
     },
-    'run_11': {
+    # +per-channel decay — single Δ vs run_09. HGRN2 decay only (no expansion).
+    'run_10': {
         'name':         'cpu1_decay_learned',
         'token_mixer':  'mlgru',
         'tokenization': 'byte_dynamic',
         'quantization': 'ternary',
         'fp_residual':  True,
-        'use_boundary_predictor': True,
+        'pfnet_hidden': 32,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
         'use_delete_gate':        True,
+        'use_real_gather':        True,
         'mlgru_per_channel_decay': True,
         'description':  (
-            'CPU-1 COMPLETE + per-channel learnable decay in MLGRU (RWKV/HGRN2-style). '
-            'Each hidden dim has its own decay rate — d_model × n_layers scalars total.'
+            'run_09 + per-channel learnable decay in MLGRU (RWKV/HGRN2-style). '
+            'Each hidden dim has its own decay rate — d_model × n_layers '
+            'scalars total. State expansion stays at 1; isolated effect of '
+            'decay alone.'
         ),
         'cites':        [
             'MatMul-free LM (Zhu et al., 2024)',
@@ -369,28 +464,6 @@ RUN_CONFIGS = {
             'RWKV (Peng et al., 2023)',
             'HGRN2 (Qin et al., 2024)',
         ],
-    },
-    'run_12': {
-        'name':         'cpu1_decay_reset',
-        'token_mixer':  'mlgru',
-        'tokenization': 'byte_dynamic',
-        'quantization': 'ternary',
-        'fp_residual':  True,
-        'use_boundary_predictor': True,
-        'use_delete_gate':        True,
-        'state_reset_period': 512,
-        'description':  (
-            'CPU-1 COMPLETE + periodic MLGRU state reset every 512 tokens (Stuffed Mamba). '
-            'Zero extra parameters — pure structural forgetting heuristic.'
-        ),
-        'cites':        [
-            'MatMul-free LM (Zhu et al., 2024)',
-            'BitNet b1.58 (Wang et al., 2024)',
-            'BLT (Pagnoni et al., 2024)',
-            'MrT5 (Pagliardini et al., 2024)',
-            'Stuffed Mamba (anonymous, 2024)',
-        ],
-    },
 }
 
 
@@ -415,13 +488,22 @@ SMALL_BASE_CONFIG = {
     'head_dim':     40,
     'window_size':  256,
 
-    'total_steps':  2500,
-    'warmup_steps': 250,
+    # Fixed budget: Cukinator has ~37.5M tokens → ~312 steps/epoch.
+    # 1000 steps = ~3.2 epochs. NOT Chinchilla-scaled so the comparison
+    # between Cukinator (teacher) and FineWeb (CE-only) is compute-fair.
+    'chinchilla':       False,
+    'total_steps':      1000,
+    'warmup_steps':     100,
+    'save_every_steps': 200,
 
-    # 10M runs use the pre-processed Cukinator dataset; ~37.5M tokens is enough
-    # at 10M × 20 = 200M target tokens (with ~5× cycling). run_16 overrides
+    # 10M runs use the pre-processed Cukinator dataset; run_16 overrides
     # this back to FineWeb because its question is "no teacher".
     'dataset_repo': 'Cukinator/cpu1-ablation-dataset',
+
+    # The Cukinator dataset ships Qwen2.5-3B teacher logprobs + hidden states.
+    # Override BASE_CONFIG's 'ce_only' so runs 13-14 actually distill from them.
+    # run_16 overrides this back to 'ce_only' (its question is "no teacher").
+    'training_signal': 'distillation',
 }
 
 SMALL_RUN_CONFIGS = {
@@ -451,19 +533,6 @@ SMALL_RUN_CONFIGS = {
         'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
         'is_proposed':            True,
     },
-    'run_15': {
-        'name':                   'small_cpu1_complement',
-        'token_mixer':            'mlgru',
-        'tokenization':           'byte_dynamic',
-        'quantization':           'ternary',
-        'fp_residual':            True,
-        'use_boundary_predictor': True,
-        'use_delete_gate':        True,
-        'complement_from':        'run_13',
-        'description':            'CPU-1 COMPLETE @ 10M, complement: BPE warm-start (run_13) '
-                                  '→ byte finetune.',
-        'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
-    },
     'run_16': {
         'name':                   'small_cpu1_raw_bytes',
         'token_mixer':            'mlgru',
@@ -474,6 +543,7 @@ SMALL_RUN_CONFIGS = {
         'use_delete_gate':        True,
         'raw_bytes_only':         True,
         'dataset_repo':           'HuggingFaceFW/fineweb',
+        'training_signal':        'ce_only',
         'description':            'CPU-1 COMPLETE @ 10M, raw bytes from scratch, zero teacher. '
                                   'Do Qwen logprobs in run_14 actually help vs pure CE?',
         'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
@@ -537,6 +607,24 @@ def chinchilla_warmup(total_steps: int, ratio: float = 0.05) -> int:
 # 5. Unified ablation model
 # =============================================================================
 
+def _gather_strides(keep_idx: Tensor) -> Tensor:
+    """Per-survivor temporal stride after DeleteGate gather.
+
+    Given keep_idx [B, K] of original positions sorted ascending, returns
+    [B, K] where strides[b, k] = keep_idx[b, k] - keep_idx[b, k-1] for k>0
+    and strides[b, 0] = 1 (first surviving token has no predecessor — the
+    decay applied at t=0 acts on the zero-init state). Consumed by
+    AblationMLGRU to raise per-channel decay to the gap power so the
+    effective forget rate matches the original timescale.
+    """
+    B, K = keep_idx.shape
+    if K == 0:
+        return keep_idx.new_ones((B, 0))
+    first = keep_idx.new_ones((B, 1))
+    rest = keep_idx[:, 1:] - keep_idx[:, :-1]
+    return torch.cat([first, rest], dim=1).clamp(min=1)
+
+
 class AblationModel(nn.Module):
     """Configurable model for all ablation runs.
 
@@ -563,22 +651,29 @@ class AblationModel(nn.Module):
 
         self.use_bolmo_gating = config.get('use_bolmo_gating', False)
         if tok in ('byte', 'byte_dynamic'):
-            emb_cls = (
-                BolmoPatchEmbedding if self.use_bolmo_gating
-                else AblationBytePatchEmbedding
-            )
-            self.embedding = emb_cls(
-                d_model,
-                patch_size=config.get('patch_size', 4),
-                use_ternary=use_ternary,
-            )
+            if self.use_bolmo_gating:
+                self.embedding = BolmoPatchEmbedding(
+                    d_model,
+                    patch_size=config.get('patch_size', 4),
+                    use_ternary=use_ternary,
+                    cross_attn_heads=config.get('bolmo_cross_attn_heads', 2),
+                    cross_patch_window=config.get('bolmo_cross_patch_window', 1),
+                    causal_boundary=config.get('bolmo_causal_boundary', False),
+                    causal_cross_patch=config.get('bolmo_causal_cross_patch', False),
+                )
+            else:
+                self.embedding = AblationBytePatchEmbedding(
+                    d_model,
+                    patch_size=config.get('patch_size', 4),
+                    use_ternary=use_ternary,
+                )
         else:
             vocab_size = config.get('bpe_vocab_size', 152064)
             from utilities import make_embedding
             self.embedding = make_embedding(vocab_size, d_model, use_ternary)
 
         self.blocks = nn.ModuleList([
-            AblationBlock(config) for _ in range(n_layers)
+            AblationBlock(config, layer_idx=i) for i in range(n_layers)
         ])
         self.norm = RMSNorm(d_model)
 
@@ -596,6 +691,7 @@ class AblationModel(nn.Module):
                 n_heads=config.get('local_decoder_heads', 4),
                 ff_ratio=config.get('local_decoder_ff_ratio', 4.0),
                 use_ternary=local_ternary,
+                n_layers=config.get('local_decoder_layers', 2),
             )
             self.heads = None
         elif tok in ('byte', 'byte_dynamic'):
@@ -615,6 +711,7 @@ class AblationModel(nn.Module):
 
         self.use_boundary = config.get('use_boundary_predictor', False)
         self.use_delete_gate = config.get('use_delete_gate', False)
+        self.use_real_gather = config.get('use_real_gather', False)
         self.use_emb_align = config.get('use_embedding_alignment', False)
         self.delete_gate_pos = n_layers // 2
 
@@ -622,13 +719,44 @@ class AblationModel(nn.Module):
             self.boundary_predictor = BoundaryPredictor(embed_dim=8, hidden_dim=32)
 
         if self.use_delete_gate:
-            self.delete_gate = DeleteGate(d_model=d_model, elimination_rate=0.0)
+            self.delete_gate = DeleteGate(
+                d_model=d_model,
+                elimination_rate=0.0,
+                bimodal_lambda=config.get('delete_gate_bimodal_lambda', 0.05),
+                hard=config.get('delete_gate_hard', True),
+                gumbel=config.get('delete_gate_gumbel', True),
+                merge=config.get('delete_gate_merge', True),
+            )
 
         if self.use_emb_align:
             self.embedding_aligner = EmbeddingAligner(
                 student_dim=d_model,
                 teacher_dim=config.get('teacher_dim', 128),
             )
+    @torch.no_grad()
+    def _enforce_decay_cummax(self):
+        """HGRN2 cummax: ensure deeper layers always retain >= shallow layers.
+
+        Collects ``log_decay`` from every MLGRU block and clamps so that
+        ``decay[layer_l] >= max(decay[0..l-1])`` per channel.  Operates
+        in softplus-space (``log_decay``): a higher ``log_decay`` means a
+        *smaller* decay (faster forget), so we enforce a running *minimum*
+        to guarantee deeper layers forget no faster than shallow ones.
+        """
+        decays = [
+            b.token_mixer.log_decay
+            for b in self.blocks
+            if hasattr(b, 'token_mixer')
+            and hasattr(b.token_mixer, 'log_decay')
+            and b.token_mixer.log_decay is not None
+        ]
+        if len(decays) < 2:
+            return
+        # Running min in log_decay space = running max in decay space.
+        running_min = decays[0].data.clone()
+        for d in decays[1:]:
+            running_min = torch.min(running_min, d.data)
+            d.data.copy_(torch.min(d.data, running_min))
 
     def forward(
         self,
@@ -649,34 +777,91 @@ class AblationModel(nn.Module):
         extra_losses: dict = {}
         h = x_emb
 
+        # HGRN2 cummax: enforce monotonic decay across layers so deep layers
+        # always retain at least as much context as shallow ones.
+        self._enforce_decay_cummax()
+
+        # Determine if we should use real gather mode for this forward pass.
+        # Conditions: use_real_gather enabled, delete_gate active, Phase 2,
+        # and target_elimination > 0.  Otherwise fall back to mask mode.
+        do_gather = (
+            self.use_delete_gate
+            and self.use_real_gather
+            and training_phase == 2
+            and target_elimination > 0.0
+        )
+        has_gathered = False
+        h_pre_gate = None
+        keep_idx = None
+        strides = None  # gap between consecutive survivors after gather
+
         if self.use_gradient_checkpointing and self.training:
             from torch.utils.checkpoint import checkpoint
             for i, block in enumerate(self.blocks):
-                def _fn(_h, _hs, _b=block):
-                    return _b(_h, _hs)
-                h, h_new = checkpoint(_fn, h, hidden_states[i],
-                                      use_reentrant=False)
-                new_states.append(h_new)
+                if not has_gathered:
+                    # Pre-gate layers (or all layers if no gather)
+                    def _fn(_h, _hs, _b=block):
+                        return _b(_h, _hs)
+                    h, h_new = checkpoint(_fn, h, hidden_states[i],
+                                          use_reentrant=False)
+                    new_states.append(h_new)
 
-                if (self.use_delete_gate
-                        and i == self.delete_gate_pos
-                        and training_phase == 2):
-                    h, _ = self.delete_gate.forward_train(
-                        h, target_rate=target_elimination
-                    )
-                    extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+                    if do_gather and i == self.delete_gate_pos:
+                        h_pre_gate = h                        # save [B, S, D]
+                        h, keep_idx, gate_loss = self.delete_gate.forward_gather(
+                            h, target_rate=target_elimination
+                        )
+                        extra_losses['delete_gate'] = gate_loss
+                        has_gathered = True
+                        strides = _gather_strides(keep_idx)
+                    elif (self.use_delete_gate
+                            and i == self.delete_gate_pos
+                            and training_phase == 2):
+                        # Mask mode fallback (use_real_gather=False)
+                        h, _ = self.delete_gate.forward_train(
+                            h, target_rate=target_elimination
+                        )
+                        extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+                else:
+                    # Post-gate layers: h is [B, K, D] — shorter sequence.
+                    # strides carry gap info so HGRN2 decay compensates.
+                    def _fn_post(_h, _s, _b=block):
+                        return _b(_h, None, strides=_s)
+                    h, h_new = checkpoint(_fn_post, h, strides,
+                                          use_reentrant=False)
+                    new_states.append(h_new)
         else:
             for i, block in enumerate(self.blocks):
-                h, h_new = block(h, hidden_states[i])
-                new_states.append(h_new)
+                if not has_gathered:
+                    # Pre-gate layers (or all layers if no gather)
+                    h, h_new = block(h, hidden_states[i])
+                    new_states.append(h_new)
 
-                if (self.use_delete_gate
-                        and i == self.delete_gate_pos
-                        and training_phase == 2):
-                    h, _ = self.delete_gate.forward_train(
-                        h, target_rate=target_elimination
-                    )
-                    extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+                    if do_gather and i == self.delete_gate_pos:
+                        h_pre_gate = h                        # save [B, S, D]
+                        h, keep_idx, gate_loss = self.delete_gate.forward_gather(
+                            h, target_rate=target_elimination
+                        )
+                        extra_losses['delete_gate'] = gate_loss
+                        has_gathered = True
+                        strides = _gather_strides(keep_idx)
+                    elif (self.use_delete_gate
+                            and i == self.delete_gate_pos
+                            and training_phase == 2):
+                        # Mask mode fallback (use_real_gather=False)
+                        h, _ = self.delete_gate.forward_train(
+                            h, target_rate=target_elimination
+                        )
+                        extra_losses['delete_gate'] = self.delete_gate.last_elimination_loss
+                else:
+                    # Post-gate layers: h is [B, K, D] — shorter sequence.
+                    # strides carry gap info so HGRN2 decay compensates.
+                    h, h_new = block(h, None, strides=strides)
+                    new_states.append(h_new)
+
+        # Scatter back before RMSNorm + decoder: restore [B, S, D]
+        if has_gathered and h_pre_gate is not None:
+            h = self.delete_gate.scatter_back(h, keep_idx, h_pre_gate)
 
         h_pre_norm = h
         h = self.norm(h)
@@ -756,7 +941,7 @@ def build_ablation_model(config: dict) -> AblationModel:
     tok = config.get('tokenization', '')
     if tok in ('byte', 'byte_dynamic') and config.get('use_local_decoder', True):
         extras.append('LocalDecoder')
-    if config.get('use_boundary_predictor'):
+    if config.get('use_bolmo_gating') or config.get('use_boundary_predictor'):
         extras.append('Bolmo')
     if config.get('use_delete_gate'):
         extras.append('DeleteGate')
@@ -847,13 +1032,12 @@ def train_run(run_name: str, dry_run: bool = False,
         config['warmup_steps'] = new_warmup
         config['save_every_steps'] = new_save
 
-    # Complement warm-start: load a sibling run's final checkpoint (e.g. run_15
-    # warm-starts from run_13's BPE checkpoint, then finetunes byte_dynamic).
-    # Architecture differs (embeddings/heads), so strict=False is required;
+    # Complement warm-start: load a sibling run's final checkpoint if configured.
+    # Architecture may differ (embeddings/heads), so strict=False is required;
     # only matching keys (MLGRU blocks, RMSNorm, DeleteGate) transfer.
     complement = config.get('complement_from')
     if phase == 1 and complement and not dry_run:
-        ckpt_path = f"checkpoint_{complement}_final.pt"
+        ckpt_path = str(Path(complement) / f"checkpoint_{complement}_final.pt")
         if Path(ckpt_path).exists():
             print(f"[Complement] Warm-starting from {ckpt_path}")
             ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
@@ -966,9 +1150,10 @@ def train_run(run_name: str, dry_run: bool = False,
         'q_proj', 'k_proj', 'v_proj', 'o_proj',
         # Embedding's BitLinear projection (byte and Bolmo paths)
         'patch_proj',
-        # LocalByteDecoder internals (not matched by the *_proj names above)
-        'local_decoder.h_proj', 'local_decoder.ffn_gate',
-        'local_decoder.ffn_up', 'local_decoder.ffn_down',
+        # LocalByteDecoder internals (not matched by the *_proj names above).
+        # Bare names match both layer-0 flat attrs and `extra_layers.k.*` when
+        # local_decoder_layers > 1 (paper-faithful MegaByte stack).
+        'h_proj', 'ffn_gate', 'ffn_up', 'ffn_down',
     )
     bitlinear_params = []
     head_params = []
@@ -1045,7 +1230,19 @@ def train_run(run_name: str, dry_run: bool = False,
                        if use_amp else contextlib.nullcontext())
             with amp_ctx:
                 training_phase = config.get('_current_phase', 1)
-                target_elim = config.get('target_elimination', 0.0)
+                target_elim_max = config.get('target_elimination', 0.0)
+                # 🥇 Curriculum learning: ramp target_rate gradually from 0
+                # to target_elimination over the first half of Phase 2,
+                # instead of jumping to 0.4 abruptly.  This forces the
+                # DeleteGate to learn selective attenuation progressively.
+                if training_phase == 2 and target_elim_max > 0:
+                    ramp_steps = max(total_steps // 2, 1)
+                    target_elim = min(
+                        target_elim_max,
+                        target_elim_max * optim_step / ramp_steps
+                    )
+                else:
+                    target_elim = target_elim_max
                 fwd_kwargs = (
                     {'byte_targets': targets} if tok in ('byte', 'byte_dynamic') else {}
                 )
@@ -1151,7 +1348,9 @@ def train_run(run_name: str, dry_run: bool = False,
         save_ablation_checkpoint(model, optimizer, run_name, val_metrics,
                                  config, optim_step, is_final=True)
 
-    metrics_path = f"metrics_{run_name}.json"
+    metrics_dir = Path(run_name)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = str(metrics_dir / f"metrics_{run_name}.json")
     with open(metrics_path, 'w') as f:
         json.dump(val_metrics, f, indent=2)
     print(f"\n[Done] Metrics saved to {metrics_path}")
@@ -1476,15 +1675,17 @@ def infer_run(
 # PARALLEL_GROUPS: each sublist is a *group* whose runs execute concurrently
 # (one process per GPU). Groups are processed in order. Runs with DeleteGate
 # (TWO_PHASE_RUNS, derived from use_delete_gate) chain Phase 1 → Phase 2 in
-# the same GPU slot. run_15 needs to come after run_13 because it warm-starts
-# from run_13's checkpoint via complement_from.
+# the same GPU slot.
 
 PARALLEL_GROUPS: list[list[str]] = [
-    ["run_01", "run_02", "run_03", "run_04"],
-    ["run_05", "run_06", "run_07", "run_08"],
-    ["run_09", "run_10", "run_11", "run_12"],
+    # Group 0: FP16 baselines (Transformer + MLGRU, BPE + byte)
+    ["run_01", "run_02a_byte_only_heads", "run_02", "run_03"],
+    # Group 1: Ternary progression (quant → FPRes → kernel-strict → Bolmo)
+    ["run_04", "run_05", "run_05b_kernel_strict", "run_06"],
+    # Group 2: Complete stack + variants (DG Phase 1→2 chained)
+    ["run_07", "run_08", "run_09", "run_10"],
+    # Group 3: 10M scaling runs (fixed 1000 steps, NOT Chinchilla)
     ["run_13", "run_14", "run_16"],
-    ["run_15"],
 ]
 
 # Any run with use_delete_gate=True needs Phase 2 to actually train the gate;
@@ -1594,7 +1795,7 @@ def _maybe_advance_phase(slot: dict) -> bool:
         return True
     if slot["two_phase"] and slot["phase"] == 1 and proc.returncode == 0:
         run_name = slot["name"]
-        ckpt = f"checkpoint_{run_name}_final.pt"
+        ckpt = str(Path(run_name) / f"checkpoint_{run_name}_final.pt")
         if not Path(ckpt).exists():
             slot["log_fp"].write(
                 f"\n[runner] Phase-1 final checkpoint missing: {ckpt} — aborting Phase 2.\n".encode()
