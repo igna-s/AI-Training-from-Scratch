@@ -58,7 +58,7 @@ from utilities import (
     CUDAPrefetcher,
     load_ablation_dataset, compute_loss,
     get_lr_from_config, measure_cpu_throughput, evaluate_run,
-    save_ablation_checkpoint,
+    save_ablation_checkpoint, load_checkpoint,
     # Checkpoint codec
     unpack_compact_state,
     _unwrap_model,
@@ -988,7 +988,8 @@ def train_run(run_name: str, dry_run: bool = False,
               total_steps_override: int | None = None,
               phase: int = 1,
               phase1_ckpt: str | None = None,
-              use_hf_mount: bool = False) -> dict:
+              use_hf_mount: bool = False,
+              resume_ckpt: str | None = None) -> dict:
     """Train one ablation run end-to-end. Returns final validation metrics."""
     config = get_run_config(run_name)
     config['_current_phase'] = phase
@@ -1222,6 +1223,13 @@ def train_run(run_name: str, dry_run: bool = False,
 
     model.train()
     optim_step = 0
+    if resume_ckpt and Path(resume_ckpt).exists():
+        print(f"[Resume] Loading checkpoint from {resume_ckpt}")
+        optim_step = load_checkpoint(
+            resume_ckpt, _unwrap_model(model), optimizer=optimizer, scaler=scaler
+        )
+        print(f"[Resume] Restored state, continuing from step {optim_step}")
+    
     micro_step = 0
     losses = []
     tok = config['tokenization']
@@ -1949,6 +1957,8 @@ def parse_args() -> argparse.Namespace:
                    help="Training phase (1=distillation, 2=delete gate)")
     p.add_argument('--phase1_ckpt', type=str, default=None,
                    help="Path to Phase 1 checkpoint (required for --phase 2)")
+    p.add_argument('--resume_ckpt', type=str, default=None,
+                   help="Path to an intermediate checkpoint to resume training from")
     p.add_argument('--hf-mount', action='store_true',
                    help="Use hf-mount for lazy dataset loading")
 
@@ -2019,6 +2029,7 @@ if __name__ == "__main__":
                         total_steps_override=args.total_steps,
                         phase=args.phase,
                         phase1_ckpt=args.phase1_ckpt,
-                        use_hf_mount=args.hf_mount)
+                        use_hf_mount=args.hf_mount,
+                        resume_ckpt=args.resume_ckpt)
     print(f"\nFinished: {args.run}")
     print(json.dumps(metrics, indent=2))
