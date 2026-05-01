@@ -1810,7 +1810,8 @@ def load_checkpoint(
 
 def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
                              metrics: dict, config: dict, step: int,
-                             is_final: bool = False) -> str:
+                             is_final: bool = False,
+                             scaler=None) -> str:
     """Save ablation checkpoint: BF16 resume during training, 2-bit packed at end.
 
     Checkpoints are saved inside a per-run subdirectory (e.g. run_01/) so that
@@ -1854,7 +1855,7 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
                 if key in group and group[key].is_floating_point():
                     group[key] = group[key].to(torch.bfloat16)
 
-        torch.save({
+        payload = {
             'model_state_dict': model_bf16,
             'optimizer_state_dict': opt_state,
             'metrics': metrics,
@@ -1862,7 +1863,10 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
             'run_name': run_name,
             'config': config,
             'format': 'bf16',
-        }, path)
+        }
+        if scaler is not None:
+            payload['scaler_state_dict'] = scaler.state_dict()
+        torch.save(payload, path)
         print(f"[Checkpoint] Resume checkpoint saved: {path} "
               f"({os.path.getsize(path) / 1e6:.1f} MB)")
 
@@ -2096,7 +2100,8 @@ class ByteLevelDataset(Dataset):
             sample['teacher_mask'] = torch.tensor(
                 row['teacher_mask'], dtype=torch.bool
             )
-        if 'teacher_hidden' in row and row['teacher_hidden'] is not None:
+        if (self.config.get('use_embedding_alignment', False)
+                and 'teacher_hidden' in row and row['teacher_hidden'] is not None):
             teacher_dim = self.config.get('teacher_dim', 128)
             if teacher_dim > 0:
                 sample['teacher_hidden'] = (
@@ -2136,14 +2141,25 @@ class BPEDataset(Dataset):
             'labels':    self._clamp_ids(labels),
         }
         if self.has_teacher and 'teacher_probs_bpe' in row:
-            sample['teacher_probs_bpe'] = (
+            t_probs = (
                 torch.tensor(row['teacher_probs_bpe'], dtype=torch.float32)
                 .reshape(S, K)
             )
-            sample['teacher_ids_bpe'] = (
+            t_ids = (
                 torch.tensor(row['teacher_ids_bpe'], dtype=torch.long)
                 .reshape(S, K)
             )
+            # Drop teacher entries whose token ID falls outside the student vocab.
+            # Without this, scatter_ into logits[..., :vocab_cap] crashes with
+            # an out-of-bounds index when the Qwen teacher uses its full 152K vocab.
+            if self.vocab_cap < 152064:
+                out_of_vocab = t_ids >= self.vocab_cap
+                t_probs = t_probs.clone()
+                t_probs[out_of_vocab] = 0.0
+                t_ids = t_ids.clone()
+                t_ids[out_of_vocab] = 0
+            sample['teacher_probs_bpe'] = t_probs
+            sample['teacher_ids_bpe'] = t_ids
             sample['teacher_mask_bpe'] = torch.tensor(
                 row['teacher_mask_bpe'], dtype=torch.bool
             )
