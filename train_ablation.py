@@ -1709,7 +1709,7 @@ PARALLEL_GROUPS: list[list[str]] = [
     # Group 2: Complete stack + variants (DG Phase 1→2 chained)
     ["run_07", "run_08", "run_09", "run_10"],
     # Group 3: 10M scaling runs (fixed 1000 steps, NOT Chinchilla)
-    ["run_13", "run_14", "run_16"],
+    ["run_13", "run_14", "run_15", "run_16"],
 ]
 
 # Any run with use_delete_gate=True needs Phase 2 to actually train the gate;
