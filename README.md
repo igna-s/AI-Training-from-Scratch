@@ -1025,6 +1025,39 @@ Strong pretrained BPE models (like Qwen2.5-3B) encode rich language knowledge. D
 **Why hf_mount?**
 The ablation dataset is ~5 GB. Downloading it in full on each Kaggle session wastes time and disk quota. `hf_mount` uses NFS to mount the HF bucket and fetches only the bytes actually read — compatible with Kaggle's Linux environment, no root required.
 
+### Deliberate paper deviations — what we don't implement, and why
+
+The Revision-3 architectural audit (`walkthrough.md`) closed every gap between the codebase and the reference papers (BitNet b1.58, MatMul-free LM, MegaByte, BLT/Bolmo, MrT5, HGRN2, Stuffed Mamba) **except** the six items below. Each is missing *on purpose* — a fix that, after measuring its real cost, would either break the C++ kernel, blow the L2 budget on the i7-8750H, or regress quality. Priority order is **(1) inference speed → (2) intelligence → (3) paper fidelity**, and these items are the points where (3) loses to (1) or (2).
+
+**1. `W_o` output projection in production MLGRU (MatMul-free LM, Zhu 2024).**
+The paper specifies four matrices per token mixer (forget, candidate, output, **W_o**). `MatMulFreeTokenMixer` and `decode_layer_fused` in `kernels.cpp` only run three GEMVs; `W_o` is omitted. Adding it would require a fourth GEMV per layer with its own ternary scale, a fourth packed-weight pointer in the kernel ABI, and re-tuning the OMP scheduling that currently fans out 3 GEMVs across cores. The kernel is the speed-critical path (mode-3 throughput is ~620 packets/s) and a 33 % matmul increase would knock it out of its current L2 working set. `AblationMLGRU` *does* support `use_wo=True` for research runs, so the fidelity question is answerable in ablation without paying the production cost.
+
+**2. State expansion N>1 (HGRN2).**
+HGRN2 recommends running the recurrence in an expanded space `N · d_model` (paper picks N=2). At `d_model=1024` that doubles the per-layer hidden state from 4 KB to 8 KB. Across 14 layers the resident state grows from 28 KB to 56 KB. Combined with the 224 KB PFNet weights and the streaming ternary weights, the working set crosses the i7-8750H's 256 KB-per-core L2 ceiling — every token would miss to L3 instead of staying L2-resident, collapsing throughput. `AblationMLGRU` exposes `state_expansion` so the quality delta is measurable in ablation; production stays at N=1.
+
+**3. Dynamic / variable-length patching (BLT, entropy-patching).**
+BLT picks patch boundaries by per-byte entropy and produces variable-length patch sequences. `LocalByteDecoder` hardcodes `P=4` in three places: the `h_proj` weight shape (`d_model → P·d_local`), the position embedding (`[P, d_local]`), and the C++ `local_decode_step` autoregressive loop (`for kb in 0..3`). The dataloader (`bytes_to_patches`) and gradient checkpointing partition also assume fixed `P`. Variable patches would touch every component on the byte→state→byte path. Instead, `BolmoPatchEmbedding` keeps `P=4` and approximates BLT by gating the byte-to-patch fusion with a learned boundary score — captures the supervisory signal at constant shape.
+
+**4. Real token deletion (MrT5, gather + sequence shrinkage).**
+MrT5 deletes positions and physically shrinks the sequence (B, S, D) → (B, S', D) with S' < S. That breaks (a) MLGRU's sequential scan, which is JIT-compiled to a fixed `S` for `torch.compile`; (b) `LocalByteDecoder`'s `[B, S, P]` byte-targets contract; (c) gradient checkpointing's partition into equal-sized blocks; and (d) the Phase-1 → Phase-2 curriculum transition, which loads a Phase-1 checkpoint and continues at the same shape. `DeleteGate` instead emits a near-binary mask, zeroes deleted positions, and merges their residual mass into surviving neighbours via a depthwise conv — same shape, same kernel, and the new bimodal-entropy regulariser (Fix 2 in `walkthrough.md`) keeps the gate from collapsing into uniform dimming.
+
+**5. Parallel prefix scan in MLGRU (associative scan over time).**
+The MLGRU recurrence `h_t = lerp(c_t, h_{t-1}, f_t)` is associative and admits an `O(log S)` prefix scan that would speed up training at long `S`. We keep the sequential scan because it is *incompatible with state reset* (Stuffed Mamba): a hard reset every K tokens breaks associativity at the reset boundary, so a prefix scan would need chunked reduction with per-boundary fix-ups — significant implementation cost. The win is also small for our setup: training is already memory-bandwidth bound on CPU, and inference is strictly autoregressive (one token, one step) where prefix scan does nothing.
+
+**6. Removing SiLU from FPResidual (Slender-Mamba "linear residual" recipe).**
+Slender-Mamba proposes that the FP residual branch be a pure low-rank linear map, no activation. Stripping SiLU collapses `down(silu(up(x)))` into a single rank-`r` linear correction, which is mathematically equivalent to widening the BitLinear's effective rank by `r`. The audit measured this as a quality regression (the nonlinear branch was demonstrably useful) at zero cache or compute saving — the SiLU runs on `[d_ff_local]`, well below the bottleneck. Priority-2 (intelligence) overrides priority-3 (paper fidelity) here.
+
+| Deviation | Paper | Status | Blocked by | Recoverable in ablation? |
+|---|---|:---:|---|:---:|
+| `W_o` output projection | MatMul-free LM | ❌ in prod, ✅ in `AblationMLGRU` | Kernel ABI + L2 budget | ✅ (`use_wo=True`) |
+| State expansion N>1 | HGRN2 | ❌ in prod, ✅ in `AblationMLGRU` | L2 cache (i7-8750H, 256 KB) | ✅ (`state_expansion=2`) |
+| Variable-length patches | BLT | ❌ everywhere | `LocalByteDecoder` + dataloader + kernel C++ all hardcode `P=4` | Partially (Bolmo gate) |
+| Real token deletion | MrT5 | ❌ everywhere | Sequential scan + checkpointing + Phase-1↔Phase-2 transition | Partially (DeleteGate + merge + bimodal) |
+| Parallel scan | MatMul-free LM | ❌ everywhere | State reset breaks associativity; inference is autoregressive | Not necessary |
+| Linear FPResidual (no SiLU) | Slender-Mamba | ❌ everywhere | Empirical quality regression with no cache/compute saving | Not pursued |
+
+The recurring theme: when a paper's recipe was designed for GPU training at scale, blindly porting it to a CPU inference target degrades the very property the paper was optimising. Priority-1 (don't break the kernel, don't blow L2) is non-negotiable on this hardware; everything else is a measured trade-off.
+
 ---
 
 ## Dependencies
@@ -1153,6 +1186,274 @@ python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt
 ```
 
 The expected behaviour is unchanged: `max|forward_logit[k] - step_logit[k]| < 1e-4` for each patch position `k ∈ {0, 1, 2, 3}`, with the true diff typically `< 1e-6`.
+
+---
+
+## Análisis de fidelidad de cada ablation respecto al paper original
+
+Análisis de fidelidad de cada ablation respecto al paper citado, basado en lo que efectivamente implementan `train_ablation.py` + `utilities.py`.
+
+### run_01 — Transformer + BPE + FP16
+**Paper:** ninguno (baseline absoluto)
+**Componentes:** `SlidingWindowAttention` FP16 + `AblationSwiGLU` FP16 + BPE 16K.
+**Fidelidad:** N/A (no replica paper). Nota: usa sliding-window con `window=512`; un baseline Transformer estricto sería full-attention. Se desvía del "transformer puro" pero se etiqueta como baseline interno consistente con el resto del stack.
+
+---
+
+### run_02a — Transformer + Byte + 4 heads independientes
+**Paper:** MEGABYTE (Yu et al., 2023)
+**Componente:** `AblationBytePatchEmbedding` + 4 `AblationByteHead` FP16 sin LocalByteDecoder.
+**Fidelidad:** **Parcial / aislamiento intencional**. MEGABYTE define dos componentes: (a) patch global model y (b) local model autoregresivo intra-patch. Esta corrida **omite el local model** y predice los 4 bytes con cabezas independientes — el propio paper menciona esa variante como ablation (no es la versión completa). Sirve para aislar el costo de tokenización vs. la cadena AR.
+
+---
+
+### run_02 — Transformer + Byte + LocalByteDecoder
+**Paper:** MEGABYTE (Yu et al., 2023)
+**Componente:** `LocalByteDecoder` — global→`P × d_local` projection, byte_embed shifted, pos_embed por byte, attention causal por patch.
+**Fidelidad:** **Alta para la versión 1-layer.** Replica fielmente Listing 1 del paper (h_proj, shift right, pos_embed, attn causal sobre P bytes). **Desviación documentada:** el paper especifica 2–4 capas locales por defecto; la implementación usa `n_layers=1` por defecto (configurable vía `local_decoder_layers > 1` con `extra_layers`), justificado por el constraint del kernel C++.
+
+---
+
+### run_03 — MLGRU + Byte + FP16
+**Papers:** Scalable MatMul-Free LM (Zhu et al., 2024) + MEGABYTE
+**Componente:** `AblationMLGRU` en FP16 (sin ternario).
+**Fidelidad MatMul-Free:** **Alta.** Implementa f, c, g (forget/cand/output gates) con `f·h + (1-f)·c`, scan paralelo Heinsen log-domain (`_parallel_scan`) que es exactamente la forma "parallel scan" prescrita por el paper, y W_o opcional (4ª matriz del paper). **Desviación:** el paper propone también un "ternary GLU channel mixer"; en run_03 el FFN es FP16 (necesario porque la corrida es FP16, pero rompe la propiedad matmul-free completa).
+
+---
+
+### run_04 — MLGRU + Byte + Ternario
+**Papers:** BitNet b1.58 (Wang et al., 2024) + MatMul-Free LM
+**Componente:** `BitLinear` en gates + heads + FFN.
+**Fidelidad BitNet b1.58:** **Alta.** `w_scale = mean(|w|)`, `w_ternary = round(w/scale).clamp(-1,1)`, activaciones INT8 per-token con `amax/127`, STE — coincide con Algorithm 1 del paper. **Desviación menor:** el paper recomienda RMSNorm pre-BitLinear (Fused-BitLinear); la implementación lo aplica solo en `down_norm`, `o_norm`, `wo_norm` (no antes de cada BitLinear individual — los gates de MLGRU reciben input ya normalizado por norm1 del bloque, lo cual cumple).
+
+---
+
+### run_05 — CPU-1 core (FPResidual añadido)
+**Papers:** Slender-Mamba (Yu et al., 2025) + BitNet b1.58
+**Componente:** `FPResidual` — low-rank FP16 (rank=4): `silu(A·x) → B`.
+**Fidelidad Slender-Mamba:** **Baja / interpretación libre.** Slender-Mamba propone explícitamente mantener **componentes específicos** (matriz A de Mamba) en mayor precisión por sensibilidad recurrente; el resto va a 1.58-bit. La implementación aquí es un **residual de baja rango paralelo** (técnica de BitNet/LoRA-like), no una promoción selectiva de componentes sensibles. La cita "Slender-Mamba" describe correctamente la motivación (precisión mixta) pero el mecanismo concreto **no replica** la receta de sensibilidad por componente del paper.
+
+---
+
+### run_05b_kernel_strict — MLGRU sin W_o
+**Papers:** MatMul-Free LM + BitNet b1.58 + Slender-Mamba
+**Componente:** Igual a run_05 pero `mlgru_use_wo=False`.
+**Fidelidad:** **Intencionalmente menos fiel al paper, más fiel al kernel.** El propio comentario lo declara: el paper de Zhu 2024 **incluye W_o**; esta corrida lo elimina por restricciones de scheduling OMP del kernel C++. Mide costo de la divergencia paper↔producción.
+
+---
+
+### run_06 — + Bolmo (cross-attention + boundary scorer)
+**Paper citado:** BLT (Pagnoni et al., 2024) — y por extensión Bolmo
+**Componente:** `BolmoPatchEmbedding` — Conv1d k=3 boundary scorer + cross-attention de cada patch a window de bytes con boundary score como bias aditivo.
+**Fidelidad BLT:** **Baja-Media.** BLT real usa: (1) patches **de longitud variable** determinados por entropía de un LM byte-level pequeño; (2) encoder/decoder local; (3) global model sobre patches variables. La implementación: (1) **patches de tamaño fijo P=4** con una cross-attention que ve ±1 patch (12 bytes) — aproxima la sensibilidad a frontera pero **no produce patches variables**; (2) supervisión heurística (`get_natural_boundaries` por puntuación/UTF-8/runs ≤8 bytes), **no entropía de LM** como BLT. El propio código admite la divergencia ("approximating BLT variable-length patches via wider fixed attention", "audit §Conflicto 11"). Más cercano a "Bolmo-style boundary gating" que a BLT estricto.
+
+---
+
+### run_07 — + DeleteGate (gather real)
+**Papers:** MrT5 (Pagliardini et al., 2024) + MatMul-Free + BitNet + BLT + Slender-Mamba
+**Componente:** `DeleteGate` con `forward_gather` (TopK + sort temporal + scatter_back).
+**Fidelidad MrT5:** **Media-Alta.**
+- ✅ Replica el espíritu: gate produce score, eliminación al ~40%, gather físico que reduce la longitud para capas posteriores, scatter de vuelta.
+- ✅ Gumbel-sigmoid + STE para hard mask {0,1}.
+- ✅ Penalización bimodal (entropía del soft mask) y constraint de tasa.
+- ⚠️ **Desviación:** MrT5 original usa una soft-mask con un **schedule continuo** que evoluciona durante entrenamiento (no TopK estricto + STE). Aquí se hace TopK con K fijo por batch — más simple, menos diferenciable que la formulación MrT5 pura.
+- ⚠️ El `merge_conv` depthwise de "merge deleted into neighbours" es propio (MrT5 usa un esquema de fusión basado en suma ponderada por scores; el conv depthwise es una aproximación parametrizada).
+
+---
+
+### run_08 — Folded Transformer (sliding window)
+**Papers:** Longformer (Beltagy et al., 2020) + BitNet b1.58
+**Componente:** `SlidingWindowAttention` con `window_size=128` ternaria.
+**Fidelidad Longformer:** **Parcial.** Longformer combina tres patrones: (a) sliding window local; (b) **dilated sliding window**; (c) **global attention tokens** en posiciones especiales. La implementación cubre solo (a). Es una "sliding-window attention causal" estándar, no Longformer completo. Más justa la atribución sería "local-window causal attn" genérico.
+
+---
+
+### run_09 — + PFNet
+**Papers:** MatMul-Free + BitNet + BLT + MrT5 + Slender-Mamba
+**Componente:** `PFNet` — RMSNorm → BitLinear(d→32) → SiLU → BitLinear(32→d), residual.
+**Fidelidad:** **N/A** — PFNet **no corresponde a ningún paper citado**; es un módulo propio descrito como "cache-resident nonlinear residual" justificado por footprint L2. Las citas son del stack heredado, no del PFNet en sí.
+
+---
+
+### run_10 — + per-channel decay
+**Papers:** RWKV (Peng et al., 2023) + HGRN2 (Qin et al., 2024) + MatMul-Free + BitNet + BLT + MrT5
+**Componente:** `log_decay = nn.Parameter(state_dim)` con `decay = exp(-softplus(log_decay))`, init jerárquico (capas profundas = decay más alto), aplicado como `f = decay * sigmoid(forget_proj(x))`. Más `cummax` entre capas en `_apply_layer_decay_cummax`.
+**Fidelidad HGRN2:** **Alta para el "decay" pieza.** HGRN2 paper especifica: forget-gate ceiling per-channel + init jerárquico monotónico con la profundidad — ambos están. El **cummax inter-layer** que enforce monotonicidad es exactamente la prescripción HGRN2.
+**Fidelidad RWKV:** **Media.** RWKV usa decay per-channel (time_decay) pero con una formulación distinta (token shift, time-mixing con receptance). Aquí solo se toma la idea del decay per-channel; no hay token-shift ni receptance. La cita es justa solo en sentido amplio.
+
+---
+
+### run_10b_state_expansion — + state expansion N=2
+**Papers:** HGRN2 + MatMul-Free + BitNet + MrT5
+**Componente:** `state_dim = d_model · N`; gates proyectan `d_model → state_dim`; W_o comprime de vuelta a `d_model`.
+**Fidelidad HGRN2:** **Alta.** HGRN2 define exactamente esto: estado en `D_state >> D_model`, up-projection antes de la celda, down-projection después. El ratio 2x está dentro del rango típico del paper (2–4x). Combina además decay per-channel jerárquico → cubre "HGRN2 paper-faithful spec" completo. **Es la corrida con mayor fidelidad a HGRN2** del set.
+
+---
+
+### run_11 — + state reset periódico
+**Papers:** Stuffed Mamba (anonymous, 2024) + MatMul-Free + BitNet + BLT
+**Componente:** `state_reset_period=512` ⇒ en el loop secuencial: `if t % 512 == 0: h = zeros_like(h)`.
+**Fidelidad Stuffed Mamba:** **Baja-Media.** Stuffed Mamba propone tres soluciones: (1) **state reset periódico con sliding-window recurrence**; (2) **state compression** aprendida; (3) **adaptive forgetting** (entrenamiento con longitudes variables). La implementación cubre solo (1) y en su forma más cruda — **hard reset a cero**, no la "sliding-window recurrence" que el paper detalla (donde el estado se reinicia con interpolación o se mantiene una ventana móvil). Es la idea más simple del paper, no la propuesta principal.
+
+---
+
+### run_13/14/16 (small @ 10M)
+**Papers citados:** MatMul-Free + Slender-Mamba + Bolmo + MrT5
+**Fidelidad:** Heredan el stack "CPU-1 COMPLETE" — la fidelidad a cada paper es la misma que en run_07/run_06 con sus respectivas desviaciones. Lo distintivo es la **tokenización** (BPE 4K vs byte_dynamic vs raw bytes) y el **signal de entrenamiento** (distillation Qwen vs CE-only); ninguno de estos tiene fidelidad-a-paper que medir más allá del baseline.
+
+---
+
+### Resumen tabular de fidelidad
+
+| Run | Paper principal | Fidelidad | Desviación clave |
+|---|---|---|---|
+| run_01 | — | N/A | sliding-window en lugar de full-attn |
+| run_02a | MEGABYTE | Parcial intencional | sin LocalByteDecoder |
+| run_02 | MEGABYTE | **Alta** | 1 capa local vs 2-4 del paper |
+| run_03 | MatMul-Free LM | **Alta** | FFN no-ternario (limitación FP16) |
+| run_04 | BitNet b1.58 | **Alta** | RMSNorm parcial vs Fused-BitLinear total |
+| run_05 | Slender-Mamba | **Baja** | FPResidual ≠ promoción selectiva por sensibilidad |
+| run_05b | MatMul-Free LM | Anti-fiel intencional | sin W_o (kernel-strict) |
+| run_06 | BLT | **Baja-Media** | patches fijos + boundary heurístico vs entropía LM |
+| run_07 | MrT5 | **Media-Alta** | TopK+STE en lugar de soft-mask schedule |
+| run_08 | Longformer | **Parcial** | solo local window, sin dilated/global |
+| run_09 | (PFNet propio) | N/A | módulo no corresponde a paper citado |
+| run_10 | HGRN2 (decay) | **Alta** | cummax + init jerárquico fieles |
+| run_10b | HGRN2 (full) | **Alta** ⭐ | state expansion + decay = spec completa |
+| run_11 | Stuffed Mamba | **Baja-Media** | solo hard-reset, no sliding-window recurrence |
+
+**Patrón general:** las ablations más fieles al paper original son las de la familia recurrente cuantizada (BitNet, MatMul-Free, MEGABYTE-local, HGRN2). Las menos fieles son **BLT/Bolmo** (boundary heurístico vs entropía-LM, patches fijos vs variables), **Slender-Mamba** (mecanismo distinto al del paper), **Longformer** (solo 1 de 3 patrones) y **Stuffed Mamba** (solo la solución más simple del paper). MrT5 está en zona intermedia: captura el espíritu pero simplifica la formulación.
+
+---
+
+### Detalle de por qué cada uno cayó a Media/Baja
+
+#### run_05 — Slender-Mamba → **Baja**
+
+**Lo que dice el paper Slender-Mamba:**
+El hallazgo central es un **análisis de sensibilidad por componente**. La matriz A de Mamba (decay del estado SSM) no se puede cuantizar a 1.58-bit porque los errores se acumulan recurrentemente y colapsa el aprendizaje. Por eso prescribe una tabla concreta:
+
+| Componente | Precisión recomendada |
+|---|---|
+| in_proj, gate, D, out_proj | ternario (1.58-bit) |
+| **Matriz A (decay)** | **FP8/FP16** |
+| B, C | INT8 |
+
+El protocolo es: **mantener componentes específicos en mayor precisión** según su sensibilidad recurrente, no agregar un residual aparte.
+
+**Lo que hace `FPResidual`:**
+```python
+self.fp_A = nn.Linear(in_dim, rank, bias=False)   # rank=4
+self.fp_B = nn.Linear(rank, out_dim, bias=False)
+return self.fp_B(F.silu(self.fp_A(x)))
+```
+Es una **rama LoRA-like paralela**: low-rank FP16 sumada al output del BitLinear ternario. Toda la matriz original sigue ternaria; el "fix" es un parche aditivo de baja capacidad.
+
+**Por qué es Baja:**
+1. **Mecanismo distinto:** correction aditiva ≠ promoción de precisión del peso original.
+2. **No respeta sensibilidad por componente:** el FPResidual se aplica uniformemente a `down_proj` del FFN y a la salida del MLGRU, no específicamente al análogo de la matriz A (que sería `forget_proj` / `log_decay`). El equivalente al hallazgo del paper sería mantener `forget_proj` en INT8/FP16 y dejar el resto ternario — eso no se hace.
+3. La cita está justificada en intención (precisión mixta) pero el código está más cerca de **BitNet b1.58 + LoRA** que de Slender-Mamba.
+
+---
+
+#### run_06 — BLT → **Baja-Media**
+
+**Lo que define BLT (Pagnoni et al., 2024):**
+1. **Patches de longitud variable** determinados dinámicamente.
+2. La señal de boundary viene de la **entropía de un LM byte-level pequeño preentrenado** corriendo en paralelo: cuando la entropía supera un threshold → ahí termina un patch.
+3. Encoder local procesa los bytes dentro de cada patch variable; global model procesa la secuencia (más corta) de patches.
+4. Resultado: patches densos en regiones predecibles, cortos en regiones informativas.
+
+**Lo que hace `BolmoPatchEmbedding`:**
+1. **Patches fijos P=4 bytes**, definidos al cargar el dataset, no por el modelo.
+2. Boundary signal = `Conv1d(k=3)` aprendido sobre embeddings de bytes, supervisado contra la heurística `get_natural_boundaries`:
+   ```python
+   is_boundary = (b == 0x20 or b in PUNCT or b >= 0xC0 or prev_is_space)
+   ```
+   — espacios, puntuación, lead-bytes UTF-8, runs ≤8.
+3. El boundary score se usa como **bias aditivo en la cross-attention** dentro del patch (y opcionalmente sobre ±1 patch vecino). El patch sigue siendo de 4 bytes.
+
+**Por qué es Baja-Media:**
+1. **Patches fijos vs variables** — la propiedad central de BLT (compresión adaptativa de la secuencia global) **no existe**: el global model siempre ve `S/4` patches, no menos en regiones predecibles. Esto se debe a constraints aguas abajo (LocalByteDecoder + DataLoader + kernel C++ esperan stride fijo), reconocido en el comentario "approximating BLT variable-length patches via wider fixed attention".
+2. **Boundary heurístico vs entropía-LM** — la supervisión es una regla determinista por bytes, no la salida de un LM. Boundaries en una palabra rara o un número (regiones informativas según BLT) no se detectan; sí se detecta cualquier espacio (regiones predecibles).
+3. Lo que **sí** se rescata: la idea de "boundary-aware patch embedding" (la cross-attention pondera bytes cerca de fronteras), que aproxima el comportamiento sin la mecánica.
+
+Está más cerca del paper "**Bolmo**" (boundary gating sobre embedding) que de BLT estricto — la cita es ambigua porque el código mezcla ambas tradiciones.
+
+---
+
+#### run_07 — MrT5 → **Media-Alta** (la única "alta" parcial de las medias)
+
+**Lo que define MrT5:**
+- Token Deletion Module (TDM) con **soft mask continua** entrenada con un schedule progresivo (la tasa de eliminación crece durante entrenamiento).
+- Diferenciable end-to-end vía Gumbel-Softmax sobre la decisión.
+- Up-sampling al final para restaurar la resolución original con interpolación de las representaciones eliminadas.
+
+**Lo que hace `DeleteGate.forward_gather`:**
+- ✅ Gumbel-sigmoid + STE para `{0,1}` decisivo.
+- ✅ Constraint de tasa `((1-soft_mask).mean() - target_rate)²` + bimodal entropy regulariser.
+- ✅ Gather físico: TopK survivors → `[B, K, D]` post-gate.
+- ⚠️ **TopK con K fijo** (≠ MrT5 que decide token-por-token con soft mask continua). Aquí siempre sobreviven exactamente `S·(1-rate)` tokens por batch.
+- ⚠️ El "up-sampling" de MrT5 (interpolar representaciones eliminadas) se reemplaza por `scatter_back` que **deja las posiciones eliminadas con su representación pre-gate**, sin refinamiento. Más simple, conserva gradiente, pero no es el up-sampling del paper.
+- ⚠️ El "merge" (redistribuir masa eliminada en vecinos) se hace con un **depthwise Conv1d k=3** inicializado a promedio uniforme. MrT5 hace una suma ponderada por scores aprendidos, no un conv depthwise.
+
+**Por qué Media-Alta y no Alta:** captura toda la lógica de eliminación-y-merge, pero las tres aproximaciones (TopK fijo, scatter sin upsampling, merge=conv) son simplificaciones operacionales del mecanismo continuo del paper.
+
+---
+
+#### run_08 — Longformer → **Parcial**
+
+**Lo que define Longformer:**
+Tres patrones de atención **combinados**:
+1. **Sliding window local** (cada token atiende a w/2 vecinos a cada lado).
+2. **Dilated sliding window** en capas superiores (saltos de tamaño d para mayor receptive field).
+3. **Global attention** en tokens especiales (CLS, SEP, query tokens) que atienden a todo y son atendidos por todo.
+
+El paper enfatiza que la combinación es lo que iguala a full-attention en tareas como QA.
+
+**Lo que hace `SlidingWindowAttention`:**
+Solo el patrón (1): banda causal de tamaño `window_size=128`. Sin dilatación, sin tokens globales.
+
+**Por qué es Parcial:** falta 2/3 del mecanismo. Es "sliding-window causal attention" estándar, no Longformer. La cita es generosa.
+
+---
+
+#### run_11 — Stuffed Mamba → **Baja-Media**
+
+**Lo que propone Stuffed Mamba:**
+El paper diagnostica el problema (state saturation) y propone **tres soluciones, en orden de sofisticación**:
+1. **Sliding-window recurrence con state reset** — el reset no es a cero, sino que se mantiene una ventana móvil del estado.
+2. **State compression aprendida** — un módulo aprende a comprimir el estado antiguo antes de incorporar nuevo contexto.
+3. **Adaptive forgetting** — entrenar con secuencias de longitud variable para que el gate aprenda activamente a olvidar.
+
+La propuesta principal del paper son (2) y (3); (1) es la baseline más simple.
+
+**Lo que hace el código:**
+```python
+if reset > 0 and t > 0 and t % reset == 0:
+    h = torch.zeros_like(h)
+```
+— **hard reset a cero cada 512 pasos** dentro del loop secuencial. Cero parámetros adicionales.
+
+**Por qué es Baja-Media:**
+1. Implementa solo la versión **más cruda** de la solución (1): hard reset, no sliding window.
+2. **No implementa** state compression aprendida (2) ni adaptive forgetting (3) — que son las contribuciones principales del paper.
+3. Bonus negativo: el hard reset desactiva el `parallel_scan` y fuerza el loop secuencial — pierde la ganancia algorítmica del MatMul-Free LM. El paper no propone este trade-off.
+
+Es esencialmente "la idea más obvia del paper, sin las contribuciones reales".
+
+---
+
+### Patrón común de las "Bajas"
+
+Las cuatro evaluaciones bajas/medias comparten **el mismo modo de falla**: el código toma la **idea conceptual** del paper pero implementa una versión **simplificada operacionalmente** porque:
+
+- **run_05 (Slender-Mamba):** la promoción selectiva por componente requeriría refactor de la BitLinear para aceptar mask de precisión por matriz → se reemplaza por un residual genérico.
+- **run_06 (BLT):** patches variables romperían LocalByteDecoder + DataLoader + el kernel C++ que asumen stride fijo → se aproxima con cross-attention.
+- **run_08 (Longformer):** dilated + global tokens requerirían tres tipos de máscara y ruteo de tokens especiales → se queda en el patrón más barato.
+- **run_11 (Stuffed Mamba):** state compression aprendida añadiría parámetros y rompería la propiedad "zero extra params" → se queda en el reset trivial.
+
+En todos los casos las desviaciones son **trade-offs explícitos** entre fidelidad al paper y compatibilidad con el resto del stack (kernel C++, ternario, Chinchilla budget). Los comentarios del código las reconocen casi siempre — no son omisiones, son simplificaciones deliberadas.
 
 ---
 

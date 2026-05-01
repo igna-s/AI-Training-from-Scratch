@@ -5,24 +5,23 @@ Construye el AblationModel correspondiente a cualquier run definido en
 train_ablation.RUN_CONFIGS / SMALL_RUN_CONFIGS.
 
 Runs 50M (progresivos):
-    run_01  Transformer + BPE + FP16            ← baseline absoluto
-    run_02  Transformer + Byte + FP16
-    run_03  MLGRU + Byte + FP16
-    run_04  MLGRU + Byte + Ternary
-    run_05  MLGRU + Byte + Ternary + FPResidual ← CPU-1 core  ⭐
-    run_06  CPU-1 core + Bolmo
-    run_07  CPU-1 core + DeleteGate
-    run_08  Folded Transformer + Byte + Ternary
-    run_09  CPU-1 COMPLETE (Bolmo + DeleteGate) ← propuesto    ⭐
-    run_10  CPU-1 COMPLETE + PFNet
-    run_11  CPU-1 COMPLETE + per-channel decay
-    run_12  CPU-1 COMPLETE + state reset
+    run_01   Transformer + BPE + FP16            ← baseline absoluto
+    run_02a  Transformer + Byte + 4 heads
+    run_02   Transformer + Byte + LBD (MegaByte)
+    run_03   MLGRU + Byte + FP16
+    run_04   MLGRU + Byte + Ternary
+    run_05   MLGRU + Byte + Ternary + FPResidual ← CPU-1 core
+    run_05b  Kernel-strict (−W_o)                ← branch de run_05
+    run_06   CPU-1 core + Bolmo
+    run_07   CPU-1 COMPLETE (Bolmo + DG)         ← propuesto    ⭐
+    run_08   Folded Transformer + Byte + Ternary ← branch de run_05
+    run_09   CPU-1 COMPLETE + PFNet
+    run_10   CPU-1 COMPLETE + per-channel decay  ← chain terminus
 
-Runs 10M (scaling check):
-    run_13  CPU-1 COMPLETE + BPE 4K
-    run_14  CPU-1 COMPLETE + byte               ← propuesto small ⭐
-    run_15  CPU-1 COMPLETE + complement (BPE→byte, warm-start desde run_13)
-    run_16  CPU-1 COMPLETE + raw bytes (sin teacher)
+Runs 10M (scaling check, fixed 1000 steps):
+    run_13  CPU-1 BPE 4K + distillation
+    run_14  CPU-1 byte + distillation            ← propuesto small ⭐
+    run_16  CPU-1 byte + CE only (sin teacher)
 
 Uso:
     from models.ablation_models import build_run

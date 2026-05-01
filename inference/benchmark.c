@@ -107,11 +107,14 @@ void local_decode_step(
     const uint8_t* W_q, float s_q,
     const uint8_t* W_k, float s_k,
     const uint8_t* W_v, float s_v,
+    const float* o_norm_w,
     const uint8_t* W_o, float s_o,
     const float* norm2_w,
     const uint8_t* W_gate, float s_gate,
     const uint8_t* W_up,   float s_up,
+    const float* ffn_down_norm_w,
     const uint8_t* W_down, float s_down,
+    const float* out_norm_w,
     const uint8_t* W_out,  float s_out,
     float norm_eps,
     float* logits_out);
@@ -215,6 +218,8 @@ struct LocalDecW {
     const uint8_t *W_gate, *W_up, *W_down, *W_out;
     const float   *byte_emb, *pos_emb;
     const float   *norm1_w, *norm2_w;
+    /* Fused-BitLinear inner norms (nullable — identity fallback). */
+    const float   *o_norm_w, *ffn_down_norm_w, *out_norm_w;
     int d_local, d_ff_local, n_heads, patch_size;
 };
 
@@ -234,10 +239,12 @@ static inline void run_local_patch(
             generated, kb,
             d_model, L->d_local, L->n_heads, L->d_ff_local, L->patch_size,
             L->norm1_w,
-            L->W_q, scale, L->W_k, scale, L->W_v, scale, L->W_o, scale,
+            L->W_q, scale, L->W_k, scale, L->W_v, scale,
+            L->o_norm_w, L->W_o, scale,
             L->norm2_w,
-            L->W_gate, scale, L->W_up, scale, L->W_down, scale,
-            L->W_out, scale,
+            L->W_gate, scale, L->W_up, scale,
+            L->ffn_down_norm_w, L->W_down, scale,
+            L->out_norm_w, L->W_out, scale,
             1e-6f, logits);
         /* emulate argmax of the freshly-generated logits */
         generated[kb] = (kb * 17) % 256;
@@ -350,12 +357,18 @@ int main(int argc, char** argv) {
     float*   ld_pos_emb  = make_random_f32(LD_PATCHSIZE * LD_DLOCAL, 0.01f);
     float*   ld_norm1_w  = make_random_f32(LD_DLOCAL, 1.0f);
     float*   ld_norm2_w  = make_random_f32(LD_DLOCAL, 1.0f);
+    /* Fused-BitLinear inner norms (PyTorch parity) — small, included by
+     * default so the benchmark exercises the same code path as inference. */
+    float*   ld_o_norm_w        = make_random_f32(LD_DLOCAL, 1.0f);
+    float*   ld_ffn_down_norm_w = make_random_f32(LD_DFF,    1.0f);
+    float*   ld_out_norm_w      = make_random_f32(LD_DLOCAL, 1.0f);
     /* Local decoder weights total ~= 1 MB (negligible vs 40 MB global) */
 
     struct LocalDecW LDW = {
         ld_W_hproj, ld_W_q, ld_W_k, ld_W_v, ld_W_o,
         ld_W_gate, ld_W_up, ld_W_down, ld_W_out,
         ld_byte_emb, ld_pos_emb, ld_norm1_w, ld_norm2_w,
+        ld_o_norm_w, ld_ffn_down_norm_w, ld_out_norm_w,
         LD_DLOCAL, LD_DFF, LD_NHEADS, LD_PATCHSIZE
     };
 

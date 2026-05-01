@@ -2828,6 +2828,13 @@ EXPORT void forward_full_mad_pipeline(
 //   h_proj [d_model → P*d_local] → causal attn+FFN over L=k+1 tokens → out_proj [256]
 // All weights 2-bit MAD. L ≤ 4, so attention is scalar (no SIMD needed).
 // Called 4× per patch from the inference generate loop.
+//
+// Fused-BitLinear RMSNorms (o_norm_w, ffn_down_norm_w, out_norm_w) feed
+// every BitLinear in the local decoder with normalized activations, matching
+// the PyTorch LocalByteDecoder. Each is OPTIONAL: pass NULL to skip (identity
+// fallback) for back-compat with weight bundles built before these norms
+// existed. Cost: 3 × O(d_local) plus 1 × O(d_ff_local) extra ops per byte
+// step — negligible vs the 4 GEMVs that dominate.
 // ===========================================================================
 
 extern "C" {
@@ -2848,11 +2855,14 @@ EXPORT void local_decode_step(
     const uint8_t* W_q, float s_q,
     const uint8_t* W_k, float s_k,
     const uint8_t* W_v, float s_v,
+    const float*   o_norm_w,      // [d_local]    nullable — Fused-BitLinear pre-W_o
     const uint8_t* W_o, float s_o,
     const float*   norm2_w,
     const uint8_t* W_gate, float s_gate,
     const uint8_t* W_up,   float s_up,
+    const float*   ffn_down_norm_w,  // [d_ff_local] nullable — pre-W_down
     const uint8_t* W_down, float s_down,
+    const float*   out_norm_w,    // [d_local]    nullable — pre-W_out
     const uint8_t* W_out,  float s_out,
     float          norm_eps,
     float*         logits_out     // [256]
@@ -2863,7 +2873,7 @@ EXPORT void local_decode_step(
     static thread_local float  _x[4 * 256];
     static thread_local float  _xn[4 * 256];
     static thread_local float  _q[4 * 256], _kk[4 * 256], _v[4 * 256], _attn[256];
-    static thread_local float  _xn2[256], _hid[1024];
+    static thread_local float  _xn2[256], _hid[1024], _hidn[1024];
     static thread_local int8_t _xi[2048], _hi8[1024];
 
     // 1. h_proj → g[0..k]
@@ -2925,9 +2935,16 @@ EXPORT void local_decode_step(
             _attn[ho+i] = acc;
         }
     }
-    // o_proj + residual
+    // o_proj + residual.  Fused-BitLinear: RMSNorm pre-quantization when
+    // o_norm_w is provided.  _xn2 is unused here (SwiGLU's norm2 output
+    // hasn't been written yet) so we reuse it as the norm-output scratch.
     {
-        float xs = quantize_x_avx2(_attn, _xi, d_local);
+        const float* o_in = _attn;
+        if (o_norm_w) {
+            rms_norm_inline(_attn, o_norm_w, _xn2, d_local, norm_eps);
+            o_in = _xn2;
+        }
+        float xs = quantize_x_avx2(o_in, _xi, d_local);
         int nrg = (d_local+3)/4;
         int32_t ao[256]={};
         gemv_2bit_mad_chunk(_xi, W_o, ao, d_local, d_local, 0, nrg);
@@ -2948,7 +2965,14 @@ EXPORT void local_decode_step(
             float g = (float)ag[i]*cg, u = (float)au[i]*cu;
             _hid[i] = g / (1.0f + expf(-g)) * u;
         }
-        float hs  = quantize_x_avx2(_hid, _hi8, d_ff_local);
+        // Fused-BitLinear: RMSNorm on _hid (silu(g)*u, arbitrary magnitudes)
+        // before W_down quantization.  Falls back to identity when null.
+        const float* down_in = _hid;
+        if (ffn_down_norm_w) {
+            rms_norm_inline(_hid, ffn_down_norm_w, _hidn, d_ff_local, norm_eps);
+            down_in = _hidn;
+        }
+        float hs  = quantize_x_avx2(down_in, _hi8, d_ff_local);
         int   nrd = (d_local+3)/4;
         int32_t ad[256]={};
         gemv_2bit_mad_chunk(_hi8, W_down, ad, d_ff_local, d_local, 0, nrd);
@@ -2956,9 +2980,16 @@ EXPORT void local_decode_step(
         for (int i = 0; i < d_local; i++) _x[(L-1)*d_local+i] += (float)ad[i]*cd;
     }
 
-    // 6. out_proj [d_local → 256]
+    // 6. out_proj [d_local → 256].  Fused-BitLinear: RMSNorm the residual
+    // stream pre-W_out so the head sees normalized activations.  _xn2 is
+    // free again (SwiGLU done) so we reuse it.
     {
-        float xs = quantize_x_avx2(_x+(L-1)*d_local, _xi, d_local);
+        const float* out_in = _x + (L-1)*d_local;
+        if (out_norm_w) {
+            rms_norm_inline(out_in, out_norm_w, _xn2, d_local, norm_eps);
+            out_in = _xn2;
+        }
+        float xs = quantize_x_avx2(out_in, _xi, d_local);
         int   nrg = (256+3)/4;
         int32_t ao[256]={};
         gemv_2bit_mad_chunk(_xi, W_out, ao, d_local, 256, 0, nrg);

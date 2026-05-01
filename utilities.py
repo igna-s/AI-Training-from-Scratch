@@ -203,6 +203,10 @@ class AblationSwiGLU(nn.Module):
         self.gate_proj = make_linear(d_model, d_ff, use_ternary)
         self.up_proj = make_linear(d_model, d_ff, use_ternary)
         self.down_proj = make_linear(d_ff, d_model, use_ternary)
+        # RMSNorm before down_proj: silu(gate)*up has arbitrary magnitudes
+        # and down_proj (BitLinear) needs normalized input for clean INT8
+        # quantization.  Follows the Fused BitLinear protocol (Algorithm 1).
+        self.down_norm = RMSNorm(d_ff) if use_ternary else None
         self.fp_residual = (
             FPResidual(d_ff, d_model, rank=fp_rank)
             if use_ternary and fp_rank > 0 else None
@@ -210,7 +214,8 @@ class AblationSwiGLU(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         hidden = F.silu(self.gate_proj(x)) * self.up_proj(x)
-        out = self.down_proj(hidden)
+        down_in = self.down_norm(hidden) if self.down_norm is not None else hidden
+        out = self.down_proj(down_in)
         if self.fp_residual is not None:
             out = out + self.fp_residual(hidden)
         return out
@@ -278,42 +283,148 @@ class AblationBytePatchEmbedding(nn.Module):
 
 
 class BolmoPatchEmbedding(nn.Module):
-    """Bolmo / BLT-style byte-patch embedding with integrated boundary scoring.
+    """Bolmo / BLT-style byte-patch embedding with boundary-aware cross-attention.
 
-    Embeds each byte, scores each position with a tiny 1D conv, and amplifies
-    high-boundary positions before the patch projection. Caches pre-sigmoid
-    logits in `last_boundary_logits` so the parent model can compute a BCE
-    loss against natural-boundary targets.
+    Pipeline:
+      1. Embed each byte (BitEmbedding).
+      2. Score each byte position with a 1-D conv (kernel 3) — this is the
+         "boundary detector" supervised against natural-boundary targets.
+      3. Build an initial patch query by mean-pooling the P bytes inside.
+      4. Cross-attention: each patch query attends over a window of W bytes
+         (default W = 3P = 12 for cross_patch_window=3), with the boundary
+         score as an additive logit bias so high-boundary bytes dominate
+         the patch representation.  When cross_patch_window=1 the behaviour
+         matches the original per-patch-only attention.  With window=3 the
+         query sees its own P bytes plus ±1 neighbour patch — this lets the
+         model learn that a linguistic boundary falls in the adjacent patch
+         and adjust the representation accordingly, approximating BLT's
+         variable-length byte→patch fusion without breaking LocalByteDecoder
+         + DataLoader + kernel C++ (audit §"Conflicto 3").
+      5. Project to d_model.
+
+    Caches pre-sigmoid logits in `last_boundary_logits` so the parent model
+    can compute a BCE loss against natural-boundary targets.
     """
 
     def __init__(self, d_model: int, patch_size: int = 4,
-                 bytes_per_embed: int = 8, use_ternary: bool = True):
+                 bytes_per_embed: int = 8, use_ternary: bool = True,
+                 cross_attn_heads: int = 2,
+                 cross_patch_window: int = 1,
+                 causal_boundary: bool = False,
+                 causal_cross_patch: bool = False):
         super().__init__()
         self.patch_size = patch_size
         self.bytes_per_embed = bytes_per_embed
+        self.cross_attn_heads = cross_attn_heads
+        self.cross_patch_window = cross_patch_window
+        self.causal_boundary = causal_boundary
+        self.causal_cross_patch = causal_cross_patch
         self.byte_embed = make_embedding(256, bytes_per_embed, use_ternary)
         self.patch_proj = make_linear(
             patch_size * bytes_per_embed, d_model, use_ternary
         )
+        # Causal mode: pad only on the left so the conv at position t sees
+        # bytes [t-2, t-1, t] instead of [t-1, t, t+1] — preserves causality
+        # for streaming inference at the patch level.
+        self._boundary_pad = (2, 0) if causal_boundary else (1, 1)
         self.boundary_scorer = nn.Conv1d(
             in_channels=bytes_per_embed,
             out_channels=1,
             kernel_size=3,
-            padding=1,
+            padding=0,
         )
+        # Cross-attention from patch (query) to its bytes (keys/values).
+        # Tiny: bytes_per_embed=8, head_dim=4 → 64 params per matrix × 4 = 256 params.
+        # Run in fp32 to keep softmax stable — this layer isn't on the
+        # latency-critical path (one call per forward, not per token).
+        self.q_proj = nn.Linear(bytes_per_embed, bytes_per_embed, bias=False)
+        self.k_proj = nn.Linear(bytes_per_embed, bytes_per_embed, bias=False)
+        self.v_proj = nn.Linear(bytes_per_embed, bytes_per_embed, bias=False)
+        self.attn_norm = RMSNorm(bytes_per_embed)
         self.last_boundary_logits: Tensor | None = None
 
     def forward(self, patches: Tensor) -> Tensor:
         B, S, P = patches.shape
         d_b = self.bytes_per_embed
+        H = self.cross_attn_heads
+        hd = d_b // H
         byte_feats = self.byte_embed(patches.long())                  # [B, S, P, d_b]
 
         conv_in = byte_feats.reshape(B, S * P, d_b).transpose(1, 2)   # [B, d_b, S*P]
+        conv_in = F.pad(conv_in, self._boundary_pad)
         bndry_logits = self.boundary_scorer(conv_in).squeeze(1)       # [B, S*P]
         self.last_boundary_logits = bndry_logits
 
+        # Multiplicative gate (legacy behaviour) applied first — this gives
+        # the cross-attention a pre-amplified value tensor and preserves
+        # backward-compat with checkpoints that only had the gate.
         gate = torch.sigmoid(bndry_logits).reshape(B, S, P, 1)
         byte_feats = byte_feats * (1.0 + gate)
+
+        # === Cross-patch attention with configurable window ===
+        # When cross_patch_window=1: each patch query sees only its own P bytes
+        # (original behaviour).  When cross_patch_window=3: each query sees
+        # 3P=12 bytes (prev patch + own + next), letting the model detect
+        # linguistic boundaries that straddle patch edges.
+        cpw = self.cross_patch_window
+        if cpw > 1:
+            # Flatten to [B, S*P, d_b]. Symmetric mode pads ±(cpw//2)*P (sees
+            # past + own + future). Causal mode pads (cpw-1)*P only on the
+            # left so the window for patch t covers past patches + own and
+            # never leaks future bytes.
+            all_bytes = byte_feats.reshape(B, S * P, d_b)
+            if self.causal_cross_patch:
+                left_pad = (cpw - 1) * P
+                right_pad = 0
+                own_offset = left_pad                                  # own patch at end
+            else:
+                left_pad = (cpw // 2) * P                              # = P for cpw=3
+                right_pad = left_pad
+                own_offset = left_pad                                  # own patch in middle
+            all_padded = F.pad(all_bytes, (0, 0, left_pad, right_pad))
+            bndry_padded = F.pad(bndry_logits, (left_pad, right_pad))
+            W = cpw * P                                                # window = 12 bytes
+
+            # Unfold: for each patch, extract W contiguous bytes
+            kv_windows = all_padded.unfold(1, W, P)                    # [B, S, d_b, W]
+            kv_windows = kv_windows.permute(0, 1, 3, 2)               # [B, S, W, d_b]
+            bndry_win = bndry_padded.unfold(1, W, P)                   # [B, S, W]
+
+            # Normalize the full window; query = mean of own-patch bytes.
+            kv_norm = self.attn_norm(kv_windows)
+            q_input = kv_norm[:, :, own_offset:own_offset + P, :].mean(
+                dim=2, keepdim=True
+            )                                                          # [B,S,1,d_b]
+
+            q = self.q_proj(q_input)                                   # [B,S,1,d_b]
+            k = self.k_proj(kv_norm)                                   # [B,S,W,d_b]
+            v = self.v_proj(kv_norm)                                   # [B,S,W,d_b]
+            q = q.view(B, S, 1, H, hd).transpose(2, 3)                # [B,S,H,1,hd]
+            k = k.view(B, S, W, H, hd).transpose(2, 3)                # [B,S,H,W,hd]
+            v = v.view(B, S, W, H, hd).transpose(2, 3)
+            # Boundary bias over the full window
+            bias = bndry_win.unsqueeze(2).unsqueeze(3)                 # [B,S,1,1,W]
+            scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(hd) + bias
+            attn = F.softmax(scores, dim=-1)
+            ctx = torch.matmul(attn, v).transpose(2, 3).reshape(B, S, 1, d_b)
+        else:
+            # Original per-patch-only attention (cross_patch_window=1)
+            bf_norm = self.attn_norm(byte_feats)                       # [B,S,P,d_b]
+            q = self.q_proj(bf_norm.mean(dim=2, keepdim=True))         # [B,S,1,d_b]
+            k = self.k_proj(bf_norm)                                   # [B,S,P,d_b]
+            v = self.v_proj(bf_norm)                                   # [B,S,P,d_b]
+            q = q.view(B, S, 1, H, hd).transpose(2, 3)                # [B,S,H,1,hd]
+            k = k.view(B, S, P, H, hd).transpose(2, 3)                # [B,S,H,P,hd]
+            v = v.view(B, S, P, H, hd).transpose(2, 3)
+            bias = bndry_logits.reshape(B, S, P).unsqueeze(2).unsqueeze(3)
+            scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(hd) + bias
+            attn = F.softmax(scores, dim=-1)
+            ctx = torch.matmul(attn, v).transpose(2, 3).reshape(B, S, 1, d_b)
+
+        # Fuse attention context into every byte feature within the patch:
+        # ctx broadcasts across the P axis, providing global-patch info to
+        # each byte before the linear patch_proj.
+        byte_feats = byte_feats + ctx
 
         flat = byte_feats.reshape(B, S, P * d_b)
         return self.patch_proj(flat)
@@ -357,50 +468,196 @@ class MatMulFreeTokenMixer(nn.Module):
 
 
 class AblationMLGRU(nn.Module):
-    """Configurable MLGRU with optional per-channel decay and state reset."""
+    """Configurable MLGRU — full MatMul-free + HGRN2 feature set.
+
+    Supported (all opt-in via config):
+        per_channel_decay   : HGRN2 learnable per-channel forget-gate ceiling
+                              (with hierarchical init, see below).
+        state_reset_period  : Stuffed-Mamba periodic hard reset.
+        use_wo              : MatMul-free LM "W_o" output projection that mixes
+                              dimensions of (g ⊙ h) before adding to the
+                              residual stream — the 4th matrix the Zhu-2024
+                              paper specifies but the production kernel
+                              omits.  Adds d_model² params per layer (+6.3%
+                              of a 50M ablation budget at d=512×12 layers).
+        state_expansion     : HGRN2 state expansion factor N.  When N>1 the
+                              hidden state lives in dim N·d_model during the
+                              recurrence; an "expand" projection lifts the
+                              candidate up and a "compress" projection brings
+                              the gated output back to d_model.  N=2 is the
+                              audit's recommended setting (still fits L2 at
+                              d=512); N=1 disables it.
+    """
 
     def __init__(self, d_model: int, use_ternary: bool = True,
                  fp_rank: int = 4,
                  per_channel_decay: bool = False,
-                 state_reset_period: int = 0):
+                 state_reset_period: int = 0,
+                 use_wo: bool = True,
+                 state_expansion: int = 1,
+                 use_parallel_scan: bool = True,
+                 layer_idx: int = 0, total_layers: int = 1):
         super().__init__()
+        assert state_expansion >= 1, "state_expansion must be >= 1"
         self.d_model = d_model
+        self.state_dim = d_model * state_expansion
+        self.state_expansion = state_expansion
         self.state_reset_period = state_reset_period
-        self.forget_proj = make_linear(d_model, d_model, use_ternary)
-        self.cand_proj = make_linear(d_model, d_model, use_ternary)
-        self.output_proj = make_linear(d_model, d_model, use_ternary)
+        self.use_wo = use_wo
+        # Parallel scan (Heinsen log-domain, paper-faithful to the MatMul-free
+        # LM "parallel scan" of Zhu et al. 2024). Disabled automatically when
+        # state_reset_period > 0 — periodic hard reset breaks the linear
+        # recurrence that makes the scan correct.
+        self.use_parallel_scan = use_parallel_scan and state_reset_period == 0
+
+        # Input gates always project d_model -> state_dim.  When state_expansion=1
+        # this is the standard MLGRU; when >1, candidate/forget/output gates
+        # produce per-channel signals in the expanded space.
+        self.forget_proj = make_linear(d_model, self.state_dim, use_ternary)
+        self.cand_proj = make_linear(d_model, self.state_dim, use_ternary)
+        self.output_proj = make_linear(d_model, self.state_dim, use_ternary)
+
+        # W_o: state_dim -> d_model.  Doubles as the "compress" projection
+        # when state_expansion > 1.  When use_wo=False and state_expansion=1
+        # we fall back to identity; when use_wo=False and state_expansion>1
+        # we still need a compress (so we instantiate it but skip in the
+        # ternary path's RMSNorm — see below).
+        if use_wo or state_expansion > 1:
+            self.w_o = make_linear(self.state_dim, d_model, use_ternary)
+            # RMSNorm before W_o keeps INT8 quant clean (Fused-BitLinear
+            # protocol).  Cheap: state_dim ops per token.
+            self.wo_norm = RMSNorm(self.state_dim) if use_ternary else None
+        else:
+            self.w_o = None
+            self.wo_norm = None
+
         self.fp_residual = (
             FPResidual(d_model, d_model, rank=fp_rank)
             if use_ternary and fp_rank > 0 else None
         )
-        self.register_buffer('h_init', torch.zeros(d_model))
-        self.log_decay = (
-            nn.Parameter(torch.zeros(d_model)) if per_channel_decay else None
+        self.register_buffer('h_init', torch.zeros(self.state_dim))
+
+        if per_channel_decay:
+            # Hierarchical init (HGRN2): shallow layers forget fast (low decay),
+            # deep layers retain longer (high decay).  Linear schedule in
+            # log-space from ~0.3 (layer 0) to ~0.9 (last layer).
+            ratio = layer_idx / max(total_layers - 1, 1)
+            target_sp = -math.log(0.3 + 0.6 * ratio)
+            init_val = math.log(math.exp(target_sp) - 1) if target_sp > 0.5 else target_sp
+            # Decay lives in the expanded state space when state_expansion>1
+            # so each expanded channel has its own forget-rate ceiling.
+            self.log_decay = nn.Parameter(torch.full((self.state_dim,), init_val))
+        else:
+            self.log_decay = None
+
+    @staticmethod
+    def _parallel_scan(c: Tensor, f: Tensor, h_init: Tensor
+                       ) -> tuple[Tensor, Tensor]:
+        """Heinsen 2023 log-domain parallel scan for h_t = f_t·h_{t-1} + (1-f_t)·c_t.
+
+        Mathematically equivalent to the for-loop, vectorized over the time
+        axis via cumulative log-sum-exp. This is the "parallel scan" the
+        MatMul-free LM paper (Zhu et al. 2024) prescribes — closes the audit
+        gap between the sequential ablation loop and the paper's algorithm.
+
+        Numerically stable in fp32 even for long sequences with f far from 1:
+        positive and negative contributions of b_t = (1-f_t)·c_t are tracked
+        in log-space separately, then recombined.
+
+        Args:
+            c, f:   [B, S, D] candidate and forget tensors (f in (0,1)).
+            h_init: [B, D] initial state.
+        Returns:
+            outputs: [B, S, D] state at every step.
+            h_final: [B, D] state at step S-1 (for inference carry-over).
+        """
+        eps = 1e-30
+        b = (1.0 - f) * c                                 # [B, S, D]
+        log_a = torch.log(f.clamp(min=eps))               # [B, S, D], ≤ 0
+        cum_log_a = log_a.cumsum(dim=1)                   # [B, S, D]
+
+        b_pos = F.relu(b)
+        b_neg = F.relu(-b)
+        # Floor for log(0) — large negative finite so logcumsumexp ignores it
+        # but no inf/NaN propagation risk.
+        neg_floor = -1e9
+        log_b_pos = torch.where(
+            b_pos > 0, torch.log(b_pos.clamp(min=eps)),
+            torch.full_like(b_pos, neg_floor),
+        )
+        log_b_neg = torch.where(
+            b_neg > 0, torch.log(b_neg.clamp(min=eps)),
+            torch.full_like(b_neg, neg_floor),
         )
 
-    def forward(self, x: Tensor, h: Tensor | None = None
+        # log Σ_{k≤t} exp(-cum_log_a_k)·b_k  =  logcumsumexp(log b_k - cum_log_a_k)
+        log_sum_pos = torch.logcumsumexp(log_b_pos - cum_log_a, dim=1)
+        log_sum_neg = torch.logcumsumexp(log_b_neg - cum_log_a, dim=1)
+
+        # h_t = exp(cum_log_a_t)·h_0 + exp(cum_log_a_t + log_sum_pos_t)
+        #                            - exp(cum_log_a_t + log_sum_neg_t)
+        h_from_init = torch.exp(cum_log_a) * h_init.unsqueeze(1)
+        h_from_pos  = torch.exp(cum_log_a + log_sum_pos)
+        h_from_neg  = torch.exp(cum_log_a + log_sum_neg)
+        h_seq = h_from_init + h_from_pos - h_from_neg     # [B, S, D]
+        return h_seq, h_seq[:, -1]
+
+    def forward(self, x: Tensor, h: Tensor | None = None,
+                strides: Tensor | None = None,
                 ) -> tuple[Tensor, Tensor]:
+        """Forward pass.
+
+        strides: optional [B, S] int tensor giving the temporal gap between
+            consecutive tokens — used after DeleteGate.forward_gather to
+            compensate the per-channel decay so f_t becomes (decay**stride)·f_t
+            (a stride of 1 reduces to standard MLGRU). Only consulted when
+            per_channel_decay is enabled.
+        """
         B, S, D = x.shape
         if h is None:
             h = self.h_init.unsqueeze(0).expand(B, -1).clone()
 
-        f = torch.sigmoid(self.forget_proj(x))
-        c = F.silu(self.cand_proj(x))
-        g = torch.sigmoid(self.output_proj(x))
+        f = torch.sigmoid(self.forget_proj(x))      # [B,S,state_dim]
+        c = F.silu(self.cand_proj(x))               # [B,S,state_dim]
+        g = torch.sigmoid(self.output_proj(x))      # [B,S,state_dim]
 
         if self.log_decay is not None:
-            decay = torch.exp(-F.softplus(self.log_decay))
-            f = decay * f
+            decay = torch.exp(-F.softplus(self.log_decay))           # [state_dim]
+            if strides is not None:
+                # Raise the per-channel ceiling to the gap power so the
+                # effective forget rate matches what would have been applied
+                # over `stride` contiguous steps. Broadcasting:
+                # [B,S,1] · [state_dim] → [B,S,state_dim].
+                decay = decay.unsqueeze(0).unsqueeze(0).pow(
+                    strides.to(decay.dtype).unsqueeze(-1)
+                )
+                f = decay * f
+            else:
+                f = decay * f
 
-        outputs = torch.empty_like(f)
-        reset = self.state_reset_period
-        for t in range(S):
-            if reset > 0 and t > 0 and t % reset == 0:
-                h = torch.zeros_like(h)
-            h = torch.lerp(c[:, t], h, f[:, t])
-            outputs[:, t] = g[:, t] * h
+        if self.use_parallel_scan:
+            h_seq, h = self._parallel_scan(c, f, h)
+            outputs = g * h_seq                     # [B,S,state_dim]
+        else:
+            outputs = torch.empty_like(f)           # [B,S,state_dim]
+            reset = self.state_reset_period
+            for t in range(S):
+                if reset > 0 and t > 0 and t % reset == 0:
+                    h = torch.zeros_like(h)
+                h = torch.lerp(c[:, t], h, f[:, t])  # f*h + (1-f)*c
+                outputs[:, t] = g[:, t] * h
 
-        out = outputs
+        # Compress / cross-dim mix back to d_model.  When neither use_wo nor
+        # state_expansion is enabled, outputs is already in d_model space and
+        # we add directly to the residual.
+        if self.w_o is not None:
+            wo_in = (
+                self.wo_norm(outputs) if self.wo_norm is not None else outputs
+            )
+            out = self.w_o(wo_in)
+        else:
+            out = outputs                            # identity (state_dim==d_model)
+
         if self.fp_residual is not None:
             out = out + self.fp_residual(x)
         return out, h
@@ -422,6 +679,9 @@ class SlidingWindowAttention(nn.Module):
         self.k_proj = make_linear(d_model, inner_dim, use_ternary)
         self.v_proj = make_linear(d_model, inner_dim, use_ternary)
         self.o_proj = make_linear(inner_dim, d_model, use_ternary)
+        # RMSNorm before o_proj: attention output needs normalization for
+        # clean INT8 quantization inside o_proj (BitLinear protocol).
+        self.o_norm = RMSNorm(inner_dim) if use_ternary else None
         self.fp_residual = (
             FPResidual(d_model, d_model, rank=fp_rank)
             if use_ternary and fp_rank > 0 else None
@@ -446,6 +706,10 @@ class SlidingWindowAttention(nn.Module):
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=float_mask)
 
         out = out.transpose(1, 2).contiguous().view(B, S, -1)
+        # RMSNorm before o_proj: attention output has arbitrary magnitudes
+        # and o_proj (BitLinear) needs normalized input for clean INT8 quant.
+        if self.o_norm is not None:
+            out = self.o_norm(out)
         result = self.o_proj(out)
         if self.fp_residual is not None:
             result = result + self.fp_residual(x)
@@ -496,6 +760,57 @@ class AblationBPEHead(nn.Module):
 # 9. LocalByteDecoder — MegaByte-style intra-patch autoregression
 # =============================================================================
 
+class LocalByteDecoderLayer(nn.Module):
+    """One MegaByte local-transformer block (attn + SwiGLU). Used by
+    LocalByteDecoder when n_layers>1 — the paper specifies 2-4 layers.
+
+    Parameter names mirror the flat attrs of layer 0 in LocalByteDecoder so
+    the per-layer Fused-BitLinear protocol (RMSNorm → quant → ternary GEMV)
+    stays identical across stacked layers.
+    """
+
+    def __init__(self, d_local: int, n_heads: int = 4,
+                 ff_ratio: float = 4.0, use_ternary: bool = True):
+        super().__init__()
+        assert d_local % n_heads == 0
+        self.n_heads = n_heads
+        self.head_dim = d_local // n_heads
+
+        self.norm1 = RMSNorm(d_local)
+        self.q_proj = make_linear(d_local, d_local, use_ternary)
+        self.k_proj = make_linear(d_local, d_local, use_ternary)
+        self.v_proj = make_linear(d_local, d_local, use_ternary)
+        self.o_proj = make_linear(d_local, d_local, use_ternary)
+        self.o_norm = RMSNorm(d_local) if use_ternary else None
+
+        self.norm2 = RMSNorm(d_local)
+        d_ff_local = int(d_local * ff_ratio)
+        self.ffn_gate = make_linear(d_local, d_ff_local, use_ternary)
+        self.ffn_up = make_linear(d_local, d_ff_local, use_ternary)
+        self.ffn_down = make_linear(d_ff_local, d_local, use_ternary)
+        self.ffn_down_norm = RMSNorm(d_ff_local) if use_ternary else None
+
+    def forward(self, x: Tensor) -> Tensor:
+        N, L, D = x.shape
+        residual = x
+        y = self.norm1(x)
+        q = self.q_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = y.transpose(1, 2).contiguous().view(N, L, D)
+        if self.o_norm is not None:
+            y = self.o_norm(y)
+        x = residual + self.o_proj(y)
+
+        residual = x
+        y = self.norm2(x)
+        hidden = F.silu(self.ffn_gate(y)) * self.ffn_up(y)
+        if self.ffn_down_norm is not None:
+            hidden = self.ffn_down_norm(hidden)
+        return residual + self.ffn_down(hidden)
+
+
 class LocalByteDecoder(nn.Module):
     """MegaByte (Yu et al., 2023, Listing 1) local model for byte prediction.
 
@@ -510,31 +825,55 @@ class LocalByteDecoder(nn.Module):
     def __init__(self, d_model: int, patch_size: int = 4,
                  d_local: int = 128, n_heads: int = 4,
                  ff_ratio: float = 4.0,
-                 use_ternary: bool = True):
+                 use_ternary: bool = True,
+                 n_layers: int = 1):
         super().__init__()
         assert d_local % n_heads == 0, "d_local must be divisible by n_heads"
+        assert n_layers >= 1, "n_layers must be >= 1"
         self.patch_size = patch_size
         self.d_local = d_local
         self.n_heads = n_heads
         self.head_dim = d_local // n_heads
+        self.n_layers = n_layers
 
         self.h_proj = make_linear(d_model, patch_size * d_local, use_ternary)
         self.byte_embed = make_embedding(256, d_local, use_ternary)
         self.pos_embed = nn.Parameter(torch.randn(patch_size, d_local) * 0.02)
 
+        # Layer 0 lives at flat attribute names so the production C++ kernel
+        # (`local_decode_step`, n_layers=1) and existing trained checkpoints
+        # keep their parameter layout. Extra MegaByte-faithful layers (paper
+        # specifies 2-4) live in `extra_layers` for ablation runs only.
         self.norm1 = RMSNorm(d_local)
         self.q_proj = make_linear(d_local, d_local, use_ternary)
         self.k_proj = make_linear(d_local, d_local, use_ternary)
         self.v_proj = make_linear(d_local, d_local, use_ternary)
         self.o_proj = make_linear(d_local, d_local, use_ternary)
+        # Norms before BitLinears that don't already follow norm1/norm2:
+        # the Fused-BitLinear protocol (BitNet b1.58, Algorithm 1) needs
+        # normalized input for clean INT8 quantization. d_local=128 makes
+        # these norms ~free in inference.
+        self.o_norm = RMSNorm(d_local) if use_ternary else None
 
         self.norm2 = RMSNorm(d_local)
         d_ff_local = int(d_local * ff_ratio)
         self.ffn_gate = make_linear(d_local, d_ff_local, use_ternary)
         self.ffn_up = make_linear(d_local, d_ff_local, use_ternary)
         self.ffn_down = make_linear(d_ff_local, d_local, use_ternary)
+        self.ffn_down_norm = RMSNorm(d_ff_local) if use_ternary else None
+
+        if n_layers > 1:
+            self.extra_layers = nn.ModuleList([
+                LocalByteDecoderLayer(
+                    d_local, n_heads, ff_ratio, use_ternary,
+                )
+                for _ in range(n_layers - 1)
+            ])
+        else:
+            self.extra_layers = None
 
         self.out_proj = make_linear(d_local, 256, use_ternary)
+        self.out_norm = RMSNorm(d_local) if use_ternary else None
         self.out_scale = nn.Parameter(torch.ones(1))
 
     def _attn_ffn(self, x: Tensor) -> Tensor:
@@ -546,12 +885,21 @@ class LocalByteDecoder(nn.Module):
         v = self.v_proj(y).view(N, L, self.n_heads, self.head_dim).transpose(1, 2)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1, 2).contiguous().view(N, L, D)
+        if self.o_norm is not None:
+            y = self.o_norm(y)
         x = residual + self.o_proj(y)
 
         residual = x
         y = self.norm2(x)
-        y = self.ffn_down(F.silu(self.ffn_gate(y)) * self.ffn_up(y))
-        return residual + y
+        hidden = F.silu(self.ffn_gate(y)) * self.ffn_up(y)
+        if self.ffn_down_norm is not None:
+            hidden = self.ffn_down_norm(hidden)
+        x = residual + self.ffn_down(hidden)
+
+        if self.extra_layers is not None:
+            for layer in self.extra_layers:
+                x = layer(x)
+        return x
 
     def forward(self, h: Tensor, targets: Tensor) -> tuple:
         """Teacher-forced training/eval forward.
@@ -576,6 +924,8 @@ class LocalByteDecoder(nn.Module):
         local_out = self._attn_ffn(local_in)
         local_out = local_out.reshape(B, S, P, self.d_local)
 
+        if self.out_norm is not None:
+            local_out = self.out_norm(local_out)
         logits = self.out_proj(local_out) * self.out_scale
         return tuple(logits[:, :, k, :] for k in range(P))
 
@@ -614,7 +964,7 @@ class CPU1BlockV2(nn.Module):
 class AblationBlock(nn.Module):
     """Unified block for ablation runs: pre-norm → mixer → residual → FFN."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, layer_idx: int = 0):
         super().__init__()
         d_model = config['d_model']
         d_ff = config['d_ff']
@@ -633,6 +983,11 @@ class AblationBlock(nn.Module):
                 d_model, use_ternary, fp_rank,
                 per_channel_decay=config.get('mlgru_per_channel_decay', False),
                 state_reset_period=config.get('state_reset_period', 0),
+                use_wo=config.get('mlgru_use_wo', True),
+                state_expansion=config.get('mlgru_state_expansion', 1),
+                use_parallel_scan=config.get('mlgru_parallel_scan', True),
+                layer_idx=layer_idx,
+                total_layers=config['n_layers'],
             )
         else:
             self.mixer_type = 'transformer'
@@ -649,11 +1004,12 @@ class AblationBlock(nn.Module):
             PFNet(d_model, pfnet_hidden) if pfnet_hidden > 0 else None
         )
 
-    def forward(self, x: Tensor, h: Tensor | None = None
+    def forward(self, x: Tensor, h: Tensor | None = None,
+                strides: Tensor | None = None,
                 ) -> tuple[Tensor, Tensor | None]:
         residual = x
         if self.mixer_type == 'mlgru':
-            mixer_out, h_new = self.token_mixer(self.norm1(x), h)
+            mixer_out, h_new = self.token_mixer(self.norm1(x), h, strides=strides)
         else:
             mixer_out = self.token_mixer(self.norm1(x))
             h_new = None
@@ -671,24 +1027,33 @@ class AblationBlock(nn.Module):
 # =============================================================================
 
 class BoundaryPredictor(nn.Module):
-    """Tiny 2-byte-context boundary scorer, used as an auxiliary training loss.
+    """5-byte-context boundary scorer, used as an auxiliary training loss.
 
-    Lookahead of 1 byte: takes byte[i] and byte[i+1], predicts whether byte[i]
-    is a patch boundary. ~2 KB of weights; sized to vanish in compute against
-    the main model. Supervised with `get_natural_boundaries` labels at training
-    time. Inference-side decoding belongs in `inference/`.
+    A Conv1d over byte embeddings gives each position a 5-byte receptive
+    field (2 left + center + 2 right) — wider than the prior 2-byte concat
+    that could not distinguish a UTF-8 lead-byte from punctuation in
+    isolation (audit §4). Still ~training-only and tiny: <10 KB of weights.
+
+    The supervision target is heuristic (`get_natural_boundaries`), not the
+    BLT entropy-patching signal — replicating that would require a separate
+    LM scoring pass per byte (audit §"Conflicto 11"). Wider context narrows
+    the gap by giving the scorer enough information to fit BLT-like targets
+    even though we keep heuristic labels for now.
     """
 
-    def __init__(self, embed_dim: int = 8, hidden_dim: int = 32):
+    def __init__(self, embed_dim: int = 8, hidden_dim: int = 32,
+                 kernel_size: int = 5):
         super().__init__()
+        assert kernel_size % 2 == 1, "kernel_size must be odd for symmetric padding"
         self.byte_embed = nn.Embedding(256, embed_dim)
-        # Returns LOGITS (no Sigmoid) so downstream BCE can use the
-        # autocast-safe `binary_cross_entropy_with_logits`. A trailing Sigmoid
-        # under fp16 saturates to exact 1.0, then `log(1 - 1.0) = -inf` → NaN.
-        self.predictor = nn.Sequential(
-            nn.Linear(embed_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
+        # Conv1d with symmetric padding -> output length matches input.
+        # Uses bias and ReLU/GELU activation between layers; final 1x1 conv
+        # produces LOGITS (no Sigmoid) for autocast-safe BCE-with-logits.
+        pad = kernel_size // 2
+        self.scorer = nn.Sequential(
+            nn.Conv1d(embed_dim, hidden_dim, kernel_size=kernel_size, padding=pad),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim, 1, kernel_size=1),
         )
 
     def forward_train(
@@ -702,13 +1067,17 @@ class BoundaryPredictor(nn.Module):
         large positive logit (sigmoid(10) ≈ 0.99995) so it pairs cleanly with
         binary_cross_entropy_with_logits at the call site.
         """
-        b_curr = self.byte_embed(bytes_seq[:, :-1].long())
-        b_next = self.byte_embed(bytes_seq[:, 1:].long())
-        ctx = torch.cat([b_curr, b_next], dim=-1)
-        logits = self.predictor(ctx).squeeze(-1)
-        last = torch.full((bytes_seq.shape[0], 1), 10.0,
-                          device=bytes_seq.device, dtype=logits.dtype)
-        return torch.cat([logits, last], dim=1)
+        # [B, T, E] -> [B, E, T] for Conv1d, then back to [B, T].
+        embeds = self.byte_embed(bytes_seq.long()).transpose(1, 2)
+        logits = self.scorer(embeds).squeeze(1)         # [B, T]
+        # Force last byte to be a boundary (matches prior contract). Build
+        # the constant last column instead of mutating in place to keep the
+        # graph autograd-clean.
+        last = torch.full(
+            (logits.shape[0], 1), 10.0,
+            device=logits.device, dtype=logits.dtype,
+        )
+        return torch.cat([logits[:, :-1], last], dim=1)
 
     @staticmethod
     def get_natural_boundaries(byte_seq: bytes) -> list[bool]:
@@ -746,23 +1115,78 @@ class BoundaryPredictor(nn.Module):
 # =============================================================================
 
 class DeleteGate(nn.Module):
-    """Soft-masking gate placed at layer N//2 to learn to drop redundant states.
+    """MrT5-style state-elimination gate placed at layer N//2.
 
     Phase 1 training (target_rate=0): pass-through, no elimination loss.
-    Phase 2 training (target_rate>0): soft mask + elimination regularization.
+    Phase 2 training (target_rate>0): two modes available:
+
+    **Mask mode** (``forward_train``, default):
+      Produces a near-binary mask via straight-through Gumbel-sigmoid,
+      multiplies kept states by 1 and deleted by 0, then merges deleted
+      mass into surviving neighbours via a depthwise 1-D convolution.
+      Sequence length stays fixed at S — simple, no shape changes.
+
+    **Gather mode** (``forward_gather`` + ``scatter_back``, opt-in):
+      Real MrT5 gather: TopK survivors are gathered into a compact
+      ``[B, K, D]`` tensor (K = S × (1 - rate)).  Post-gate layers
+      process only K tokens — the MLGRU scan runs K steps instead
+      of S, giving ~20% wall-clock speedup for rate=0.4.  After
+      post-gate processing, ``scatter_back`` places survivors at
+      their original positions; deleted positions keep the pre-gate
+      representation (no refinement from post-gate layers).
+      Enabled via config ``use_real_gather=True``.
+
+    Loss components:
+      1. Rate constraint  : ((1 - mask).mean() - target_rate)²
+      2. Bimodality penalty (binary entropy of the soft pre-STE mask)
+         to keep gradients flowing toward decisive {0,1} decisions even
+         though the forward pass is already hard.
+
+    Args:
+        hard            : if True, forward uses STE hard mask {0,1};
+                          backward uses the soft sigmoid gradient.
+        gumbel          : if True, adds Gumbel noise during training so
+                          early-Phase-2 exploration is non-deterministic.
+        merge           : if True, deleted residual mass is averaged into
+                          neighbours via a tied depthwise conv (kernel=3).
+        bimodal_lambda  : weight on the entropy regulariser.
     """
 
-    def __init__(self, d_model: int, elimination_rate: float = 0.0):
+    def __init__(self, d_model: int, elimination_rate: float = 0.0,
+                 bimodal_lambda: float = 0.05,
+                 hard: bool = True, gumbel: bool = True,
+                 merge: bool = True):
         super().__init__()
         self.d_model = d_model
         self.elimination_rate = elimination_rate
+        self.bimodal_lambda = bimodal_lambda
+        self.hard = hard
+        self.gumbel = gumbel
+        self.merge = merge
         self.scorer = nn.Sequential(
             nn.Linear(d_model, 64),
             nn.ReLU(),
             nn.Linear(64, 1),
         )
+        # Depthwise (groups=d_model) conv: keeps params O(d_model · k) instead
+        # of d_model² and acts independently per channel — equivalent to a
+        # MrT5 "weighted sum into neighbours" for each feature.
+        if merge:
+            self.merge_conv = nn.Conv1d(
+                d_model, d_model, kernel_size=3, padding=1,
+                groups=d_model, bias=False,
+            )
+            # Init as average over neighbours; trains away from this if useful.
+            with torch.no_grad():
+                self.merge_conv.weight.fill_(1.0 / 3.0)
+        else:
+            self.merge_conv = None
         self.register_buffer('temperature', torch.tensor(1.0))
         self.last_elimination_loss = torch.tensor(0.0)
+
+    def _gumbel_noise(self, logits: Tensor) -> Tensor:
+        u = torch.rand_like(logits).clamp(1e-6, 1.0 - 1e-6)
+        return torch.log(u) - torch.log(1.0 - u)
 
     def forward_train(
         self,
@@ -774,12 +1198,130 @@ class DeleteGate(nn.Module):
             self.last_elimination_loss = torch.tensor(0.0, device=hidden.device)
             return hidden, mask
 
-        scores = self.scorer(hidden).squeeze(-1)
-        mask = torch.sigmoid(scores / self.temperature)
-        self.last_elimination_loss = (
-            (1 - mask).mean() - target_rate
-        ).pow(2)
-        return hidden * mask.unsqueeze(-1), mask
+        logits = self.scorer(hidden).squeeze(-1)
+        if self.training and self.gumbel:
+            logits = logits + self._gumbel_noise(logits)
+        soft_mask = torch.sigmoid(logits / self.temperature)
+
+        # Forward: hard {0,1} via STE. Backward: gradient flows through soft.
+        if self.hard:
+            hard_mask = (soft_mask > 0.5).to(soft_mask.dtype)
+            mask = hard_mask + soft_mask - soft_mask.detach()
+        else:
+            mask = soft_mask
+
+        m1 = mask.unsqueeze(-1)                         # [B,S,1]
+        kept = hidden * m1                              # survivors
+
+        # Merge: redistribute the *deleted* residual mass into neighbours
+        # via a depthwise conv, then add only at surviving positions
+        # (deleted positions stay zeroed).  Falls back to pure mute if
+        # merge is disabled.
+        if self.merge_conv is not None:
+            deleted = hidden * (1.0 - m1)               # mass to redistribute
+            # Conv1d expects [B, C, S] → transpose around the call.
+            merged = self.merge_conv(deleted.transpose(1, 2)).transpose(1, 2)
+            kept = kept + merged * m1
+
+        # 1) Rate constraint on the *soft* mask so gradients are well-defined.
+        rate_loss = ((1.0 - soft_mask).mean() - target_rate).pow(2)
+
+        # 2) Bimodality regulariser on soft mask: low entropy ⇒ decisive.
+        m = soft_mask.clamp(1e-6, 1.0 - 1e-6)
+        entropy = -(m * torch.log(m) + (1.0 - m) * torch.log(1.0 - m))
+        self.last_elimination_loss = rate_loss + self.bimodal_lambda * entropy.mean()
+
+        return kept, mask
+
+    def forward_gather(
+        self,
+        hidden: Tensor,
+        target_rate: float = 0.0,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Real MrT5 gather: return compact [B, K, D] survivors + indices.
+
+        Unlike ``forward_train`` which keeps shape [B, S, D] and zeros out
+        deleted positions, this method *physically removes* deleted tokens
+        so that downstream layers process a shorter sequence.
+
+        Args:
+            hidden:      [B, S, D] pre-gate hidden states.
+            target_rate: fraction of tokens to eliminate (0.0 = keep all).
+
+        Returns:
+            gathered:  [B, K, D] compact tensor of survivors (K = S*(1-rate)).
+            keep_idx:  [B, K]   indices into dim-1 for scatter_back.
+            gate_loss: scalar   rate + bimodal loss for the scorer.
+        """
+        B, S, D = hidden.shape
+        K = max(int(S * (1.0 - target_rate)), 1)
+
+        if target_rate == 0.0:
+            # No elimination: return full sequence
+            idx = torch.arange(S, device=hidden.device).unsqueeze(0).expand(B, -1)
+            self.last_elimination_loss = torch.tensor(0.0, device=hidden.device)
+            return hidden, idx, self.last_elimination_loss
+
+        logits = self.scorer(hidden).squeeze(-1)                      # [B, S]
+        if self.training and self.gumbel:
+            logits = logits + self._gumbel_noise(logits)
+        soft_mask = torch.sigmoid(logits / self.temperature)
+
+        # Rate + bimodal loss (gradient path for scorer)
+        rate_loss = ((1.0 - soft_mask).mean() - target_rate).pow(2)
+        m = soft_mask.clamp(1e-6, 1.0 - 1e-6)
+        entropy = -(m * torch.log(m) + (1.0 - m) * torch.log(1.0 - m))
+        self.last_elimination_loss = rate_loss + self.bimodal_lambda * entropy.mean()
+
+        # Merge deleted mass into survivors BEFORE gathering
+        # Uses STE hard mask for the merge gating, same as forward_train
+        hard_mask = (soft_mask > 0.5).to(hidden.dtype)
+        mask_ste = hard_mask + soft_mask - soft_mask.detach()          # STE
+        m1 = mask_ste.unsqueeze(-1)                                    # [B,S,1]
+        if self.merge_conv is not None:
+            deleted = hidden * (1.0 - m1)
+            merged = self.merge_conv(deleted.transpose(1, 2)).transpose(1, 2)
+            hidden = hidden + merged * m1  # enrich survivors with neighbour info
+
+        # TopK selection (fixed K per batch for clean batched ops)
+        _, keep_idx = soft_mask.topk(K, dim=1)                        # [B, K]
+        keep_idx = keep_idx.sort(dim=1).values                        # temporal order
+
+        # Gather survivors
+        gathered = hidden.gather(
+            1, keep_idx.unsqueeze(-1).expand(-1, -1, D)                # [B, K, D]
+        )
+
+        return gathered, keep_idx, self.last_elimination_loss
+
+    def scatter_back(
+        self,
+        processed: Tensor,
+        keep_idx: Tensor,
+        h_pre_gate: Tensor,
+    ) -> Tensor:
+        """Scatter processed survivors back to original positions.
+
+        Deleted positions keep their pre-gate representation (no refinement
+        from post-gate layers).  This preserves gradient flow for all
+        positions through the CE loss.
+
+        Args:
+            processed:   [B, K, D] post-gate-layer output for survivors.
+            keep_idx:    [B, K]    original position indices from forward_gather.
+            h_pre_gate:  [B, S, D] pre-gate hidden states (full sequence).
+
+        Returns:
+            output: [B, S, D] reconstructed full sequence.
+        """
+        B, S, D = h_pre_gate.shape
+        output = h_pre_gate.clone()  # deleted positions keep layer-N/2 repr
+        output.scatter_(
+            1,
+            keep_idx.unsqueeze(-1).expand(-1, -1, D),
+            processed,
+        )
+        return output
 
     def set_elimination_rate(self, rate: float) -> None:
         self.elimination_rate = rate
@@ -1269,12 +1811,22 @@ def load_checkpoint(
 def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
                              metrics: dict, config: dict, step: int,
                              is_final: bool = False) -> str:
-    """Save ablation checkpoint: BF16 resume during training, 2-bit packed at end."""
-    path = (
+    """Save ablation checkpoint: BF16 resume during training, 2-bit packed at end.
+
+    Checkpoints are saved inside a per-run subdirectory (e.g. run_01/) so that
+    multiple ablation runs can execute concurrently without filename collisions.
+    """
+    # Create per-run directory (exist_ok=True is atomic and safe for
+    # concurrent processes creating the same directory).
+    run_dir = Path(run_name)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = (
         f"checkpoint_{run_name}_final.pt"
         if is_final
         else f"checkpoint_{run_name}_step{step}.pt"
     )
+    path = str(run_dir / filename)
 
     # Strip DataParallel + torch.compile wrappers; otherwise state_dict keys
     # carry an `_orig_mod.` prefix that breaks Phase-2 / complement loads.
@@ -1322,7 +1874,7 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
             api.create_repo(hub_repo, repo_type="model", exist_ok=True)
             api.upload_file(
                 path_or_fileobj=path,
-                path_in_repo=f"ablation/{path}",
+                path_in_repo=f"ablation/{filename}",
                 repo_id=hub_repo,
             )
             print(f"[Checkpoint] Uploaded to HF: {path}")
@@ -1331,7 +1883,7 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
 
     if not is_final:
         import glob as _glob
-        for old in _glob.glob(f"checkpoint_{run_name}_step*.pt"):
+        for old in _glob.glob(str(run_dir / f"checkpoint_{run_name}_step*.pt")):
             if old != path:
                 try:
                     os.remove(old)
