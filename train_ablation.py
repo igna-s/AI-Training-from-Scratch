@@ -166,6 +166,7 @@ BASE_CONFIG = {
     'checkpoint_repo':    'Cukinator/cpu1-ablation-checkpoints',
     'save_every_steps':   1000,
     'checkpoint_fraction': 0.05,
+    'log_every_steps':    500,
 
     # Chinchilla scaling: total_tokens = chinchilla_tokens_per_param × N_params.
     # Recomputes total_steps + warmup_steps + save_every once N_params is
@@ -464,6 +465,7 @@ RUN_CONFIGS = {
             'RWKV (Peng et al., 2023)',
             'HGRN2 (Qin et al., 2024)',
         ],
+    },
 }
 
 
@@ -495,6 +497,7 @@ SMALL_BASE_CONFIG = {
     'total_steps':      1000,
     'warmup_steps':     100,
     'save_every_steps': 200,
+    'log_every_steps':  100,
 
     # 10M runs use the pre-processed Cukinator dataset; run_16 overrides
     # this back to FineWeb because its question is "no teacher".
@@ -565,7 +568,6 @@ SMALL_RUN_CONFIGS = {
         'use_delete_gate':        True,
         'use_real_gather':        True,
         'use_embedding_alignment': False,
-        'raw_bytes_only':         True,
         'dataset_repo':           'HuggingFaceFW/fineweb',
         'training_signal':        'ce_only',
         'description':            'CPU-1 COMPLETE @ 10M, raw bytes from scratch, zero teacher. '
@@ -1225,16 +1227,38 @@ def train_run(run_name: str, dry_run: bool = False,
     optim_step = 0
 
     if not resume_ckpt and not dry_run:
-        run_dir = Path(run_name)
-        if run_dir.exists():
-            step_ckpts = list(run_dir.glob(f"checkpoint_{run_name}_step*.pt"))
-            if step_ckpts:
-                def get_step(p):
-                    try:
-                        return int(p.stem.split('_step')[-1])
-                    except ValueError:
-                        return -1
-                resume_ckpt = str(max(step_ckpts, key=get_step))
+        hub_repo = config.get('checkpoint_repo')
+        if hub_repo:
+            try:
+                import random, time as _time
+                _time.sleep(random.uniform(0, 5))  # stagger parallel HF Hub calls
+                from huggingface_hub import list_repo_files, hf_hub_download
+                prefix = f"ablation/checkpoint_{run_name}_step"
+                remote_ckpts = [
+                    f for f in list_repo_files(hub_repo, repo_type="model")
+                    if f.startswith(prefix) and f.endswith('.pt')
+                ]
+                if remote_ckpts:
+                    def _remote_step(fname):
+                        try:
+                            return int(fname.split('_step')[-1].removesuffix('.pt'))
+                        except ValueError:
+                            return -1
+                    latest = max(remote_ckpts, key=_remote_step)
+                    run_dir = Path(run_name)
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    print(f"[Resume] Downloading {latest} from {hub_repo} ...")
+                    resume_ckpt = hf_hub_download(
+                        repo_id=hub_repo,
+                        filename=latest,
+                        repo_type="model",
+                        local_dir=str(run_dir),
+                    )
+                    print(f"[Resume] Downloaded to {resume_ckpt}")
+                else:
+                    print(f"[Resume] No checkpoint found in {hub_repo} for {run_name}, starting fresh.")
+            except Exception as e:
+                print(f"[Resume] HF Hub lookup failed ({e}), starting fresh.")
 
     if resume_ckpt and Path(resume_ckpt).exists():
         print(f"[Resume] Loading checkpoint from {resume_ckpt}")
@@ -1351,24 +1375,40 @@ def train_run(run_name: str, dry_run: bool = False,
                 for pg in optimizer.param_groups:
                     pg['lr'] = get_lr_from_config(optim_step, config)
 
-                if optim_step % 500 == 0:
-                    avg_loss = sum(losses[-100:]) / min(100, len(losses))
+                log_every = int(config.get('log_every_steps', 500))
+                if optim_step % log_every == 0:
+                    window = min(log_every, len(losses))
+                    avg_loss = sum(losses[-window:]) / window
                     elapsed = time.time() - t_start
+                    steps_per_sec = optim_step / max(elapsed, 1e-6)
+                    tokens_per_sec = int(
+                        steps_per_sec
+                        * config['batch_per_gpu']
+                        * config['seq_len']
+                        * config.get('patch_size', 4)
+                    )
+                    epoch = (optim_step * config['batch_per_gpu']) / max(
+                        len(train_ds) if hasattr(train_ds, '__len__') else float('inf'), 1
+                    )
                     if device.type == 'cuda':
                         vram_mb = torch.cuda.memory_allocated() / (1024 ** 2)
                         vram_res_mb = torch.cuda.memory_reserved() / (1024 ** 2)
                         print(f"Step {optim_step:5d}/{total_steps} | "
-                              f"Loss: {avg_loss:.4f} | "
-                              f"LR: {get_lr_from_config(optim_step, config):.2e} | "
-                              f"VRAM: {vram_mb:.0f}/{vram_res_mb:.0f} MB | "
-                              f"Time: {elapsed:.0f}s")
+                              f"Loss {avg_loss:.4f} | "
+                              f"LR {get_lr_from_config(optim_step, config):.2e} | "
+                              f"Tok/s {tokens_per_sec:,} | "
+                              f"Epoch {epoch:.2f} | "
+                              f"VRAM {vram_mb:.0f}/{vram_res_mb:.0f} MB | "
+                              f"{elapsed:.0f}s")
                         gc.collect()
                         torch.cuda.empty_cache()
                     else:
                         print(f"Step {optim_step:5d}/{total_steps} | "
-                              f"Loss: {avg_loss:.4f} | "
-                              f"LR: {get_lr_from_config(optim_step, config):.2e} | "
-                              f"Time: {elapsed:.0f}s")
+                              f"Loss {avg_loss:.4f} | "
+                              f"LR {get_lr_from_config(optim_step, config):.2e} | "
+                              f"Tok/s {tokens_per_sec:,} | "
+                              f"Epoch {epoch:.2f} | "
+                              f"{elapsed:.0f}s")
 
                 # Save policy: step 10 (smoke test), every save_every_steps
                 # (Chinchilla: 5% of horizon), or every 25 min as a safety net.
@@ -1382,7 +1422,7 @@ def train_run(run_name: str, dry_run: bool = False,
                 )
                 if should_save and not dry_run:
                     save_ablation_checkpoint(model, optimizer, run_name, {},
-                                             config, optim_step)
+                                             config, optim_step, scaler=scaler)
                     last_ckpt_time = now
 
     # Final eval (unwrap DataParallel + torch.compile)
@@ -1723,13 +1763,19 @@ def infer_run(
 # the same GPU slot.
 
 PARALLEL_GROUPS: list[list[str]] = [
-    # Group 0: FP16 baselines (Transformer + MLGRU, BPE + byte)
-    ["run_01", "run_02a_byte_only_heads", "run_02", "run_03"],
-    # Group 1: Ternary progression (quant → FPRes → kernel-strict → Bolmo)
-    ["run_04", "run_05", "run_05b_kernel_strict", "run_06"],
-    # Group 2: Complete stack + variants (DG Phase 1→2 chained)
-    ["run_07", "run_08", "run_09", "run_10"],
-    # Group 3: 10M scaling runs (fixed 1000 steps, NOT Chinchilla)
+    # Group 0: FP16 baselines — batch A
+    ["run_01", "run_02a_byte_only_heads"],
+    # Group 1: FP16 baselines — batch B
+    ["run_02", "run_03"],
+    # Group 2: Ternary progression — batch A
+    ["run_04", "run_05"],
+    # Group 3: Ternary progression — batch B
+    ["run_05b_kernel_strict", "run_06"],
+    # Group 4: Complete stack — batch A
+    ["run_07", "run_08"],
+    # Group 5: Complete stack — batch B
+    ["run_09", "run_10"],
+    # Group 6: 10M scaling runs — all 4 fit on 1 T4 simultaneously
     ["run_13", "run_14", "run_15", "run_16"],
 ]
 
@@ -1802,23 +1848,25 @@ def _build_run_cmd(run_name: str, dry_run: bool, total_steps: int | None,
     return cmd
 
 
-def _spawn_run(run_name: str, gpu_id: int, dry_run: bool,
+def _spawn_run(run_name: str, slot: int, n_physical_gpus: int, dry_run: bool,
                total_steps: int | None, log_dir: Path) -> dict:
-    """Spawn one run as a subprocess pinned to a single GPU."""
+    """Spawn one run as a subprocess. Maps slot → physical GPU via modulo."""
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{run_name}.log"
     log_fp = open(log_path, "ab", buffering=0)
 
+    gpu_id = slot % max(n_physical_gpus, 1)
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id) if gpu_id >= 0 else ""
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
 
     cmd = _build_run_cmd(run_name, dry_run, total_steps, phase=1, phase1_ckpt=None)
-    print(f"  [spawn] {run_name}  GPU={gpu_id}  →  {log_path.name}")
+    print(f"  [spawn] {run_name}  slot={slot} GPU={gpu_id}  →  {log_path.name}")
     proc = subprocess.Popen(cmd, stdout=log_fp, stderr=subprocess.STDOUT, env=env)
 
     return {
         "name":        run_name,
+        "slot":        slot,
         "gpu":         gpu_id,
         "proc":        proc,
         "log_fp":      log_fp,
@@ -1863,34 +1911,39 @@ def _maybe_advance_phase(slot: dict) -> bool:
 def run_group(runs: list[str], n_gpus: int, max_parallel: int,
               dry_run: bool, total_steps: int | None,
               log_dir: Path) -> dict:
-    """Run all `runs` of a group with at most `max_parallel` concurrent procs."""
-    parallel = max(1, min(max_parallel, max(n_gpus, 1)))
-    print(f"\n--- Grupo de {len(runs)} run(s), paralelismo {parallel} ---")
+    """Run all `runs` with at most `max_parallel` concurrent procs.
+
+    `n_gpus` is the physical GPU count; slots are mapped to GPUs via modulo,
+    so multiple slots can share the same GPU when max_parallel > n_gpus.
+    """
+    parallel = max(1, max_parallel)
+    n_physical = max(n_gpus, 1)
+    print(f"\n--- Grupo de {len(runs)} run(s), paralelismo {parallel}, GPUs físicas {n_physical} ---")
     pending = list(runs)
     in_flight: list[dict] = []
-    free_gpus: list[int] = list(range(parallel))
+    free_slots: list[int] = list(range(parallel))
     rcodes: dict[str, int] = {}
 
     while pending or in_flight:
-        while pending and free_gpus:
-            gpu = free_gpus.pop(0)
-            slot = _spawn_run(pending.pop(0), gpu, dry_run, total_steps, log_dir)
-            in_flight.append(slot)
+        while pending and free_slots:
+            slot_id = free_slots.pop(0)
+            proc_slot = _spawn_run(pending.pop(0), slot_id, n_physical, dry_run, total_steps, log_dir)
+            in_flight.append(proc_slot)
 
         time.sleep(2.0)
 
         still_alive: list[dict] = []
-        for slot in in_flight:
-            if _maybe_advance_phase(slot):
-                still_alive.append(slot)
+        for proc_slot in in_flight:
+            if _maybe_advance_phase(proc_slot):
+                still_alive.append(proc_slot)
             else:
-                rc = slot["proc"].returncode
-                rcodes[slot["name"]] = rc
-                slot["log_fp"].close()
-                free_gpus.append(slot["gpu"])
+                rc = proc_slot["proc"].returncode
+                rcodes[proc_slot["name"]] = rc
+                proc_slot["log_fp"].close()
+                free_slots.append(proc_slot["slot"])
                 tag = "OK" if rc == 0 else f"FAIL rc={rc}"
-                elapsed = (time.time() - slot["started_at"]) / 60
-                print(f"  [done]  {slot['name']:8s}  GPU={slot['gpu']}  {tag}  ({elapsed:.1f} min)")
+                elapsed = (time.time() - proc_slot["started_at"]) / 60
+                print(f"  [done]  {proc_slot['name']:8s}  GPU={proc_slot['gpu']}  {tag}  ({elapsed:.1f} min)")
         in_flight = still_alive
 
     return rcodes
@@ -1941,7 +1994,7 @@ def orchestrate(args: argparse.Namespace) -> int:
     all_rcodes: dict[str, int] = {}
     for gi, runs in enumerate(groups):
         print(f"\n========== Grupo {gi}: {runs} ==========")
-        rc = run_group(runs, n_gpus=max_parallel, max_parallel=max_parallel,
+        rc = run_group(runs, n_gpus=n_gpus, max_parallel=max_parallel,
                        dry_run=args.dry_run, total_steps=args.steps,
                        log_dir=log_dir)
         all_rcodes.update(rc)
