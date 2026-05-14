@@ -1,0 +1,24 @@
+{
+  "run_name": "run_05",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_05\\checkpoint_run_05_final.pt",
+  "load_s": 0.16,
+  "train_metrics": {
+    "run_name": "mlgru_byte_ternary_fpres",
+    "perplexity": 257.654,
+    "tokens_per_sec_cpu": 10.2664,
+    "ram_mb": 155.9757,
+    "val_loss": 5.5516,
+    "n_params_M": 38.9939
+  },
+  "step": 649,
+  "format": "compact_2bit",
+  "n_params_M": 38.99,
+  "ram_mb": 156.0,
+  "throughput_patches_per_sec": 7.52,
+  "throughput_bytes_per_sec": 30.09,
+  "throughput_time_s": 7.34,
+  "generation_time_s": 5.29,
+  "generated_text": "The quick brown fox�p�lq��|?��8�V\u0007\u0016a=\u0006?���ו\u0000N\u0005����C̝}\u000e\u000e�\u0002�9msD,�r��[�r�-\u001d�pj�pkj��wm���m�������1}8(�Mx\r�m��hFO\u0004�C30��vTD�j� _�\u000e�چj\u001b`-1ж�9��",
+  "generated_bytes": 243,
+  "eval_time_s": 13.2
+}

@@ -128,11 +128,10 @@ BASE_CONFIG = {
     'window_size':  512,
     'pfnet_hidden': 0,
 
-    # Single T4 (16 GB) per run; orchestration pins each run to one GPU via
-    # CUDA_VISIBLE_DEVICES. batch=24 / accum=1 fills ~10–12 GB at d=512 /
-    # seq=5000 / 12 layers under AMP+grad-checkpointing.
-    'batch_per_gpu':               24,
-    'gradient_accumulation_steps': 1,
+    # 12 GB VRAM / 12 GB RAM hard limits. batch=8 / accum=3 (effective
+    # batch=24) keeps peak VRAM well under the 12 GB ceiling.
+    'batch_per_gpu':               8,
+    'gradient_accumulation_steps': 3,
     'lr':                          3e-4,
     'min_lr':                      3e-5,
     'warmup_steps':                500,
@@ -172,7 +171,7 @@ BASE_CONFIG = {
     # Recomputes total_steps + warmup_steps + save_every once N_params is
     # known so warmup_ratio (5%) stays constant across param scales.
     'chinchilla':                  True,
-    'chinchilla_tokens_per_param': 20,
+    'chinchilla_tokens_per_param': 2,   # ablation budget: compare architectures, not reach optimal loss
     'warmup_ratio':                0.05,
 
     # DeleteGate Phase-2 target elimination rate. Read by both the gate's
@@ -490,14 +489,12 @@ SMALL_BASE_CONFIG = {
     'head_dim':     40,
     'window_size':  256,
 
-    # Fixed budget: Cukinator has ~37.5M tokens → ~312 steps/epoch.
-    # 1000 steps = ~3.2 epochs. NOT Chinchilla-scaled so the comparison
-    # between Cukinator (teacher) and FineWeb (CE-only) is compute-fair.
-    'chinchilla':       False,
-    'total_steps':      1000,
-    'warmup_steps':     100,
-    'save_every_steps': 200,
-    'log_every_steps':  100,
+    # Chinchilla-scaled at 2 tok/param (same as 50M runs):
+    # 10M × 2 = 20M tokens / 120K tok/step ≈ 167 steps, floored to 200 by
+    # chinchilla_total_steps(). warmup_ratio=0.05 → ~10 steps warmup (floored
+    # to 50 by chinchilla_warmup). Each run ≈ 15-20 min on T4.
+    'chinchilla':       True,
+    'log_every_steps':  50,
 
     # 10M runs use the pre-processed Cukinator dataset; run_16 overrides
     # this back to FineWeb because its question is "no teacher".
@@ -826,10 +823,11 @@ class AblationModel(nn.Module):
             for i, block in enumerate(self.blocks):
                 if not has_gathered:
                     # Pre-gate layers (or all layers if no gather)
-                    def _fn(_h, _hs, _b=block):
+                    # hidden_states[i] is None for 50M runs — don't pass it as
+                    # a checkpoint arg or the compiled graph tries to save None.
+                    def _fn(_h, _b=block, _hs=hidden_states[i]):
                         return _b(_h, _hs)
-                    h, h_new = checkpoint(_fn, h, hidden_states[i],
-                                          use_reentrant=False)
+                    h, h_new = checkpoint(_fn, h, use_reentrant=False)
                     new_states.append(h_new)
 
                     if do_gather and i == self.delete_gate_pos:
@@ -1075,6 +1073,11 @@ def train_run(run_name: str, dry_run: bool = False,
                 comp_state = ckpt['model_state_dict']
             target = _unwrap_model(model)
             missing, unexpected = target.load_state_dict(comp_state, strict=False)
+            # Restore float32 dtype: load_state_dict silently mutates param dtypes
+            # to match the bfloat16 checkpoint; AMP GradScaler needs float32 params.
+            for p in target.parameters():
+                if p.is_floating_point() and p.dtype != torch.float32:
+                    p.data = p.data.to(dtype=torch.float32)
             transferred = sum(1 for k in comp_state if k not in unexpected)
             print(f"[Complement] Transferred {transferred} keys "
                   f"(skipped {len(unexpected)} incompatible, "
@@ -1105,6 +1108,10 @@ def train_run(run_name: str, dry_run: bool = False,
             p1_state = ckpt['model_state_dict']
         target = _unwrap_model(model)
         missing, unexpected = target.load_state_dict(p1_state, strict=False)
+        # Restore float32 dtype: bfloat16 checkpoint silently mutates param dtypes.
+        for p in target.parameters():
+            if p.is_floating_point() and p.dtype != torch.float32:
+                p.data = p.data.to(dtype=torch.float32)
         # Phase-1 ckpts saved from a compiled model (without unwrap) end up
         # with an `_orig_mod.` prefix in every key. strict=False silently
         # discards them all → Phase-2 trains from random init with the gate
@@ -1146,13 +1153,26 @@ def train_run(run_name: str, dry_run: bool = False,
     val_ds = load_ablation_dataset(config, split='val' if not dry_run else 'train',
                                    dry_run=dry_run, mount_path=mount_path)
 
-    n_workers = 0 if dry_run else 6
+    # 4 CPU workers keep the pinned-memory queue full for the CUDAPrefetcher.
+    # prefetch_factor=4 means up to 4×batch_size samples are staged per worker
+    # in pinned RAM — well within the 10 GB RAM budget at batch=8, seq=5000.
+    # On a single-run T4 (12 GB VRAM) the GPU is the compute bottleneck, not
+    # the H2D transfer, so maxing out prefetch eliminates stall time completely.
+    n_workers = 0 if dry_run else 4
     if (override := os.environ.get('SMOKE_N_WORKERS')) is not None:
         n_workers = int(override)
     total_batch = config['batch_per_gpu'] * max(n_gpus, 1)
     if (override := os.environ.get('SMOKE_BATCH_PER_GPU')) is not None:
         total_batch = int(override) * max(n_gpus, 1)
     is_iterable = isinstance(train_ds, torch.utils.data.IterableDataset)
+
+    def _worker_init(worker_id: int):
+        """Give each DataLoader worker a unique seed so shuffling is independent."""
+        import numpy as _np
+        seed = config.get('seed', 42) + worker_id * 1000
+        _np.random.seed(seed % (2 ** 32))
+        torch.manual_seed(seed)
+
     train_loader = DataLoader(
         train_ds,
         batch_size=total_batch,
@@ -1161,6 +1181,7 @@ def train_run(run_name: str, dry_run: bool = False,
         pin_memory=(device.type == 'cuda'),
         persistent_workers=(n_workers > 0),
         prefetch_factor=4 if n_workers > 0 else None,
+        worker_init_fn=_worker_init if n_workers > 0 else None,
         drop_last=False,
     )
 
@@ -1233,7 +1254,7 @@ def train_run(run_name: str, dry_run: bool = False,
                 import random, time as _time
                 _time.sleep(random.uniform(0, 5))  # stagger parallel HF Hub calls
                 from huggingface_hub import list_repo_files, hf_hub_download
-                prefix = f"ablation/checkpoint_{run_name}_step"
+                prefix = f"{run_name}/checkpoint_{run_name}_step"
                 remote_ckpts = [
                     f for f in list_repo_files(hub_repo, repo_type="model")
                     if f.startswith(prefix) and f.endswith('.pt')
@@ -1245,14 +1266,13 @@ def train_run(run_name: str, dry_run: bool = False,
                         except ValueError:
                             return -1
                     latest = max(remote_ckpts, key=_remote_step)
-                    run_dir = Path(run_name)
-                    run_dir.mkdir(parents=True, exist_ok=True)
+                    Path(run_name).mkdir(parents=True, exist_ok=True)
                     print(f"[Resume] Downloading {latest} from {hub_repo} ...")
                     resume_ckpt = hf_hub_download(
                         repo_id=hub_repo,
                         filename=latest,
                         repo_type="model",
-                        local_dir=str(run_dir),
+                        local_dir=".",
                     )
                     print(f"[Resume] Downloaded to {resume_ckpt}")
                 else:
@@ -1315,6 +1335,15 @@ def train_run(run_name: str, dry_run: bool = False,
                 fwd_kwargs = (
                     {'byte_targets': targets} if tok in ('byte', 'byte_dynamic') else {}
                 )
+                if hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
+                    torch.compiler.cudagraph_mark_step_begin()
+                elif hasattr(torch._dynamo, 'mark_step_begin'):
+                    torch._dynamo.mark_step_begin()
+                else:
+                    x = x.clone()
+                    if targets is not None:
+                        targets = targets.clone()
+                        
                 result = model(
                     x, training_phase=training_phase,
                     target_elimination=target_elim,
@@ -1393,6 +1422,9 @@ def train_run(run_name: str, dry_run: bool = False,
                     if device.type == 'cuda':
                         vram_mb = torch.cuda.memory_allocated() / (1024 ** 2)
                         vram_res_mb = torch.cuda.memory_reserved() / (1024 ** 2)
+                        if vram_res_mb > 11_500:
+                            print(f"[WARN] VRAM reserved {vram_res_mb:.0f} MB "
+                                  f"— approaching 12 GB limit!")
                         print(f"Step {optim_step:5d}/{total_steps} | "
                               f"Loss {avg_loss:.4f} | "
                               f"LR {get_lr_from_config(optim_step, config):.2e} | "
@@ -2081,6 +2113,9 @@ if __name__ == "__main__":
 
     if args.orchestrate:
         sys.exit(orchestrate(args))
+
+    if not args.skip_install:
+        install_requirements()
 
     if args.run is None:
         raise SystemExit(

@@ -1,0 +1,24 @@
+{
+  "run_name": "run_05b_kernel_strict",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_05b_kernel_strict\\checkpoint_run_05b_kernel_strict_final.pt",
+  "load_s": 0.14,
+  "train_metrics": {
+    "run_name": "mlgru_kernel_strict",
+    "perplexity": 268.8192,
+    "tokens_per_sec_cpu": 10.8969,
+    "ram_mb": 143.3682,
+    "val_loss": 5.594,
+    "n_params_M": 35.842
+  },
+  "step": 600,
+  "format": "compact_2bit",
+  "n_params_M": 35.84,
+  "ram_mb": 143.4,
+  "throughput_patches_per_sec": 7.69,
+  "throughput_bytes_per_sec": 30.76,
+  "throughput_time_s": 7.19,
+  "generation_time_s": 5.28,
+  "generated_text": "The quick brown fox��\u0000x\u000e�\u001e�\u001d�\u0018m��ƣ���\n⫶D1l�\u0012�?��Z���L�~bl�cA)�+s)j��3q�52\u0005��טboE��N8�^ׯ���Zx�(�lkn�\u001d򳖞�\\�x��viW�=��%�!�a\u0001�N\u001c�+\u0013>�e\t>l\u001a\u001aU",
+  "generated_bytes": 238,
+  "eval_time_s": 13.0
+}
