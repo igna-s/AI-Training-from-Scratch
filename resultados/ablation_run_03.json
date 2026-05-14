@@ -1,0 +1,24 @@
+{
+  "run_name": "run_03",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_03\\checkpoint_run_03_final.pt",
+  "load_s": 0.07,
+  "train_metrics": {
+    "run_name": "mlgru_byte_fp16",
+    "perplexity": 6.4861,
+    "tokens_per_sec_cpu": 43.8216,
+    "ram_mb": 155.3183,
+    "val_loss": 1.8697,
+    "n_params_M": 38.8296
+  },
+  "step": 647,
+  "format": "compact_2bit",
+  "n_params_M": 38.83,
+  "ram_mb": 155.3,
+  "throughput_patches_per_sec": 46.41,
+  "throughput_bytes_per_sec": 185.63,
+  "throughput_time_s": 1.4,
+  "generation_time_s": 0.87,
+  "generated_text": "The quick brown foxer our forme, mere beer catt Anter or shod as that mames of Thok the foritar for the stoge. Ke and allemento smould and ap- – ",
+  "generated_bytes": 147,
+  "eval_time_s": 2.9
+}

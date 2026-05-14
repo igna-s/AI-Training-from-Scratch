@@ -1,0 +1,24 @@
+{
+  "run_name": "run_02a_byte_only_heads",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_02a_byte_only_heads\\checkpoint_run_02a_byte_only_heads_final.pt",
+  "load_s": 0.07,
+  "train_metrics": {
+    "run_name": "transformer_byte_fp16_no_lbd",
+    "perplexity": 10.053,
+    "tokens_per_sec_cpu": 57.5649,
+    "ram_mb": 154.0035,
+    "val_loss": 2.3079,
+    "n_params_M": 38.5009
+  },
+  "step": 641,
+  "format": "compact_2bit",
+  "n_params_M": 38.5,
+  "ram_mb": 154.0,
+  "throughput_patches_per_sec": 75.66,
+  "throughput_bytes_per_sec": 302.64,
+  "throughput_time_s": 0.73,
+  "generation_time_s": 0.46,
+  "generated_text": "The quick brown foxioheotcDe yPao youiin s coekins tt  fnr tit noe i   tn  fidotoial allio tiCnd  fie  goc geshom the soore, einae artes uas notelb",
+  "generated_bytes": 147,
+  "eval_time_s": 1.8
+}

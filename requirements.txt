@@ -1,8 +1,7 @@
-# PyTorch with CUDA 12.4 (compatible with CUDA 12.6 driver)
---extra-index-url https://download.pytorch.org/whl/cu124
-torch==2.6.0+cu124
-torchvision==0.21.0+cu124
-torchaudio==2.6.0+cu124
+# PyTorch — NOT pinned here; the Lightning/Kaggle cloudspace already has
+# CUDA-enabled torch pre-installed. Pinning a specific cu build here causes
+# partial reinstalls that break torch._C._dynamo (skip_code ImportError).
+# If you need a specific version: pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu121
 
 # Hugging Face
 transformers>=4.47.0

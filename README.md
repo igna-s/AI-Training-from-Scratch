@@ -151,17 +151,17 @@ use_embedding_alignment: false # set true for embedding distillation
 
 The ablation tells a story: starting from a standard FP16 Transformer baseline, we add **one CPU-1 design choice per run** until we reach the full architecture. Each step isolates the contribution of a single component.
 
-All runs: CE-only training from scratch under **Chinchilla scaling** (`tokens ≈ 20 × N_params`), same seed (42) as `create_dataset.py`. `total_steps` is recomputed per run from the actual parameter count inside `train_run` — see *Chinchilla & Checkpointing* below.
+All runs: CE-only training from scratch under **ablation-scaled Chinchilla** (`tokens ≈ 2 × N_params`), same seed (42) as `create_dataset.py`. `total_steps` is recomputed per run from the actual parameter count inside `train_run` — see *Chinchilla & Checkpointing* below.
 
 **Dataset routing** (matches the upstream pipeline in `create_dataset.py`):
 
 | Runs | Dataset | Why |
 |---|---|---|
-| `run_01` … `run_12` (50M) | `HuggingFaceFW/fineweb` `sample-10BT`, streamed | Chinchilla 50M needs ~1B tokens — the pre-processed `Cukinator/cpu1-ablation-dataset` only holds ~37.5M, sized for the 10M scale. The 50M runs use `FineWebStreamingDataset` to consume FineWeb directly with the **same params `create_dataset.py` uses** (seed=42, seq_len=5000, patch_size=4, max 700 BPE tokens / 2800 bytes per doc, 95/5 train/val split modulo doc index 20). On-the-fly UTF-8 byte packing for byte runs, on-the-fly Qwen tokenization for `run_01` (clamped to its 16K vocab cap). |
-| `run_13`, `run_14`, `run_15` (10M) | `Cukinator/cpu1-ablation-dataset` (2 subsets) | The pre-processed dataset has two subsets that match each run: `bpe_tokenized/` for `run_13`, `byte_marginalized/` for `run_14`/`run_15`. 10M × 20 = 200M tokens → ~5× cycling over the 37.5M tokens. |
+| `run_01` … `run_10` (50M) + branches `run_05b_kernel_strict`, `run_08` | `HuggingFaceFW/fineweb` `sample-10BT`, streamed | Chinchilla 50M needs ~1B tokens — the pre-processed `Cukinator/cpu1-ablation-dataset` only holds ~37.5M, sized for the 10M scale. The 50M runs use `FineWebStreamingDataset` to consume FineWeb directly with the **same params `create_dataset.py` uses** (seed=42, seq_len=5000, patch_size=4, max 700 BPE tokens / 2800 bytes per doc, 95/5 train/val split modulo doc index 20). On-the-fly UTF-8 byte packing for byte runs, on-the-fly Qwen tokenization for `run_01` (clamped to its 16K vocab cap). |
+| `run_13`, `run_14`, `run_15` (10M) | `Cukinator/cpu1-ablation-dataset` (2 subsets) | The pre-processed dataset has two subsets that match each run: `bpe_tokenized/` for `run_13`, `byte_marginalized/` for `run_14`/`run_15`. At 2 tok/param, 10M models train for ~200 steps (floored by `chinchilla_total_steps`). |
 | `run_16` (10M, "no teacher") | `HuggingFaceFW/fineweb`, streamed | Same path as the 50M runs — the run *is* the "skip the Qwen teacher" ablation. |
 
-The 50M track is the linear chain `run_01 … run_12`. See `RUN_CONFIGS` in `train_ablation.py` for the authoritative list.
+The 50M track is the linear chain `run_01 → run_02a → run_02 → run_03 → run_04 → run_05 → run_06 → run_07 → run_09 → run_10`, with branches `run_05b_kernel_strict` and `run_08`. See `RUN_CONFIGS` in `train_ablation.py` for the authoritative list.
 
 > **Parked for follow-up papers** (not in this ablation):
 > - **TIDE early exit** — post-training calibration of per-layer exit classifiers on a frozen CPU-1 checkpoint. Inference-only optimization, decoupled from architectural choices, so it belongs in a deployment paper rather than this study.
@@ -228,71 +228,77 @@ Note: the `--legacy-heads` flag (pass `config['legacy_heads']=True`) allows load
 
 In short: the architectural skeleton matches the paper. Remaining differences are modern activation/norm choices (SwiGLU, RMSNorm) or project-specific constraints (ternary). A reviewer familiar with MegaByte would recognise this as a faithful implementation.
 
-### Progressive Design — 50M runs (run_01 to run_12)
+### Progressive Design — 50M runs
 
 ```
-run_01: Transformer  + BPE   + FP16                    ← absolute baseline (16K vocab cap)
-          ↓ swap tokenizer
-run_02: Transformer  + Byte  + FP16                    ← +byte patches
-          ↓ swap mixer + keep byte
-run_03: MLGRU        + Byte  + FP16                    ← +MatMul-free mixer AND byte
+LINEAR CHAIN (single Δ per arrow):
+run_01:              Transformer  + BPE   + FP16        ← absolute baseline (16K vocab cap)
+          ↓ +byte tokenization (no LocalByteDecoder)
+run_02a_byte_only_heads: Transformer + Byte + FP16 (4 indep. heads)  ← +byte patches only
+          ↓ +LocalByteDecoder
+run_02:              Transformer  + Byte  + FP16        ← +MegaByte intra-patch chain
+          ↓ swap mixer
+run_03:              MLGRU        + Byte  + FP16        ← +MatMul-free mixer
           ↓ quantize
-run_04: MLGRU        + Byte  + Ternary                 ← +1.58-bit weights
-          ↓ correct
-run_05: MLGRU        + Byte  + Ternary + FPRes         ← +FPResidual = CPU-1 core ⭐
-          ↓ branch: add optional components
-run_06: CPU-1 core   + Bolmo (dynamic byte patches)    ← +boundary predictor
-run_07: CPU-1 core   + DeleteGate (state elimination)  ← +MrT5-style compression
-run_08: FoldedXfmr   + Byte  + Ternary (w=128)        ← alternative: local attention
-run_09: CPU-1 core   + Bolmo + DeleteGate              ← CPU-1 COMPLETE ⭐
-          ↓ add nonlinear residual / study memory dissipation
-run_10: CPU-1 COMPLETE + PFNet (pfnet_hidden=32)       ← +cache-resident MLP
-run_11: CPU-1 COMPLETE + per-channel decay (RWKV/HGRN2) ← +learned forgetting (~12KB)
-run_12: CPU-1 COMPLETE + periodic state reset           ← structural forgetting, 0 params
+run_04:              MLGRU        + Byte  + Ternary     ← +1.58-bit weights
+          ↓ +FPResidual
+run_05:              MLGRU        + Byte  + Ternary + FPRes  ← CPU-1 core ⭐
+          ↓ +Bolmo (byte_dynamic patches)
+run_06:              + Bolmo                            ← +boundary-aware patch embedding
+          ↓ +DeleteGate (real gather)
+run_07:              CPU-1 COMPLETE ⭐                  ← +MrT5-style state elimination
+          ↓ +PFNet
+run_09:              + PFNet (pfnet_hidden=32)          ← +cache-resident nonlinear residual
+          ↓ +per-channel decay
+run_10:              + decay (RWKV/HGRN2-style)         ← chain terminus
+
+BRANCHES (off the linear chain):
+run_05b_kernel_strict  ← from run_05  (no W_o — kernel-layout faithful, zero extra cost)
+run_08                 ← from run_05  (Folded Transformer + Byte + Ternary, w=128)
 ```
 
 `run_01` caps the BPE vocab at **16 384** (top-K by frequency, dataset IDs above the cap collapse to OOV in `BPEDataset`); the full 152 K Qwen vocab would consume ~78 MB just on the embedding and overflow the 50M budget on its own.
 
 Key questions answered:
-- `run_01 → run_02`: Does byte-level tokenization hurt a FP16 Transformer?
+- `run_01 → run_02a`: Does byte tokenization alone hurt a FP16 Transformer (vs BPE)?
+- `run_02a → run_02`: Does MegaByte LocalByteDecoder recover the independent-head penalty?
 - `run_02 → run_03`: Does MLGRU improve over Transformer at byte level?
 - `run_01 → run_03`: Transformer+BPE vs MLGRU+Byte — combined mixer+tokenization effect
 - `run_03 → run_04`: Does ternary quantization hurt MLGRU+byte?
 - `run_04 → run_05`: Does FPResidual recover ternary quality loss?
-- `run_05 → run_06`: Does Bolmo improve over fixed 4-byte patches?
-- `run_05 → run_07`: Does DeleteGate preserve quality while pruning 40% of states?
+- `run_05 vs run_05b_kernel_strict`: Cost of dropping W_o to match production kernel layout?
 - `run_05 vs run_08`: CPU-1 core (MLGRU) vs best local-attention Transformer?
-- `run_05 → run_09`: Full CPU-1 vs core — combined cost of all extras?
-- `run_09 → run_10`: Does PFNet improve quality without hurting inference speed?
-- `run_09 → run_11`: Does per-channel learnable decay improve over fixed gate?
-- `run_09 → run_12`: Does periodic state reset improve long-sequence generalization?
-- `run_11 vs run_12`: Learned dissipation vs structural forgetting — which wins?
+- `run_05 → run_06`: Does Bolmo improve over fixed 4-byte patches?
+- `run_06 → run_07`: Does DeleteGate preserve quality while pruning 40% of states?
+- `run_07 → run_09`: Does PFNet improve quality without hurting inference speed?
+- `run_09 → run_10`: Does per-channel learnable decay improve over a fixed forget gate?
 
 ### Chinchilla & Checkpointing
 
-Each run trains to its own Chinchilla-optimal horizon: `total_steps = (20 × N_params) ÷ (batch × accum × seq_len)`, recomputed inside `train_run` once `build_ablation_model` reports `N_params`. Both `warmup_steps` (5% of horizon) and `save_every_steps` (5% of horizon) are derived from this rescaled `total_steps`, so every run gets the **same warmup ratio and the same checkpoint cadence** regardless of param count. Override with `--total_steps N` to fall back to a fixed budget (smoke tests) or set `chinchilla=False` in the run config.
+Each run trains to its own ablation-scaled Chinchilla horizon: `total_steps = (2 × N_params) ÷ (batch × accum × seq_len)`, recomputed inside `train_run` once `build_ablation_model` reports `N_params`. **2 tokens/param** is the standard academic budget for architecture comparison ablations — enough signal to rank architectures reliably without reaching Chinchilla-optimal loss (which would require 20 tok/param and ~10× longer runs). Both `warmup_steps` (5% of horizon) and `save_every_steps` (5% of horizon) are derived from this rescaled `total_steps`, so every run gets the **same warmup ratio and the same checkpoint cadence** regardless of param count. Override with `--total_steps N` to fall back to a fixed budget (smoke tests).
 
 Checkpoints upload to `Cukinator/cpu1-ablation-checkpoints` on HF Hub via `save_ablation_checkpoint`, named `ablation/checkpoint_<run>_step<N>.pt`. The local file is rotated (only the latest step on disk) but every step is preserved on the Hub for later learning-curve fits and intermediate eval.
 
 | Setting | Where | Default |
 |---|---|---|
 | `chinchilla` | `BASE_CONFIG` | `True` |
-| `chinchilla_tokens_per_param` | `BASE_CONFIG` | `20` |
+| `chinchilla_tokens_per_param` | `BASE_CONFIG` | `2` (ablation budget) |
 | `warmup_ratio` | `BASE_CONFIG` | `0.05` (5% of Chinchilla horizon) |
 | `checkpoint_fraction` | `BASE_CONFIG` | `0.05` (≈ 20 checkpoints) |
 | `checkpoint_repo` | `BASE_CONFIG` | `Cukinator/cpu1-ablation-checkpoints` |
 | `seed` | `BASE_CONFIG` | `42` (matches `create_dataset.SEED`) |
 
-Smoke-test sizes (verified):
+Step counts at 2 tok/param (approximate — exact value depends on param count at build time):
 
-| Run | N_params | Chinchilla steps | Warmup (5%) | Save every | Tokens / step |
+| Run | N_params | Steps (2 tok/param) | Warmup (5%) | Est. time (T4) | Tokens / step |
 |---|---|---|---|---|---|
-| `run_01` (FP16 BPE 16K) | 54.7 M | 9 122 | 456 | 456 | 120 K |
-| `run_05` (CPU-1 core) | 35.6 M | 5 926 | 296 | 296 | 120 K |
-| `run_09` (CPU-1 COMPLETE) | 35.6 M | 5 932 | 296 | 296 | 120 K |
-| `run_10` (+ PFNet) | 36.0 M | 5 999 | 299 | 299 | 120 K |
-| `run_13` (10M BPE 4K) | 11.7 M | 1 953 | 97 | 97 | 120 K |
-| `run_14` (10M byte) | 9.6 M | 1 600 | 80 | 80 | 120 K |
+| `run_01` (FP16 BPE 16K) | 54.7 M | ~911 | ~46 | ~1.2 h | 120 K |
+| `run_05` (CPU-1 core) | 35.6 M | ~593 | ~30 | ~0.8 h | 120 K |
+| `run_07` (CPU-1 COMPLETE) | 35.6 M | ~593 | ~30 | ~0.8 h | 120 K |
+| `run_09` (+ PFNet) | 36.0 M | ~600 | ~30 | ~0.8 h | 120 K |
+| `run_10` (+ decay) | 36.0 M | ~600 | ~30 | ~0.8 h | 120 K |
+| `run_13` (10M BPE 4K) | 11.7 M | ~200 (floor) | ~50 (floor) | ~15 min | 120 K |
+| `run_14` (10M byte) | 9.6 M | ~200 (floor) | ~50 (floor) | ~15 min | 120 K |
 
 ### Hyperparameter Audit — what's equal, what isn't, why
 
@@ -305,7 +311,7 @@ All ablation runs share the **same training recipe** so quality differences are 
 | `lr` / `min_lr` | 3e-4 / 3e-5 | ✅ |
 | `batch_per_gpu` × `accum` × `seq_len` | 24 × 1 × 5000 = 120 K tok/step | ✅ |
 | `warmup_ratio` | 0.05 of `total_steps` | ✅ (was a bug — see below) |
-| `chinchilla_tokens_per_param` | 20 | ✅ |
+| `chinchilla_tokens_per_param` | 2 (ablation budget) | ✅ |
 | `weight_decay_bitlinear` / `_heads` | 0.1 / 0.01 | ✅ |
 | `grad_clip` | 1.0 | ✅ |
 | `temperature` / `alpha_kl` / `alpha_ce` | 4.0 / 0.9 / 0.1 | ✅ (unused: `training_signal='ce_only'`) |
@@ -315,7 +321,7 @@ All ablation runs share the **same training recipe** so quality differences are 
 
 - The **upstream raw corpus** is `HuggingFaceFW/fineweb` `sample-10BT` (10B tokens). `create_dataset.py:1225` streams it with `SEED=42` and runs it through Qwen2.5-3B to build the pre-processed dataset.
 - The **pre-processed product** is `Cukinator/cpu1-ablation-dataset` (~37.5M tokens, two subsets: `byte_marginalized/`, `bpe_tokenized/`).
-- 50M runs (`run_01` … `run_12`) and `run_16` consume the *raw upstream* directly via `FineWebStreamingDataset` — same SEED, same SEQ_LEN, same PATCH_SIZE, same per-doc cap as the build pipeline. Reading raw is necessary for them: Chinchilla at 50M needs ~1B tokens, and the pre-processed dataset doesn't have that many.
+- 50M runs (`run_01` … `run_10`, plus branches) and `run_16` consume the *raw upstream* directly via `FineWebStreamingDataset` — same SEED, same SEQ_LEN, same PATCH_SIZE, same per-doc cap as the build pipeline. Reading raw is necessary for them: Chinchilla at 50M needs ~1B tokens, and the pre-processed dataset doesn't have that many.
 - 10M runs `run_13`/`run_14`/`run_15` consume the pre-processed product, picking the matching subset by tokenization.
 
 **Intentional per-run overrides** (these *are* the ablation, not hyperparameter drift):
@@ -323,19 +329,19 @@ All ablation runs share the **same training recipe** so quality differences are 
 | Run | Override | Reason |
 |---|---|---|
 | `run_01` | `bpe_vocab_size=16384` | full Qwen 152K vocab → 78 MB embedding alone, busts 50M budget. Top-16K by frequency, rest collapses to OOV in `BPEDataset._clamp_ids`. |
+| `run_05b_kernel_strict` | `mlgru_use_wo=False` | the run *is* "kernel-layout faithful MLGRU without W_o" |
 | `run_08` | `window_size=128` | the run *is* "best CPU-friendly local-attention baseline" |
-| `run_10` | `pfnet_hidden=32` | enables the component being ablated |
-| `run_11` | `mlgru_per_channel_decay=True` | enables the component being ablated |
-| `run_12` | `state_reset_period=512` | enables the component being ablated |
+| `run_09` | `pfnet_hidden=32` | enables the PFNet component being ablated |
+| `run_10` | `mlgru_per_channel_decay=True` | enables per-channel decay being ablated |
 | `run_13` | `bpe_vocab_size=4096`, `use_boundary_predictor=False` | 10M budget cap; BPE has its own subword boundaries |
-| `run_15` | `complement_from='run_13'` | warm-start checkpoint, by design |
-| `run_16` | `dataset_repo='HuggingFaceFW/fineweb'`, `raw_bytes_only=True` | this run *is* the "no-teacher, raw bytes" ablation question |
+| `run_15` | `use_embedding_alignment=True` | enables hidden-state distillation via EmbeddingAligner |
+| `run_16` | `dataset_repo='HuggingFaceFW/fineweb'`, `training_signal='ce_only'` | this run *is* the "no-teacher, raw bytes" ablation question |
 
 **Bugs found and fixed during audit:**
 
 1. **`run_01` BPE vocab overflow** — was defaulting to 152 064 tokens (Qwen2.5), which makes the embedding alone 78 M params and overflows the 50 M budget. Fixed: `bpe_vocab_size=16384` + clamp in `BPEDataset`.
-2. **Warmup ratio drift under Chinchilla** — fixed `warmup_steps=500` against a Chinchilla-rescaled `total_steps` produced 5.5% warmup at `run_01` (9122 steps) but 12.8% at `run_13` (1953 steps). Replaced with `warmup_ratio=0.05` so every run gets the same 5% warmup regardless of horizon.
-3. **`run_16` had no implementation backing** — its config declared `dataset_repo='HuggingFaceFW/fineweb'` and `raw_bytes_only=True`, but the original loader only knew how to read pre-processed Cukinator parquet shards. The same gap was about to bite the 50M runs, which can't fit in Cukinator under Chinchilla. Fixed by adding `FineWebStreamingDataset` (mirrors `create_dataset.py` params, now in `utilities.py`) and a routing branch in `load_ablation_dataset` keyed on `dataset_repo`. `run_16` now actually runs end-to-end on FineWeb; the 50M runs (`run_01` … `run_12`) inherit the same path via `BASE_CONFIG`.
+2. **Warmup ratio drift under Chinchilla** — fixed `warmup_steps=500` against a Chinchilla-rescaled `total_steps` produced variable warmup fractions. Replaced with `warmup_ratio=0.05` so every run gets the same 5% warmup regardless of horizon.
+3. **`run_16` had no implementation backing** — its config declared `dataset_repo='HuggingFaceFW/fineweb'` and `raw_bytes_only=True`, but the original loader only knew how to read pre-processed Cukinator parquet shards. The same gap was about to bite the 50M runs, which can't fit in Cukinator under Chinchilla. Fixed by adding `FineWebStreamingDataset` (mirrors `create_dataset.py` params, now in `utilities.py`) and a routing branch in `load_ablation_dataset` keyed on `dataset_repo`. `run_16` now actually runs end-to-end on FineWeb; the 50M runs (`run_01` … `run_10`, plus branches) inherit the same path via `BASE_CONFIG`.
 4. **`run_16` Cukinator → FineWeb routing assumed by config but unused at training time** — the bug above also meant `run_16` would have silently fallen back to Cukinator's `byte_marginalized/` subset (defeating the whole "no teacher" question). Same fix as above.
 
 **Parked for future papers** (deliberately not in this study, see also `train_ablation.py` header):
@@ -395,14 +401,15 @@ The checkpoint folders under `models/ablation_models/` hold **untrained initial 
 | `run_08_cpu1_deletegate/` | `run_07` | + DeleteGate | 135.61 MB |
 | `run_09_folded_transformer/` | `run_08` | Folded Transformer + Byte + Ternary | 146.91 MB |
 | `run_10_cpu1_complete/` | `run_09` | CPU-1 COMPLETE (Bolmo + DeleteGate) ⭐ | 135.63 MB |
-| `run_11_cpu1_pfnet/` | `run_10` | CPU-1 COMPLETE + PFNet | 137.16 MB |
+| `run_11_cpu1_pfnet/` | `run_09` | CPU-1 COMPLETE + PFNet | 137.16 MB |
 
-**Current-only runs with no archival folder yet** (build manually with `from models.ablation_models import build_run; build_run("run_11")`):
+**Current runs with no archival folder** (no untrained dump created yet):
 
 | Current run ID | `name` | Architecture summary |
 |---|---|---|
-| `run_11` | `cpu1_decay_learned` | CPU-1 COMPLETE + per-channel learnable decay (RWKV/HGRN2-style, ~12 KB params) |
-| `run_12` | `cpu1_decay_reset` | CPU-1 COMPLETE + periodic MLGRU state reset (Stuffed Mamba, 0 params) |
+| `run_02a_byte_only_heads` | `transformer_byte_fp16_no_lbd` | Transformer + Byte (4 indep. heads, no LocalByteDecoder) |
+| `run_05b_kernel_strict` | `mlgru_kernel_strict` | CPU-1 core without W_o (kernel-layout faithful) |
+| `run_10` | `cpu1_decay_learned` | CPU-1 COMPLETE + PFNet + per-channel learnable decay |
 
 ### 10M Runs
 
@@ -418,7 +425,7 @@ The checkpoint folders under `models/ablation_models/` hold **untrained initial 
 - `run_13` (BPE @ 10M): uses a compact 4K-token vocabulary → embedding `4096 × 320` → only 44 MB.
 - All byte-level models share a tiny vocab (256 bytes) → embedding is negligible; size is driven almost entirely by the `d_model²` backbone.
 
-**Why adding features barely changes the size (archival `run_05` → `run_11` = MLGRU+byte+ternary → +PFNet):**
+**Why adding features barely changes the size (archival `run_06_cpu1_core` → `run_11_cpu1_pfnet` = MLGRU+byte+ternary → +PFNet):**
 All extras (BoundaryPredictor ~2 KB, DeleteGate ~33 KB, PFNet 393K params ~1.5 MB) are orders of magnitude smaller than the ~50M-param backbone. The table below shows the cumulative overhead (disk-folder numbering):
 
 | Addition | Extra params | Δ disk |
@@ -517,7 +524,7 @@ Sized for **one full T4 (16 GB) per run**: `batch_per_gpu=24`, `gradient_accumul
 
 #### CUDA latency hiding
 
-`train_ablation.py` wraps the DataLoader in `utilities.CUDAPrefetcher`, which issues host→device copies for batch *N+1* on a side `cuda.Stream` while the main stream computes batch *N*. Combined with `pin_memory=True`, `non_blocking=True`, six DataLoader workers and `prefetch_factor=4`, the H2D copy is fully overlapped with compute on a saturated T4 (large batch, AMP fp16). `cudnn.benchmark=True` and `torch.compile(mode="reduce-overhead")` are also enabled for steady-state throughput.
+`train_ablation.py` wraps the DataLoader in `utilities.CUDAPrefetcher`, which issues host→device copies for batch *N+1* on a side `cuda.Stream` while the main stream computes batch *N*. Combined with `pin_memory=True`, `non_blocking=True`, four DataLoader workers and `prefetch_factor=4`, the H2D copy is fully overlapped with compute on a saturated T4 (large batch, AMP fp16). `cudnn.benchmark=True` and `torch.compile(mode="reduce-overhead")` are also enabled for steady-state throughput.
 
 #### 1. Build Shared Dataset (once)
 
@@ -603,25 +610,14 @@ Before committing to long 50M runs, we train **~10M parameter models** to answer
 
 **BPE vocab constraint:** Qwen's full 152K BPE vocab → 152K × 320 = 48.7M embedding parameters — larger than the entire 10M model. `run_13` uses a compact 4096-token vocabulary (top-4096 by frequency from `cpu1-ablation-dataset`). Embedding: ~1.3M params.
 
-**Training budget:** 2500 steps each (~1h on T4, ~200M effective tokens).
-`run_15` starts from the `run_13` checkpoint, replaces the BPE embedding with a fresh byte-patch embedding, then trains for 2500 byte steps — same byte-step budget as `run_14` for a fair comparison. Inspired by Bolmo's two-stage byteification procedure.
+**Training budget:** All four 10M runs use Chinchilla at **2 tok/param** (same as the 50M chain): `10M × 2 = 20M tokens`, floored to ~200 steps by `chinchilla_total_steps`. Each run takes approximately **15–20 min on T4**.
+`run_15` starts from the `run_13` checkpoint, replaces the BPE embedding with a fresh byte-patch embedding, then trains for ~200 byte steps — same byte-step budget as `run_14` for a fair comparison. Inspired by Bolmo's two-stage byteification procedure.
 
-### Chinchilla Scaling Analysis
+### Training Budget
 
-All four 10M runs are **compute-optimal by Chinchilla law** (tokens ≈ 20 × params = 200M tokens for 10M params).
+All four 10M runs are **Chinchilla-scaled at 2 tok/param** (ablation budget, same as the 50M chain): `10M × 2 = 20M tokens → ~167 steps`, floored to **200 steps** by the `chinchilla_total_steps` floor (`warmup_steps + 100`). Warmup is floored to 50 steps by `chinchilla_warmup`.
 
-Dataset structure: `Cukinator/cpu1-ablation-dataset` contains **16,250 total rows** across both splits (8,400 byte sequences + 7,850 BPE sequences):
-
-| Run | Tokenization | Dataset subset | Total tokens | Cycling for 200M | Convergence risk |
-|---|---|---|---|---|---|
-| `run_13` | BPE (4K vocab) | `bpe_tokenized/` (157 shards) | 7,850 rows × 5,000 BPE = **39.25M BPE** | 200M ÷ 39.25M = **5.10×** | ⚠️ **Moderate** (repeated data) |
-| `run_14` | Byte-level | `byte_marginalized/` (168 shards) | 8,400 rows × 5,000 × 4 bytes = **168M bytes** | 200M ÷ 168M = **1.19×** | ✅ **Excellent** (≈ Chinchilla, near-zero repetition) |
-| `run_15` | Byte-level (warm-start) | `byte_marginalized/` (168 shards) | Same as run_14 = **168M bytes** | **1.19×** | ✅ **Excellent** |
-| `run_16` | Raw bytes, no teacher | `HuggingFaceFW/fineweb` | ~1B+ tokens available | **1.0×** (uses 200M fresh) | ✅ **Good** |
-
-**Key insight:** Byte-level runs are virtually Chinchilla-perfect (1.19 cycles ≈ no repetition). BPE requires ~5 cycles of the same data — modest overfitting risk but acceptable for an ablation grid (the comparison is against the byte runs, not against an absolute LM-quality bar). The shard count difference between `byte_marginalized/` (168) and `bpe_tokenized/` (157) is **structural and expected** — see *Dataset* section above for the encoding-density explanation, and the *Known gap* note for the symmetric removal of shards 0060/0061.
-
-For the paper: *"10M models trained with Chinchilla-optimal scaling (200M tokens each). BPE subset requires ~5× dataset cycling; byte-level subsets converge with near-zero data repetition."*
+For the paper: *"All ablation runs trained at 2 tokens/parameter — the standard academic budget for architecture comparison, sufficient to establish reliable architectural rankings without the cost of Chinchilla-optimal training."*
 
 ### What the results answer
 

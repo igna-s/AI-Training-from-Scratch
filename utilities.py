@@ -116,6 +116,36 @@ class BitLinear(nn.Module):
         return output
 
 
+class _TernaryEmbedFn(torch.autograd.Function):
+    """Custom autograd Function for ternary embedding.
+
+    Saves only Parameters (weight, scale) for backward — never intermediates —
+    so no saved tensor ever lives in CUDA graph output buffers. w_ternary is
+    recomputed during backward, which is cheap and avoids the CUDAGraphs
+    overwrite error that occurs when intermediates are saved inside torch.compile.
+    """
+
+    @staticmethod
+    def forward(ctx, indices, weight, scale):
+        w_scale = weight.abs().mean(dim=1, keepdim=True)
+        w_ternary = (weight / (w_scale + 1e-8)).round().clamp(-1, 1)
+        ctx.save_for_backward(indices, weight, scale)
+        return F.embedding(indices, w_ternary * scale)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        indices, weight, scale = ctx.saved_tensors
+        with torch.no_grad():
+            w_scale = weight.abs().mean(dim=1, keepdim=True)
+            w_ternary = (weight / (w_scale + 1e-8)).round().clamp(-1, 1)
+        V, D = weight.shape
+        grad_eff = weight.new_zeros(V, D)
+        grad_eff.scatter_add_(0, indices.reshape(-1, 1).expand(-1, D),
+                              grad_output.reshape(-1, D))
+        # STE: d(w_ternary)/d(weight) = 1, so grad_weight = grad_eff * scale
+        return None, grad_eff * scale, (grad_eff * w_ternary).sum(1, keepdim=True)
+
+
 class BitEmbedding(nn.Module):
     """1.58-bit ternary embedding (Slender-Mamba, COLING 2025).
 
@@ -132,10 +162,7 @@ class BitEmbedding(nn.Module):
         self.scale = nn.Parameter(torch.ones(vocab_size, 1))
 
     def forward(self, indices: Tensor) -> Tensor:
-        w_scale = self.weight.abs().mean(dim=1, keepdim=True)
-        w_ternary = (self.weight / (w_scale + 1e-8)).round().clamp(-1, 1)
-        w_ternary = w_ternary.detach() + self.weight - self.weight.detach()  # STE
-        return F.embedding(indices, w_ternary * self.scale)
+        return _TernaryEmbedFn.apply(indices, self.weight, self.scale)
 
 
 class FPResidual(nn.Module):
@@ -580,7 +607,7 @@ class AblationMLGRU(nn.Module):
         b_neg = F.relu(-b)
         # Floor for log(0) — large negative finite so logcumsumexp ignores it
         # but no inf/NaN propagation risk.
-        neg_floor = -1e9
+        neg_floor = -3e4  # float16 max ~65504, so -3e4 is safe
         log_b_pos = torch.where(
             b_pos > 0, torch.log(b_pos.clamp(min=eps)),
             torch.full_like(b_pos, neg_floor),
@@ -591,8 +618,14 @@ class AblationMLGRU(nn.Module):
         )
 
         # log Σ_{k≤t} exp(-cum_log_a_k)·b_k  =  logcumsumexp(log b_k - cum_log_a_k)
-        log_sum_pos = torch.logcumsumexp(log_b_pos - cum_log_a, dim=1)
-        log_sum_neg = torch.logcumsumexp(log_b_neg - cum_log_a, dim=1)
+        # torch.logcumsumexp lowers to index_put in the FX graph and breaks
+        # torch.compile — replace with cummax+cumsum which are compile-friendly.
+        def _logcumsumexp(x: Tensor) -> Tensor:
+            m = x.cummax(dim=1).values
+            return m + torch.log(torch.cumsum(torch.exp(x - m), dim=1).clamp(min=1e-30))
+
+        log_sum_pos = _logcumsumexp(log_b_pos - cum_log_a)
+        log_sum_neg = _logcumsumexp(log_b_neg - cum_log_a)
 
         # h_t = exp(cum_log_a_t)·h_0 + exp(cum_log_a_t + log_sum_pos_t)
         #                            - exp(cum_log_a_t + log_sum_neg_t)
@@ -1532,6 +1565,10 @@ class CUDAPrefetcher:
         if self.use_cuda:
             torch.cuda.current_stream(self.device).wait_stream(self.stream)
         batch = self._next
+        if self.use_cuda:
+            for k, v in batch.items():
+                if torch.is_tensor(v):
+                    v.record_stream(torch.cuda.current_stream(self.device))
         self._preload()
         return batch
 
@@ -1652,10 +1689,12 @@ def compute_loss(
                 and teacher_ids is not None):
             teacher_full = torch.zeros_like(logits)
             teacher_full.scatter_(2, teacher_ids, teacher_probs.to(logits.dtype))
-            teacher_full = teacher_full / teacher_full.sum(-1, keepdim=True).clamp(min=1e-8)
 
             student_log_T = F.log_softmax(logits / T, dim=-1)
-            teacher_T = (teacher_full / T).softmax(dim=-1)
+            # Temperature-scale from stored probs: raise to 1/T then renormalize.
+            # Dividing probs by T and softmax-ing is wrong (treats probs as logits).
+            teacher_T = teacher_full.pow(1.0 / T)
+            teacher_T = teacher_T / teacher_T.sum(-1, keepdim=True).clamp(min=1e-8)
             kl = F.kl_div(
                 student_log_T, teacher_T,
                 reduction='none', log_target=False,
@@ -1798,11 +1837,51 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     scaler: torch.amp.GradScaler | None = None,
 ) -> int:
-    """Load a checkpoint into model (and optionally optimizer/scaler)."""
+    """Load a checkpoint into model (and optionally optimizer/scaler).
+
+    Checkpoints are saved in bfloat16 to save disk space, but AMP training
+    requires float32 master weights for numerical stability and because
+    GradScaler.step() uses the multi_tensor_adamw fused kernel which asserts
+    that all tensors in a param-group share the same device *and* dtype.
+
+    Strategy:
+    - Snapshot each parameter's (device, dtype) *before* load_state_dict so we
+      can restore them afterwards (load_state_dict silently mutates param dtype
+      to match the checkpoint tensor, i.e. bfloat16 → bfloat16 params).
+    - Force optimizer exp_avg / exp_avg_sq to float32 on the correct device,
+      regardless of p.dtype, since AdamW master-weight accumulators must be f32.
+    """
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+
+    # 1. Remember original device/dtype for every parameter.
+    param_meta: dict[str, tuple[torch.device, torch.dtype]] = {
+        name: (p.device, p.dtype)
+        for name, p in model.named_parameters()
+    }
+
     model.load_state_dict(checkpoint['model_state_dict'])
+
+    # 2. Restore original device/dtype (checkpoint may have bfloat16 weights).
+    for name, p in model.named_parameters():
+        target_dev, target_dtype = param_meta[name]
+        if p.device != target_dev or p.dtype != target_dtype:
+            p.data = p.data.to(device=target_dev, dtype=target_dtype)
+
     if optimizer and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # 3. Move optimizer state to GPU in float32.
+        #    exp_avg / exp_avg_sq must be float32 for AMP GradScaler.
+        #    'step' is intentionally left on CPU as a float64 scalar (PyTorch
+        #    convention — the fused kernel allows this).
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                if p in optimizer.state:
+                    for k, v in optimizer.state[p].items():
+                        if isinstance(v, torch.Tensor) and k != 'step':
+                            optimizer.state[p][k] = v.to(
+                                device=p.device,
+                                dtype=torch.float32,
+                            )
     if scaler and 'scaler_state_dict' in checkpoint:
         scaler.load_state_dict(checkpoint['scaler_state_dict'])
     return checkpoint.get('step', 0)
@@ -1850,14 +1929,20 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
             for k, v in model_to_save.state_dict().items()
         }
         opt_state = optimizer.state_dict()
-        for group in opt_state.get('state', {}).values():
+        new_state = {}
+        for param_id, group in opt_state.get('state', {}).items():
+            new_group = dict(group)
             for key in ('exp_avg', 'exp_avg_sq'):
-                if key in group and group[key].is_floating_point():
-                    group[key] = group[key].to(torch.bfloat16)
+                if key in new_group and new_group[key].is_floating_point():
+                    new_group[key] = new_group[key].to(torch.bfloat16)
+            new_state[param_id] = new_group
+        
+        opt_state_copy = dict(opt_state)
+        opt_state_copy['state'] = new_state
 
         payload = {
             'model_state_dict': model_bf16,
-            'optimizer_state_dict': opt_state,
+            'optimizer_state_dict': opt_state_copy,
             'metrics': metrics,
             'step': step,
             'run_name': run_name,
@@ -1878,10 +1963,11 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
             api.create_repo(hub_repo, repo_type="model", exist_ok=True)
             api.upload_file(
                 path_or_fileobj=path,
-                path_in_repo=f"ablation/{filename}",
+                path_in_repo=f"{run_name}/{filename}",
                 repo_id=hub_repo,
+                repo_type="model",
             )
-            print(f"[Checkpoint] Uploaded to HF: {path}")
+            print(f"[Checkpoint] Uploaded to HF: {run_name}/{filename}")
         except Exception as e:
             print(f"[Checkpoint] Hub upload failed: {e}")
 
@@ -2092,22 +2178,49 @@ class ByteLevelDataset(Dataset):
         patches = torch.tensor(row['patches'], dtype=torch.long).reshape(S, P)
         targets = torch.tensor(row['targets'], dtype=torch.long).reshape(S, P)
         sample = {'patches': patches, 'targets': targets}
-        if self.has_teacher and 'teacher_probs' in row:
-            sample['teacher_probs'] = (
-                torch.tensor(row['teacher_probs'], dtype=torch.float32)
-                .reshape(S, 256)
-            )
-            sample['teacher_mask'] = torch.tensor(
-                row['teacher_mask'], dtype=torch.bool
-            )
-        if (self.config.get('use_embedding_alignment', False)
-                and 'teacher_hidden' in row and row['teacher_hidden'] is not None):
+        if self.has_teacher:
+            if 'teacher_probs' in row and row['teacher_probs'] is not None and len(row['teacher_probs']) > 0:
+                n_valid = len(row['teacher_probs']) // 256
+                tp_raw = torch.tensor(row['teacher_probs'], dtype=torch.float32).reshape(n_valid, 256)
+                full_tp = torch.zeros(S, 256, dtype=torch.float32)
+                mask_raw = row['teacher_mask']
+                tm = torch.zeros(S, dtype=torch.bool)
+                if len(mask_raw) == S:
+                    # Full boolean mask [S] — number of True entries may differ
+                    # from n_valid if packing used a fixed budget; clamp to avoid
+                    # shape-mismatch on scatter (e.g. [5000,256] vs [1148,256]).
+                    tm = torch.tensor(mask_raw, dtype=torch.bool)
+                    n_true = int(tm.sum().item())
+                    n_use = min(n_valid, n_true)
+                    if n_use > 0:
+                        full_tp[tm.nonzero(as_tuple=True)[0][:n_use]] = tp_raw[:n_use]
+                else:
+                    # Sparse integer indices of valid positions
+                    idx_t = torch.tensor(mask_raw, dtype=torch.long)
+                    n_use = min(n_valid, len(idx_t))
+                    full_tp[idx_t[:n_use]] = tp_raw[:n_use]
+                    tm[idx_t[:n_use]] = True
+                sample['teacher_probs'] = full_tp
+                sample['teacher_mask'] = tm
+            else:
+                sample['teacher_probs'] = torch.zeros(S, 256, dtype=torch.float32)
+                sample['teacher_mask'] = torch.zeros(S, dtype=torch.bool)
+
+        if self.config.get('use_embedding_alignment', False):
             teacher_dim = self.config.get('teacher_dim', 128)
             if teacher_dim > 0:
-                sample['teacher_hidden'] = (
-                    torch.tensor(row['teacher_hidden'], dtype=torch.float32)
-                    .reshape(S, teacher_dim)
-                )
+                if 'teacher_hidden' in row and row['teacher_hidden'] is not None and len(row['teacher_hidden']) > 0:
+                    n_valid_h = len(row['teacher_hidden']) // teacher_dim
+                    th_raw = torch.tensor(row['teacher_hidden'], dtype=torch.float32).reshape(n_valid_h, teacher_dim)
+                    full_th = torch.zeros(S, teacher_dim, dtype=torch.float32)
+                    mask = sample.get('teacher_mask', torch.zeros(S, dtype=torch.bool))
+                    active = mask.nonzero(as_tuple=True)[0]
+                    n_use_h = min(n_valid_h, len(active))
+                    if n_use_h > 0:
+                        full_th[active[:n_use_h]] = th_raw[:n_use_h]
+                    sample['teacher_hidden'] = full_th
+                else:
+                    sample['teacher_hidden'] = torch.zeros(S, teacher_dim, dtype=torch.float32)
         return sample
 
 
@@ -2140,29 +2253,34 @@ class BPEDataset(Dataset):
             'input_ids': self._clamp_ids(input_ids),
             'labels':    self._clamp_ids(labels),
         }
-        if self.has_teacher and 'teacher_probs_bpe' in row:
-            t_probs = (
-                torch.tensor(row['teacher_probs_bpe'], dtype=torch.float32)
-                .reshape(S, K)
-            )
-            t_ids = (
-                torch.tensor(row['teacher_ids_bpe'], dtype=torch.long)
-                .reshape(S, K)
-            )
-            # Drop teacher entries whose token ID falls outside the student vocab.
-            # Without this, scatter_ into logits[..., :vocab_cap] crashes with
-            # an out-of-bounds index when the Qwen teacher uses its full 152K vocab.
-            if self.vocab_cap < 152064:
-                out_of_vocab = t_ids >= self.vocab_cap
-                t_probs = t_probs.clone()
-                t_probs[out_of_vocab] = 0.0
-                t_ids = t_ids.clone()
-                t_ids[out_of_vocab] = 0
-            sample['teacher_probs_bpe'] = t_probs
-            sample['teacher_ids_bpe'] = t_ids
-            sample['teacher_mask_bpe'] = torch.tensor(
-                row['teacher_mask_bpe'], dtype=torch.bool
-            )
+        if self.has_teacher:
+            if 'teacher_probs_bpe' in row and row['teacher_probs_bpe'] is not None and len(row['teacher_probs_bpe']) > 0:
+                t_probs = (
+                    torch.tensor(row['teacher_probs_bpe'], dtype=torch.float32)
+                    .reshape(S, K)
+                )
+                t_ids = (
+                    torch.tensor(row['teacher_ids_bpe'], dtype=torch.long)
+                    .reshape(S, K)
+                )
+                # Drop teacher entries whose token ID falls outside the student vocab.
+                # Without this, scatter_ into logits[..., :vocab_cap] crashes with
+                # an out-of-bounds index when the Qwen teacher uses its full 152K vocab.
+                if self.vocab_cap < 152064:
+                    out_of_vocab = t_ids >= self.vocab_cap
+                    t_probs = t_probs.clone()
+                    t_probs[out_of_vocab] = 0.0
+                    t_ids = t_ids.clone()
+                    t_ids[out_of_vocab] = 0
+                sample['teacher_probs_bpe'] = t_probs
+                sample['teacher_ids_bpe'] = t_ids
+                sample['teacher_mask_bpe'] = torch.tensor(
+                    row['teacher_mask_bpe'], dtype=torch.bool
+                )
+            else:
+                sample['teacher_probs_bpe'] = torch.zeros(S, K, dtype=torch.float32)
+                sample['teacher_ids_bpe'] = torch.zeros(S, K, dtype=torch.long)
+                sample['teacher_mask_bpe'] = torch.zeros(S, dtype=torch.bool)
         return sample
 
 
@@ -2268,6 +2386,28 @@ class FineWebStreamingDataset(torch.utils.data.IterableDataset):
             raise ValueError(f"Unknown tokenization for streaming: {self.tok}")
 
 
+def _enforce_dataset_disk_limit(limit_gb: float = 10.0) -> None:
+    """Auto-clear HuggingFace datasets cache if it exceeds limit_gb on disk."""
+    import shutil
+    cache_dir = Path(os.environ.get(
+        'HF_DATASETS_CACHE',
+        Path.home() / '.cache' / 'huggingface' / 'datasets',
+    ))
+    if not cache_dir.exists():
+        return
+    total_bytes = sum(
+        f.stat().st_size for f in cache_dir.rglob('*') if f.is_file()
+    )
+    total_gb = total_bytes / (1024 ** 3)
+    if total_gb > limit_gb:
+        print(f"[Dataset] Cache is {total_gb:.1f} GB > {limit_gb:.0f} GB limit — clearing stale cache at {cache_dir}")
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[Dataset] Cache cleared.")
+    else:
+        print(f"[Dataset] Cache size: {total_gb:.2f} GB / {limit_gb:.0f} GB limit")
+
+
 def load_ablation_dataset(config: dict, split: str = 'train',
                           dry_run: bool = False,
                           mount_path: Path | None = None):
@@ -2289,6 +2429,8 @@ def load_ablation_dataset(config: dict, split: str = 'train',
               f"(seed={config.get('seed', 42)}, tokenization='{tok}')")
         return FineWebStreamingDataset(config, split=split)
 
+    _enforce_dataset_disk_limit(limit_gb=10.0)
+
     from datasets import load_dataset
     subset = 'bpe_tokenized' if tok == 'bpe' else 'byte_marginalized'
 
@@ -2303,19 +2445,42 @@ def load_ablation_dataset(config: dict, split: str = 'train',
         print(f"[mount] Loaded {len(ds)} rows from {len(all_files)} shards ({subset})")
     else:
         try:
-            repo_files = list(list_repo_files(repo, repo_type='dataset'))
-            hub_files = [
-                f"hf://datasets/{repo}/{f}"
-                for f in repo_files
-                if f.startswith(f'{subset}/') and f.endswith('.parquet')
-            ]
-            if not hub_files:
+            from huggingface_hub import list_repo_tree
+            file_tree = list(list_repo_tree(repo, repo_type='dataset', recursive=True))
+            size_map = {
+                item.path: getattr(item, 'size', None)
+                for item in file_tree
+                if item.path.startswith(f'{subset}/') and item.path.endswith('.parquet')
+            }
+            sorted_paths = sorted(size_map)
+            if not sorted_paths:
                 raise FileNotFoundError(f"No shards for {subset}/ in {repo}")
+
+            # Cap each subset to 5 GB so that bpe_tokenized + byte_marginalized
+            # together stay within the 10 GB total disk budget, giving all runs
+            # proportionally equal data coverage.
+            budget_bytes = 5 * 1024 ** 3
+            selected, total_bytes = [], 0
+            for path in sorted_paths:
+                sz = size_map[path] or 0
+                if sz and total_bytes + sz > budget_bytes:
+                    break
+                selected.append(f"hf://datasets/{repo}/{path}")
+                total_bytes += sz
+            if not selected:
+                selected = [f"hf://datasets/{repo}/{p}" for p in sorted_paths]
+
+            skipped = len(sorted_paths) - len(selected)
+            print(f"[hub] Using {len(selected)}/{len(sorted_paths)} shards "
+                  f"({total_bytes / 1024**3:.1f} GB, skipped {skipped} to stay ≤5 GB/subset)")
+            hub_files = selected
             ds = load_dataset('parquet', data_files=hub_files, split='train')
             print(f"[hub] Loaded {len(ds)} rows from {len(hub_files)} shards ({subset})")
         except Exception as e:
             print(f"[hub] Fallback to load_dataset: {e}")
             ds = load_dataset(repo, subset, split=split)
+
+    _enforce_dataset_disk_limit(limit_gb=10.0)
 
     if split != 'all':
         split_info = None
