@@ -1,7 +1,7 @@
 {
   "run_name": "run_10",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_10\\checkpoint_run_10_final.pt",
-  "load_s": 0.18,
+  "load_s": 0.75,
   "train_metrics": {
     "run_name": "cpu1_decay_learned",
     "perplexity": 253.0802,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 39.43,
   "ram_mb": 157.7,
-  "throughput_patches_per_sec": 6.97,
-  "throughput_bytes_per_sec": 27.89,
-  "throughput_time_s": 8.15,
-  "generation_time_s": 5.75,
-  "generated_text": "The quick brown fox�\u001a�d��\u001b\u0006����\u0011G���x%\fI��s�>O���\u001c�\u0006�\u0017\u0011'���ߡ�%s�sc��s�Qġ)d���\u000b�Ӑ�@7Rs�\u0012e7��h+�IQ?�W\u0002.�#٨qޡ ���`���r��I��C�\u0007\u001bՏ���4����A���%",
-  "generated_bytes": 262,
-  "eval_time_s": 14.6
+  "throughput_patches_per_sec": 8.7,
+  "throughput_bytes_per_sec": 34.78,
+  "throughput_time_s": 6.5,
+  "generation_time_s": 4.27,
+  "generated_text": "The quick brown foxmD��؊#|ތ\u000fs���`Ӭ�j#��e޼$R\u001c�]��NVV��s�8���τ_����t|9��l\u001a��+���jJ�0L\u0013Ĭfr:ɡ�\u0018p��y&;��ifbb���\u001084U�Yf#\u0019\r�Rgʜ\u000f�p�&�]c\u0011\u0017�\u0012I�{�",
+  "generated_bytes": 234,
+  "eval_time_s": 11.9
 }

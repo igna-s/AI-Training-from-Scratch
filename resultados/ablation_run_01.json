@@ -1,7 +1,7 @@
 {
   "run_name": "run_01",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_01\\checkpoint_run_01_final.pt",
-  "load_s": 1.75,
+  "load_s": 2.0,
   "train_metrics": {
     "run_name": "transformer_bpe_fp16",
     "perplexity": 106.1418,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 54.74,
   "ram_mb": 218.9,
-  "throughput_patches_per_sec": 39.18,
-  "throughput_bytes_per_sec": 156.71,
-  "throughput_time_s": 2.15,
-  "generation_time_s": 78.33,
-  "generated_text": "The quick brown! and!. As a!! are!.!,!, or! are at the!!!!, and! of America’s!,!,!,!,!,!,! and! and! with a!!!!ing the! of the! of!!!, and!!,! and the!!, for!\n! are!!! of!! the! and! of!!! of!’s!!’s!!!’s!! —!’s!!,!,!, and the!,!,!ing!’s!’s!!",
-  "generated_bytes": 257,
-  "eval_time_s": 124.1
+  "throughput_patches_per_sec": 72.4,
+  "throughput_bytes_per_sec": 289.62,
+  "throughput_time_s": 0.77,
+  "generation_time_s": 56.86,
+  "generated_text": "The quick brown!!!! is the!! of the! and!!, and!!! and!! and!! the!!! and! for the!!! and! with the! of!!! and!! and!! of!! and a! and!!! and! for the!!!! for her! for! and!.! is! and! and! and! with!. The!! with the! is a! to one of it comes to! to get!.! and!!!! and a!.!!!!!. She is to come",
+  "generated_bytes": 293,
+  "eval_time_s": 63.3
 }

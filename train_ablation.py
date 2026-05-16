@@ -139,6 +139,11 @@ BASE_CONFIG = {
     'weight_decay_bitlinear':      0.1,
     'weight_decay_fpresidual':     0.0,
     'weight_decay_heads':          0.01,
+    # BitNet b1.58 §3.1: 2x LR boost on BitLinear weights to push them across
+    # the ternary boundary (~0.5·w_scale ≈ 0.008 at init) within the budget.
+    # Audit showed >99.9% of BitLinear weights stuck at their init-ternary
+    # values after 1326 r2 steps with lr_scale=1.0.
+    'bitlinear_lr_scale':          2.0,
     'grad_clip':                   1.0,
     'seed':                        42,
 
@@ -465,6 +470,125 @@ RUN_CONFIGS = {
             'HGRN2 (Qin et al., 2024)',
         ],
     },
+
+    # =========================================================================
+    # Round-2 re-runs — 15 tok/param
+    # =========================================================================
+    # Same architecture as the original runs; chinchilla_tokens_per_param
+    # raised to 15 so ternary weights escape the ~260 ppl plateau and show
+    # real architectural differentiation.
+    'run_04_r2': {
+        'name':         'mlgru_byte_ternary_15t',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  False,
+        'chinchilla_tokens_per_param': 15,
+        'description':  'run_04 at 15 tok/param — ternary baseline with real budget.',
+    },
+    'run_05_r2': {
+        'name':         'mlgru_byte_ternary_fpres_15t',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'chinchilla_tokens_per_param': 15,
+        'description':  'run_05 at 15 tok/param — ternary + FPResidual with real budget.',
+    },
+    'run_07_r2': {
+        'name':         'cpu1_complete_15t',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'chinchilla_tokens_per_param': 15,
+        'description':  'run_07 at 15 tok/param — CPU-1 complete stack with real budget.',
+        'is_proposed':  True,
+    },
+    'run_08_r2': {
+        'name':         'folded_transformer_byte_ternary_15t',
+        'token_mixer':  'transformer',
+        'tokenization': 'byte',
+        'quantization': 'ternary',
+        'fp_residual':  False,
+        'window_size':  128,
+        'chinchilla_tokens_per_param': 15,
+        'description':  'run_08 at 15 tok/param — folded Transformer ternary with real budget.',
+    },
+    'run_09_r2': {
+        'name':         'cpu1_pfnet_15t',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'pfnet_hidden': 32,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'chinchilla_tokens_per_param': 15,
+        'description':  'run_09 at 15 tok/param — CPU-1 + PFNet with real budget.',
+    },
+    'run_10_r2': {
+        'name':         'cpu1_decay_learned_15t',
+        'token_mixer':  'mlgru',
+        'tokenization': 'byte_dynamic',
+        'quantization': 'ternary',
+        'fp_residual':  True,
+        'pfnet_hidden': 32,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'mlgru_per_channel_decay': True,
+        'chinchilla_tokens_per_param': 15,
+        'description':  'run_10 at 15 tok/param — CPU-1 + PFNet + per-channel decay with real budget.',
+    },
+
+    # -------------------------------------------------------------------------
+    # Round 3 — ternary cold-start rescue test
+    # -------------------------------------------------------------------------
+    # Hypothesis after r2 audit: ternary weights never crossed boundaries
+    # (>99.9% stuck at init-ternary values, see analysis 2026-05-16). Apply
+    # all four corrections at once:
+    #   (1) BitLinear LR scale 2x (inherited from BASE_CONFIG default)
+    #   (2) bf16 AMP instead of fp16 (no GradScaler, no underflow)
+    #   (3) CE-only training signal (no KL/hidden/boundary/delete aux losses
+    #       diluting the LM gradient — only delete_gate aux survives in
+    #       Phase 2 because the gate itself needs supervision)
+    #   (4) 50 tok/param (proven floor for BitNet-style cold-start at <1B)
+    # If THIS doesn't move the loss below ~5.0, the issue is structural.
+    'run_04_r3': {
+        'name':                        'mlgru_byte_ternary_50t_ceonly',
+        'token_mixer':                 'mlgru',
+        'tokenization':                'byte_dynamic',
+        'quantization':                'ternary',
+        'fp_residual':                 False,
+        'training_signal':             'ce_only',
+        'chinchilla_tokens_per_param': 50,
+        'description':                 'run_04 with all four r3 corrections — '
+                                       'minimal ternary baseline (no FPResidual, no aux).',
+    },
+    'run_07_r3': {
+        'name':                        'cpu1_complete_50t_ceonly',
+        'token_mixer':                 'mlgru',
+        'tokenization':                'byte_dynamic',
+        'quantization':                'ternary',
+        'fp_residual':                 True,
+        'use_bolmo_gating':            True,
+        'use_boundary_predictor':      False,
+        'use_delete_gate':             True,
+        'use_real_gather':             True,
+        'training_signal':             'ce_only',
+        'chinchilla_tokens_per_param': 50,
+        'description':                 'run_07 with all four r3 corrections — '
+                                       'full CPU-1 stack, CE-only, 50 tok/p. Tests phase 1→2 chaining.',
+        'is_proposed':                 True,
+    },
 }
 
 
@@ -570,6 +694,109 @@ SMALL_RUN_CONFIGS = {
         'description':            'CPU-1 COMPLETE @ 10M, raw bytes from scratch, zero teacher. '
                                   'Do Qwen logprobs in run_14 actually help vs pure CE?',
         'cites':                  ['MatMul-free LM', 'Slender-Mamba', 'Bolmo', 'MrT5'],
+    },
+
+    # Round-2 small re-runs — 15 tok/param
+    'run_14_r2': {
+        'name':                   'small_cpu1_byte_15t',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'use_embedding_alignment': False,
+        'chinchilla_tokens_per_param': 15,
+        'description':            'run_14 at 15 tok/param — small byte baseline with real budget.',
+        'is_proposed':            True,
+    },
+    'run_15_r2': {
+        'name':                   'small_cpu1_byte_hidden_15t',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'use_embedding_alignment': True,
+        'chinchilla_tokens_per_param': 15,
+        'description':            'run_15 at 15 tok/param — small byte + hidden distillation with real budget.',
+    },
+    'run_16_r2': {
+        'name':                   'small_cpu1_raw_bytes_15t',
+        'token_mixer':            'mlgru',
+        'tokenization':           'byte_dynamic',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_bolmo_gating':       True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'use_embedding_alignment': False,
+        'dataset_repo':           'HuggingFaceFW/fineweb',
+        'training_signal':        'ce_only',
+        'chinchilla_tokens_per_param': 15,
+        'description':            'run_16 at 15 tok/param — small raw bytes no teacher with real budget.',
+    },
+    'run_13_r2': {
+        'name':                   'small_cpu1_bpe_15t',
+        'token_mixer':            'mlgru',
+        'tokenization':           'bpe',
+        'quantization':           'ternary',
+        'fp_residual':            True,
+        'use_boundary_predictor': False,
+        'use_delete_gate':        True,
+        'use_real_gather':        True,
+        'use_embedding_alignment': False,
+        'bpe_vocab_size':         4096,
+        'chinchilla_tokens_per_param': 15,
+        'description':            'run_13 at 15 tok/param — small BPE+ternary with real budget. '
+                                  'Does BPE outperform byte-level at 10M with sufficient training?',
+    },
+
+    # -------------------------------------------------------------------------
+    # Round 3 — small-scale ternary cold-start rescue
+    # -------------------------------------------------------------------------
+    # Same four corrections as 50M r3 runs.  These are the cheapest runs to
+    # check whether the ternary cold-start lifts off (~30-40 min on T4 each).
+    'run_14_r3': {
+        'name':                        'small_cpu1_byte_50t_ceonly',
+        'token_mixer':                 'mlgru',
+        'tokenization':                'byte_dynamic',
+        'quantization':                'ternary',
+        'fp_residual':                 True,
+        'use_bolmo_gating':            True,
+        'use_boundary_predictor':      False,
+        'use_delete_gate':             False,
+        'use_real_gather':             False,
+        'use_embedding_alignment':     False,
+        'dataset_repo':                'HuggingFaceFW/fineweb',
+        'training_signal':             'ce_only',
+        'chinchilla_tokens_per_param': 50,
+        'description':                 'run_14 with all four r3 corrections — small CPU-1 byte, '
+                                       'CE-only on FineWeb, no delete_gate. Single-phase.',
+        'is_proposed':                 True,
+    },
+    'run_15_r3': {
+        'name':                        'small_cpu1_byte_dg_50t_ceonly',
+        'token_mixer':                 'mlgru',
+        'tokenization':                'byte_dynamic',
+        'quantization':                'ternary',
+        'fp_residual':                 True,
+        'use_bolmo_gating':            True,
+        'use_boundary_predictor':      False,
+        'use_delete_gate':             True,
+        'use_real_gather':             True,
+        'use_embedding_alignment':     False,
+        'dataset_repo':                'HuggingFaceFW/fineweb',
+        'training_signal':             'ce_only',
+        'chinchilla_tokens_per_param': 50,
+        'description':                 'run_15 with all four r3 corrections — small CPU-1 byte + '
+                                       'delete_gate, CE-only. Tests phase 1→2 chaining at 10M.',
     },
 }
 
@@ -1217,14 +1444,28 @@ def train_run(run_name: str, dry_run: bool = False,
         else:
             other_params.append(p)
 
+    # BitNet b1.58 paper §3.1: "We use 2x larger learning rate for the BitLinear
+    # weight than the standard Transformer." STE through round() filters most
+    # updates below the ternary boundary (~0.5·w_scale), so BitLinear needs
+    # bigger per-step movements to escape the random-init basin.
+    bitlinear_lr_scale = float(config.get('bitlinear_lr_scale', 2.0))
     optimizer = torch.optim.AdamW([
-        {'params': bitlinear_params, 'weight_decay': config['weight_decay_bitlinear']},
-        {'params': head_params,      'weight_decay': config['weight_decay_heads']},
-        {'params': other_params,     'weight_decay': 0.0},
+        {'params': bitlinear_params, 'weight_decay': config['weight_decay_bitlinear'],
+         'lr_scale': bitlinear_lr_scale},
+        {'params': head_params,      'weight_decay': config['weight_decay_heads'],
+         'lr_scale': 1.0},
+        {'params': other_params,     'weight_decay': 0.0,
+         'lr_scale': 1.0},
     ], lr=config['lr'], betas=(0.9, 0.95))
 
     use_amp = not dry_run and device.type == 'cuda'
-    scaler = torch.amp.GradScaler() if use_amp else None
+    # bf16 keeps the fp32 dynamic range (no over/underflow through the
+    # BitLinear x_scale·w_scale rescale chain) and lets us drop GradScaler.
+    # Falls back to fp16 only on hardware without bf16 (pre-Ampere).
+    amp_dtype = (torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported()
+                 else torch.float16)
+    scaler = (torch.amp.GradScaler()
+              if use_amp and amp_dtype == torch.float16 else None)
 
     # torch.compile gives 10-20% throughput on T4 for 50M models. Not compatible
     # with DataParallel — skip when multi-GPU. MLGRU runs use a Python loop
@@ -1254,7 +1495,10 @@ def train_run(run_name: str, dry_run: bool = False,
                 import random, time as _time
                 _time.sleep(random.uniform(0, 5))  # stagger parallel HF Hub calls
                 from huggingface_hub import list_repo_files, hf_hub_download
-                prefix = f"{run_name}/checkpoint_{run_name}_step"
+                # Resume from the matching phase's step-checkpoints: Phase 2
+                # files carry a `_phase2_step` infix, Phase 1 uses `_step`.
+                infix = '_phase2' if phase == 2 else ''
+                prefix = f"{run_name}/checkpoint_{run_name}{infix}_step"
                 remote_ckpts = [
                     f for f in list_repo_files(hub_repo, repo_type="model")
                     if f.startswith(prefix) and f.endswith('.pt')
@@ -1267,7 +1511,8 @@ def train_run(run_name: str, dry_run: bool = False,
                             return -1
                     latest = max(remote_ckpts, key=_remote_step)
                     Path(run_name).mkdir(parents=True, exist_ok=True)
-                    print(f"[Resume] Downloading {latest} from {hub_repo} ...")
+                    print(f"[Resume] Downloading {latest} from {hub_repo} "
+                          f"(phase {phase}) ...")
                     resume_ckpt = hf_hub_download(
                         repo_id=hub_repo,
                         filename=latest,
@@ -1276,7 +1521,8 @@ def train_run(run_name: str, dry_run: bool = False,
                     )
                     print(f"[Resume] Downloaded to {resume_ckpt}")
                 else:
-                    print(f"[Resume] No checkpoint found in {hub_repo} for {run_name}, starting fresh.")
+                    print(f"[Resume] No phase-{phase} checkpoint found in "
+                          f"{hub_repo} for {run_name}, starting fresh.")
             except Exception as e:
                 print(f"[Resume] HF Hub lookup failed ({e}), starting fresh.")
 
@@ -1315,7 +1561,7 @@ def train_run(run_name: str, dry_run: bool = False,
             t_hidden = batch.get('teacher_hidden')
 
             is_last_micro = (micro_step % accum_steps == accum_steps - 1)
-            amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=torch.float16)
+            amp_ctx = (torch.amp.autocast(device_type='cuda', dtype=amp_dtype)
                        if use_amp else contextlib.nullcontext())
             with amp_ctx:
                 training_phase = config.get('_current_phase', 1)
@@ -1371,7 +1617,7 @@ def train_run(run_name: str, dry_run: bool = False,
                     loss = loss + 0.1 * (bp.mean() if bp.dim() > 0 else bp)
                 loss = loss / accum_steps
 
-            if use_amp:
+            if scaler is not None:
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
@@ -1386,7 +1632,7 @@ def train_run(run_name: str, dry_run: bool = False,
             micro_step += 1
 
             if micro_step % accum_steps == 0:
-                if use_amp:
+                if scaler is not None:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(
                         model.parameters(), config['grad_clip']
@@ -1401,8 +1647,9 @@ def train_run(run_name: str, dry_run: bool = False,
                 optimizer.zero_grad(set_to_none=True)
 
                 optim_step += 1
+                base_lr = get_lr_from_config(optim_step, config)
                 for pg in optimizer.param_groups:
-                    pg['lr'] = get_lr_from_config(optim_step, config)
+                    pg['lr'] = base_lr * pg.get('lr_scale', 1.0)
 
                 log_every = int(config.get('log_every_steps', 500))
                 if optim_step % log_every == 0:
@@ -1809,6 +2056,21 @@ PARALLEL_GROUPS: list[list[str]] = [
     ["run_09", "run_10"],
     # Group 6: 10M scaling runs — all 4 fit on 1 T4 simultaneously
     ["run_13", "run_14", "run_15", "run_16"],
+    # Groups 7-10: Round-2 re-runs at 15 tok/param
+    # Group 7: 39M ternary baseline + FPResidual
+    ["run_04_r2", "run_05_r2"],
+    # Group 8: 39M CPU-1 complete + folded Transformer
+    ["run_07_r2", "run_08_r2"],
+    # Group 9: 39M PFNet + per-channel decay
+    ["run_09_r2", "run_10_r2"],
+    # Group 10: 10M small re-runs (fit on 1 T4)
+    ["run_13_r2", "run_14_r2", "run_15_r2", "run_16_r2"],
+    # Groups 11-12: Round-3 ternary cold-start rescue (bf16 + lr_scale=2 +
+    # CE-only + 50 tok/p). Phase 1+2 chained automatically for delete_gate runs.
+    # Group 11: 39M r3 (heavier — run sequentially on T4 if VRAM tight)
+    ["run_04_r3", "run_07_r3"],
+    # Group 12: 10M r3 (cheap; both fit on 1 T4)
+    ["run_14_r3", "run_15_r3"],
 ]
 
 # Any run with use_delete_gate=True needs Phase 2 to actually train the gate;
@@ -2123,14 +2385,76 @@ if __name__ == "__main__":
             "multi-GPU group runner. Use -h for the full list of runs."
         )
 
-    if args.phase == 2 and not args.phase1_ckpt:
-        raise SystemExit("--phase1_ckpt is required when --phase 2")
+    # --run mode auto-chains Phase 1 → Phase 2 for delete-gate runs so a
+    # single CLI invocation trains the full pipeline. The orchestrator path
+    # already handles this for multi-GPU; this mirrors the behaviour for
+    # single-GPU resumable training.
+    is_two_phase = args.run in TWO_PHASE_RUNS and not args.dry_run
+    explicit_phase = args.phase == 2 or args.phase1_ckpt is not None
 
-    metrics = train_run(args.run, dry_run=args.dry_run,
-                        total_steps_override=args.total_steps,
-                        phase=args.phase,
-                        phase1_ckpt=args.phase1_ckpt,
-                        use_hf_mount=args.hf_mount,
-                        resume_ckpt=args.resume_ckpt)
+    if args.phase == 2 and not args.phase1_ckpt:
+        # Allow `--run X --phase 2` without explicit phase1_ckpt when the
+        # Phase 1 final ckpt is already on disk at its conventional path.
+        default_p1 = Path(args.run) / f"checkpoint_{args.run}_final.pt"
+        if default_p1.exists():
+            print(f"[Auto-chain] Using local Phase 1 ckpt {default_p1}")
+            args.phase1_ckpt = str(default_p1)
+        else:
+            raise SystemExit(
+                "--phase1_ckpt is required when --phase 2 (and no local "
+                f"{default_p1} was found to auto-resolve)"
+            )
+
+    if is_two_phase and not explicit_phase:
+        # Auto-chain: run Phase 1 (with auto-resume), then Phase 2.
+        # Both phases write the final ckpt to `_final.pt`; the saved
+        # `config['_current_phase']` tells us which phase produced it.
+        final_path = Path(args.run) / f"checkpoint_{args.run}_final.pt"
+        phase2_steps = list(Path(args.run).glob(
+            f"checkpoint_{args.run}_phase2_step*.pt"
+        )) if Path(args.run).exists() else []
+
+        final_phase = 0
+        if final_path.exists():
+            try:
+                _meta = torch.load(str(final_path), map_location='cpu',
+                                   weights_only=False)
+                final_phase = int(_meta.get('config', {})
+                                       .get('_current_phase', 1))
+                del _meta
+            except Exception:
+                final_phase = 1  # be safe — assume Phase 1
+
+        if final_phase == 2 and not phase2_steps:
+            print(f"[Auto-chain] Phase 2 already complete ({final_path}); "
+                  f"nothing to do.")
+            print(f"\nFinished: {args.run}")
+            sys.exit(0)
+
+        if final_phase == 0:
+            print(f"[Auto-chain] === Phase 1 of {args.run} ===")
+            train_run(args.run, dry_run=args.dry_run,
+                      total_steps_override=args.total_steps,
+                      phase=1, phase1_ckpt=None,
+                      use_hf_mount=args.hf_mount,
+                      resume_ckpt=args.resume_ckpt)
+        else:
+            print(f"[Auto-chain] Phase 1 already done; "
+                  f"jumping to Phase 2 (phase2_step ckpts: {len(phase2_steps)}).")
+
+        print(f"[Auto-chain] === Phase 2 of {args.run} ===")
+        metrics = train_run(args.run, dry_run=args.dry_run,
+                            total_steps_override=args.total_steps,
+                            phase=2,
+                            phase1_ckpt=str(final_path),
+                            use_hf_mount=args.hf_mount,
+                            resume_ckpt=None)
+    else:
+        metrics = train_run(args.run, dry_run=args.dry_run,
+                            total_steps_override=args.total_steps,
+                            phase=args.phase,
+                            phase1_ckpt=args.phase1_ckpt,
+                            use_hf_mount=args.hf_mount,
+                            resume_ckpt=args.resume_ckpt)
     print(f"\nFinished: {args.run}")
     print(json.dumps(metrics, indent=2))

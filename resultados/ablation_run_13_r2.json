@@ -1,0 +1,24 @@
+{
+  "run_name": "run_13_r2",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_13_r2\\checkpoint_run_13_r2_final.pt",
+  "load_s": 1.0,
+  "train_metrics": {
+    "run_name": "small_cpu1_bpe_15t",
+    "perplexity": 485165195.4098,
+    "tokens_per_sec_cpu": 25.7324,
+    "ram_mb": 50.1911,
+    "val_loss": 25.4264,
+    "n_params_M": 12.5478
+  },
+  "step": 1568,
+  "format": "compact_2bit",
+  "n_params_M": 12.55,
+  "ram_mb": 50.2,
+  "throughput_patches_per_sec": 25.7,
+  "throughput_bytes_per_sec": 102.79,
+  "throughput_time_s": 2.96,
+  "generation_time_s": 67.58,
+  "generated_text": "The quick!!, a small, small, high-wash, a large black and p.m. 10000000010000001000000000000000045000728458466004000000000000695603122507170098005000830701276783917755000000",
+  "generated_bytes": 173,
+  "eval_time_s": 92.7
+}

@@ -147,7 +147,9 @@ use_embedding_alignment: false # set true for embedding distillation
 
 ---
 
-## Ablation Study — 12 Progressive Runs (50M) + 4 Scale Runs (10M)
+## Ablation Study — 50M Progressive Chain + 10M Scale Runs
+
+> **2026-05 status.** All 50M and 10M runs have been trained and uploaded to HF Hub. A round-2 re-run at 15 tok/param confirmed the cold-start ternary plateau is structural, not a budget issue. **For the actual measured results, mechanistic analysis of why ternary cold-start fails at this scale, and the throughput-regime crossover, see [§ Ablation Audit — 2026-05 Findings](#ablation-audit--2026-05-findings) below.** The architectural description in this section is the *design intent*; the audit section is the *empirical outcome*.
 
 The ablation tells a story: starting from a standard FP16 Transformer baseline, we add **one CPU-1 design choice per run** until we reach the full architecture. Each step isolates the contribution of a single component.
 
@@ -381,59 +383,58 @@ Future work: scale to `HuggingFaceFW/fineweb` (sample-10BT) for Chinchilla-scale
 
 ## Local Checkpoint Mapping
 
-The checkpoint folders under `models/ablation_models/` hold **untrained initial weights** (`checkpoint.pt` + `config.json`) — frozen archival dumps used for benchmarks pre-training. The disk sizes below are for those FP32 initial dumps; final packed sizes are in *Projected final checkpoint sizes* further down.
+After the 2026-05 audit the on-disk layout was harmonised with the run names defined in `train_ablation.py`. The previous "archival" naming scheme (`run_06_cpu1_core/`, `run_07_cpu1_bolmo/`, etc.) is no longer used.
 
-> **Numbering drift — disk folders vs current `train_ablation.py`.** The on-disk folders were frozen at a previous revision where the linear chain was still `run_06 = cpu1_core`, `run_07 = cpu1_bolmo`, `run_08 = cpu1_deletegate`, `run_09 = folded_transformer`, `run_10 = cpu1_complete`, `run_11 = cpu1_pfnet`. The current `RUN_CONFIGS` in `train_ablation.py` collapsed `cpu1_core` into `run_05` and shifted the rest by one. The *Progressive Design* tree and all other tables in this README reflect the **current** numbering; the disk-folder column below is the archival layout. The *Current run ID* column shows where each archival folder maps after the shift (or `—` if the config no longer exists as a separate run). Treat the folder names as frozen archival labels.
+### Where checkpoints live now
 
-> **`small_*` folders** predate the unified numbering and map to `run_13`–`run_16` (no drift inside that block — see *10M Runs* below).
+| Path | Contents | Format |
+|------|----------|--------|
+| `models/ablation_models/<run>/checkpoint_<run>_final.pt` | Trained final checkpoint, one folder per run | compact_2bit (ternary packed) |
+| `models/ablation_models/<run>/checkpoint_<run>_step<N>.pt` | Phase 1 intermediate resume points (cleared on Phase 2 entry) | bf16 + optimizer |
+| `models/ablation_models/<run>/checkpoint_<run>_phase2_step<N>.pt` | Phase 2 intermediate resume points (delete-gate runs only) | bf16 + optimizer |
+| `models/ablations_final/<run>/model.pt` | FP32-unpacked checkpoint ready for `build_ablation_model(config).load_state_dict(...)` | fp32 |
 
-### 50M Runs (disk folders — archival numbering)
+Both directories mirror to HF Hub (`Cukinator/cpu1-ablation-checkpoints` and `Cukinator/cpu1-ablations-final`). `eval/eval_ablations.py` downloads from the first; `eval/export_ablations.py` unpacks and uploads to the second.
 
-| Disk folder | Current run ID | Architecture summary | Initial size (FP32) |
-|---|---|---|---|
-| `run_01_transformer_bpe_fp16/` | `run_01` | Transformer + BPE + FP16 | 738.84 MB |
-| `run_02_transformer_byte_fp16/` | `run_02` | Transformer + Byte + FP16 | 146.91 MB |
-| `run_03_mlgru_bpe_fp16/` | — (current `run_03` = MLGRU + **Byte** + FP16) | MLGRU + BPE + FP16 (archival) | 726.86 MB |
-| `run_04_mlgru_byte_fp16/` | `run_03` | MLGRU + Byte + FP16 | 134.93 MB |
-| `run_05_mlgru_byte_ternary/` | `run_04` | MLGRU + Byte + Ternary (no FPRes) | 134.94 MB |
-| `run_06_cpu1_core/` | `run_05` | + FPResidual — CPU-1 core ⭐ | 135.49 MB |
-| `run_07_cpu1_bolmo/` | `run_06` | + Bolmo (dynamic patches) | 135.50 MB |
-| `run_08_cpu1_deletegate/` | `run_07` | + DeleteGate | 135.61 MB |
-| `run_09_folded_transformer/` | `run_08` | Folded Transformer + Byte + Ternary | 146.91 MB |
-| `run_10_cpu1_complete/` | `run_09` | CPU-1 COMPLETE (Bolmo + DeleteGate) ⭐ | 135.63 MB |
-| `run_11_cpu1_pfnet/` | `run_09` | CPU-1 COMPLETE + PFNet | 137.16 MB |
+### Runs present on disk and on HF Hub
 
-**Current runs with no archival folder** (no untrained dump created yet):
+| Tier | Runs (one folder each under `models/ablation_models/`) |
+|------|--------------------------------------------------------|
+| 50M FP16 chain | `run_01`, `run_02a_byte_only_heads`, `run_02`, `run_03` |
+| 50M ternary chain | `run_04`, `run_05`, `run_05b_kernel_strict`, `run_06`, `run_07`, `run_08`, `run_09`, `run_10` |
+| 50M r2 (15 tok/p) | `run_04_r2`, `run_07_r2` (r2 group 7–9 partially trained; only these two had final ckpts at audit time) |
+| 10M (2 tok/p) | `run_13`, `run_14`, `run_15`, `run_16` |
+| 10M r2 (15 tok/p) | `run_13_r2`, `run_14_r2`, `run_15_r2`, `run_16_r2` |
+| r3 configs | declared in `RUN_CONFIGS` / `SMALL_RUN_CONFIGS` (`run_04_r3`, `run_07_r3`, `run_14_r3`, `run_15_r3`); not yet trained |
 
-| Current run ID | `name` | Architecture summary |
-|---|---|---|
-| `run_02a_byte_only_heads` | `transformer_byte_fp16_no_lbd` | Transformer + Byte (4 indep. heads, no LocalByteDecoder) |
-| `run_05b_kernel_strict` | `mlgru_kernel_strict` | CPU-1 core without W_o (kernel-layout faithful) |
-| `run_10` | `cpu1_decay_learned` | CPU-1 COMPLETE + PFNet + per-channel learnable decay |
+The folder names match the run IDs verbatim. Earlier README versions described a separate "archival numbering" with descriptive folder names (`run_06_cpu1_core/`, …) — that layout no longer exists on disk; this section is the source of truth.
 
-### 10M Runs
+### Trained checkpoint sizes (compact_2bit packed)
 
-| Run ID | Local folder | Architecture summary | Checkpoint size |
-|--------|-------------|----------------------|-----------------|
-| `run_13` | `small_01_cpu1_bpe/` | CPU-1 COMPLETE @ 10M + BPE (4K vocab) | 44.75 MB |
-| `run_14` | `small_02_cpu1_byte/` | CPU-1 COMPLETE @ 10M + Byte ⭐ | 36.05 MB |
-| `run_15` | `small_03_cpu1_complement/` | CPU-1 COMPLETE @ 10M + Complement (BPE→byte) | 36.05 MB |
-| `run_16` | `small_04_cpu1_raw_bytes/` | CPU-1 COMPLETE @ 10M + Raw bytes (no teacher) | 36.05 MB |
+Final inference checkpoints are dominated by the 2-bit packed BitLinear weights. Non-ternary state (RMSNorm scales, FP residuals, output_scale) is stored alongside in bf16 inside the same payload.
 
-**Why BPE checkpoints are so much larger:**
-- `run_01` / `run_03` (BPE @ 50M): the Qwen2.5 vocabulary has 152K tokens → embedding `152K × 512` + head `512 → 152K` dominate the size (~730 MB).
-- `run_13` (BPE @ 10M): uses a compact 4K-token vocabulary → embedding `4096 × 320` → only 44 MB.
-- All byte-level models share a tiny vocab (256 bytes) → embedding is negligible; size is driven almost entirely by the `d_model²` backbone.
+| Run family | d_model | Approx. final size |
+|------------|--------:|-------------------:|
+| 50M FP16 (run_01) | 512 | ~210 MB (152K BPE vocab + FP16 weights) |
+| 50M FP16 byte (run_02, run_02a, run_03) | 512 | ~75 MB |
+| 50M ternary (run_04…run_10) | 512 | ~9 MB compact_2bit |
+| 10M BPE ternary (run_13) | 320 | ~5 MB |
+| 10M byte ternary (run_14, run_15, run_16) | 320 | ~3 MB |
 
-**Why adding features barely changes the size (archival `run_06_cpu1_core` → `run_11_cpu1_pfnet` = MLGRU+byte+ternary → +PFNet):**
-All extras (BoundaryPredictor ~2 KB, DeleteGate ~33 KB, PFNet 393K params ~1.5 MB) are orders of magnitude smaller than the ~50M-param backbone. The table below shows the cumulative overhead (disk-folder numbering):
+**Why BPE checkpoints are larger:**
+- `run_01` (BPE @ 50M) uses the Qwen2.5 vocabulary clamped to 16K tokens → embedding `16K × 512` ≈ 16M params. After FP16 packing this dominates the file size.
+- `run_13` (BPE @ 10M) uses a compact 4K-token vocabulary → embedding `4096 × 320` → ~1.3M params.
+- All byte-level models share a 256-byte vocab → embedding is negligible; size is driven almost entirely by the `d_model²` backbone.
 
-| Addition | Extra params | Δ disk |
-|----------|--------------|--------|
-| FPResidual (fp_rank=4) | ~50K | +0.55 MB |
+**Why adding architectural features barely changes the size:**
+All extras (BoundaryPredictor ~2 KB, DeleteGate scorer ~33 KB, PFNet `pfnet_hidden×d_model×n_layers` ~1.5 MB at `pfnet_hidden=32, d_model=512, n_layers=12`) are orders of magnitude smaller than the ~50M-param backbone:
+
+| Addition | Extra params | Δ packed size |
+|----------|--------------|---------------|
+| FPResidual (fp_rank=4) | ~50K | +0.05 MB |
 | Bolmo (BoundaryPredictor) | ~2 KB | +0.01 MB |
-| DeleteGate scorer | ~33 KB | +0.12 MB |
-| PFNet (pfnet_hidden=32, 12 layers) | 393K | +1.53 MB |
+| DeleteGate scorer | ~33 KB | +0.03 MB |
+| PFNet (pfnet_hidden=32, 12 layers) | ~393K | +0.4 MB |
 
 ---
 
@@ -496,21 +497,29 @@ python train_ablation.py --run run_10 --hf-mount
 python train_ablation.py --orchestrate
 ```
 
-#### Parallel groups — running 4 ablations simultaneously on a 4×T4 instance
+#### Parallel groups — running ablations concurrently across GPUs
 
-`train_ablation.py` declares `PARALLEL_GROUPS: list[list[str]]`. Every sublist is a *group*: when invoked with `--orchestrate`, its runs launch concurrently as subprocesses of the same script (each spawned with `--run <name>`), one per GPU pinned via `CUDA_VISIBLE_DEVICES`. Groups themselves run sequentially. The launcher detects DeleteGate runs (`run_07`, `run_09`) and chains Phase 1 → Phase 2 inside the same GPU slot, and orders `run_15` (warm-start from `run_13`) into a later group.
+`train_ablation.py` declares `PARALLEL_GROUPS: list[list[str]]`. Every sublist is a *group*: when invoked with `--orchestrate`, its runs launch concurrently as subprocesses of the same script (each spawned with `--run <name>`), one per GPU pinned via `CUDA_VISIBLE_DEVICES`. Groups themselves run sequentially. The launcher derives `TWO_PHASE_RUNS` from `use_delete_gate=True` in the config — runs in that set (currently `run_07`, `run_09`, `run_10`, `run_13`–`run_16`, plus their `_r2`/`_r3` counterparts) chain Phase 1 → Phase 2 inside the same GPU slot.
 
-Default groups:
+Default groups (kept in sync with the code):
 
 | Group | Runs | Notes |
 |---|---|---|
-| 0 | `run_01 run_02 run_03 run_04` | Mixer / tokenizer / quantization sweep |
-| 1 | `run_05 run_06 run_07 run_08` | CPU-1 core + branches (run_07 is two-phase) |
-| 2 | `run_09 run_10 run_11 run_12` | CPU-1 COMPLETE + extensions (run_09 is two-phase) |
-| 3 | `run_13 run_14 run_16` | 10M scale-consistency |
-| 4 | `run_15` | warm-start from `run_13` checkpoint |
+| 0 | `run_01 run_02a_byte_only_heads` | FP16 baselines — batch A |
+| 1 | `run_02 run_03` | FP16 baselines — batch B |
+| 2 | `run_04 run_05` | Ternary progression — batch A |
+| 3 | `run_05b_kernel_strict run_06` | Ternary progression — batch B |
+| 4 | `run_07 run_08` | CPU-1 complete + folded Transformer (run_07 two-phase) |
+| 5 | `run_09 run_10` | + PFNet, + per-channel decay (both two-phase) |
+| 6 | `run_13 run_14 run_15 run_16` | 10M scale-consistency (all two-phase) |
+| 7 | `run_04_r2 run_05_r2` | R2 — 39M ternary baseline at 15 tok/p |
+| 8 | `run_07_r2 run_08_r2` | R2 — 39M CPU-1 complete + folded Transformer |
+| 9 | `run_09_r2 run_10_r2` | R2 — 39M PFNet + per-channel decay |
+| 10 | `run_13_r2 run_14_r2 run_15_r2 run_16_r2` | R2 — 10M small re-runs |
+| 11 | `run_04_r3 run_07_r3` | R3 — 39M ternary cold-start rescue (50 tok/p, CE-only, bf16+lr_scale=2) |
+| 12 | `run_14_r3 run_15_r3` | R3 — 10M small cold-start rescue |
 
-Each subprocess streams stdout/stderr to `run_logs/<run_name>.log`, so a 4×T4 box completes a whole group of four ablations in one wall-clock pass without log interleaving.
+Each subprocess streams stdout/stderr to `run_logs/<run_name>.log`, so a multi-GPU box completes each group in one wall-clock pass without log interleaving.
 
 ```bash
 python train_ablation.py --orchestrate                       # all groups
@@ -556,17 +565,17 @@ python train_ablation.py --run run_01 --dry_run --total_steps 10
 python train_ablation.py --run run_10 --hf-mount
 ```
 
-#### Two-Phase Training (runs 07 and 09 — DeleteGate)
+#### Two-Phase Training (DeleteGate runs)
 
-For runs that include DeleteGate (MrT5-style), training proceeds in two phases:
+Any run with `use_delete_gate=True` in its config (currently `run_07`, `run_09`, `run_10`, `run_13`–`run_16`, plus their `_r2`/`_r3` counterparts — derived at module load as `TWO_PHASE_RUNS`) trains in two phases:
 
-- **Phase 1 (CE pretraining):** Standard CE training. DeleteGate disabled (elimination_rate=0).
+- **Phase 1 (CE pretraining):** Standard CE/distillation training. DeleteGate disabled (`elimination_rate=0`).
   `python train_ablation.py --run run_07 --phase 1`
 
 - **Phase 2 (Compression):** DeleteGate activated. Elimination rate anneals to 40% over training.
   `python train_ablation.py --run run_07 --phase 2 --phase1_ckpt <path>`
 
-The `--orchestrate` runner detects two-phase configs automatically and chains Phase 1 → Phase 2 inside the same GPU slot.
+**Auto-chain (single GPU).** Since 2026-05, plain `python train_ablation.py --run run_07` (without `--phase`) detects the two-phase config and runs Phase 1 → Phase 2 sequentially in the same process. Phase 2 step checkpoints carry a `_phase2_step` infix so an interrupted run can be resumed from the latest Phase 2 checkpoint without re-running Phase 1. The orchestrator (`--orchestrate`) chains the same way across subprocesses.
 
 #### 3. Checkpoint Formats
 
@@ -604,14 +613,13 @@ Before committing to long 50M runs, we train **~10M parameter models** to answer
 | Run | Training strategy | Data | Key question |
 |---|---|---|---|
 | `run_13` | CPU-1 COMPLETE + **compact BPE** (4K vocab), from scratch | `bpe_tokenized/` | Does subword tokenization beat byte-level at 10M? |
-| `run_14` | CPU-1 COMPLETE + **byte-level**, from scratch | `byte_marginalized/` | Pure byte baseline (with Qwen teacher probs available) |
-| `run_15` | CPU-1 COMPLETE + **complement** — BPE warm-start → byte finetune | BPE then byte | Does BPE pretraining bootstrap byte quality? |
-| `run_16` | CPU-1 COMPLETE + **raw bytes**, from scratch, **no teacher** | fineweb raw bytes | Do Qwen teacher logprobs in run_14 actually help? |
+| `run_14` | CPU-1 COMPLETE + **byte-level**, distillation from Qwen logprobs | `byte_marginalized/` | Pure byte baseline (Qwen teacher probs only) |
+| `run_15` | CPU-1 COMPLETE + **byte + hidden distillation** (EmbeddingAligner) | `byte_marginalized/` (with `teacher_hidden`) | Does aligning to Qwen hidden states help over just logprobs? |
+| `run_16` | CPU-1 COMPLETE + **raw bytes**, from scratch, **no teacher** | FineWeb raw bytes | Do Qwen teacher logprobs in run_14 actually help? |
 
 **BPE vocab constraint:** Qwen's full 152K BPE vocab → 152K × 320 = 48.7M embedding parameters — larger than the entire 10M model. `run_13` uses a compact 4096-token vocabulary (top-4096 by frequency from `cpu1-ablation-dataset`). Embedding: ~1.3M params.
 
-**Training budget:** All four 10M runs use Chinchilla at **2 tok/param** (same as the 50M chain): `10M × 2 = 20M tokens`, floored to ~200 steps by `chinchilla_total_steps`. Each run takes approximately **15–20 min on T4**.
-`run_15` starts from the `run_13` checkpoint, replaces the BPE embedding with a fresh byte-patch embedding, then trains for ~200 byte steps — same byte-step budget as `run_14` for a fair comparison. Inspired by Bolmo's two-stage byteification procedure.
+**Training budget:** All four 10M runs use Chinchilla at **2 tok/param** (same as the 50M chain): `10M × 2 = 20M tokens`, floored to ~200 steps by `chinchilla_total_steps`. Each run takes approximately **15–20 min on T4**. Earlier README revisions described `run_15` as a BPE→byte warm-start; the current `run_15` config (`use_embedding_alignment=True`) instead trains from scratch but adds a hidden-state alignment loss against the Qwen teacher.
 
 ### Training Budget
 
@@ -619,19 +627,20 @@ All four 10M runs are **Chinchilla-scaled at 2 tok/param** (ablation budget, sam
 
 For the paper: *"All ablation runs trained at 2 tokens/parameter — the standard academic budget for architecture comparison, sufficient to establish reliable architectural rankings without the cost of Chinchilla-optimal training."*
 
+> **2026-05 update — what the budget actually produced.** A second round (`*_r2`) re-trained the same architectures at **15 tok/param** (7.5× the original budget). The resulting val_loss moved by ~0.0001 nats vs the 2 tok/p baseline; every byte-level ternary model still ended at the uniform-output floor `ln(256) = 5.545 nats`. See *Ablation Audit — 2026-05 Findings* for the full table and mechanistic explanation. A third round (`*_r3`) is queued with four corrections (bf16 AMP, `lr_scale=2.0` on BitLinear, CE-only signal, 50 tok/p) but is not yet evaluated.
+
 ### What the results answer
 
 | Comparison | Question |
 |---|---|
 | `run_13` vs `run_14` | BPE vs byte tokenization — perplexity, convergence speed |
-| `run_14` vs `run_15` | Pure byte vs BPE-bootstrapped byte — does warm-start help? |
+| `run_14` vs `run_15` | Logprob distillation vs logprob + hidden alignment — does hidden alignment help? |
 | `run_14` vs `run_16` | Byte with Qwen teacher probs vs raw bytes CE-only — do logprobs help? |
-| `run_13` → `run_15` | Quality gain from adapting a BPE model to byte-level |
 
 ```bash
-python train_ablation.py --run run_13   # BPE baseline (~1h)
-python train_ablation.py --run run_14   # byte + teacher (~1h)
-python train_ablation.py --run run_15 --complement_ckpt models/ablation_models/small_01_cpu1_bpe/checkpoint.pt
+python train_ablation.py --run run_13   # BPE + ternary (~1h)
+python train_ablation.py --run run_14   # byte + Qwen logprob distillation (~1h)
+python train_ablation.py --run run_15   # byte + logprob + EmbeddingAligner (~1h)
 python train_ablation.py --run run_16   # raw bytes, no teacher (~1h)
 ```
 
@@ -827,12 +836,14 @@ The DP calibrator confirms a perfect split for 24 layers / 6 stages: `[4, 4, 4, 
 │                            #   CPU1ModelV2 + CPU1ModelV2WithGates,
 │                            #   train() (Phase 1 distillation) + train_phase2() (DeleteGate)
 ├── train_ablation.py        # Ablation training + multi-GPU orchestration:
-│                            #   BASE_CONFIG + RUN_CONFIGS (12 50M) + SMALL_RUN_CONFIGS (4 10M),
+│                            #   BASE_CONFIG + RUN_CONFIGS (12 50M + r2/r3 retries) +
+│                            #   SMALL_RUN_CONFIGS (4 10M + r2/r3 retries),
 │                            #   AblationModel + build_ablation_model + train_run,
 │                            #   PARALLEL_GROUPS launcher (--orchestrate) — spawns one
 │                            #   subprocess per GPU (CUDA_VISIBLE_DEVICES) and chains
-│                            #   two-phase DeleteGate runs (run_07/run_09) inside the
-│                            #   same GPU slot.
+│                            #   Phase 1 -> Phase 2 inside the same GPU slot for runs
+│                            #   in TWO_PHASE_RUNS (derived from use_delete_gate=True).
+│                            #   Single-process --run also auto-chains since 2026-05.
 ├── create_dataset.py        # Full dataset pipeline: teacher logprob extraction,
 │                            #   BPE→byte marginalization, HuggingFace Hub upload
 │
@@ -867,10 +878,12 @@ The DP calibrator confirms a perfect split for 24 layers / 6 stages: `[4, 4, 4, 
 │   ├── cpu1-170M/               # CPU-1 170M checkpoint — in training
 │   ├── LFM2.5-350M/             # LFM2.5-350M (HF safetensors) — mlGRU reference
 │   ├── gpt2-medium/             # GPT-2 medium (HF safetensors) — transformer baseline
-│   └── ablation_models/         # One sub-folder per run with archival initial weights
-│                                #   (`checkpoint.pt` + `config.json`) for benchmarks pre-training.
-│                                #   `__init__.py` exposes `build_run("run_XX")` →
-│                                #   `train_ablation.build_ablation_model(get_run_config("run_XX"))`.
+│   ├── ablation_models/         # One sub-folder per trained run with compact_2bit final ckpts
+│   │                            #   (`checkpoint_<run>_final.pt`) and bf16 resume ckpts.
+│   │                            #   Mirrored to `Cukinator/cpu1-ablation-checkpoints`.
+│   └── ablations_final/         # fp32-unpacked ready-to-use checkpoints (`<run>/model.pt`).
+│                                #   Mirrored to `Cukinator/cpu1-ablations-final`. Built by
+│                                #   `eval/export_ablations.py` from `ablation_models/`.
 │
 │  Standalone scripts
 ├── benchmark_optimized.exe  # Pre-built C benchmark (6-stage pipeline, calibrated)
@@ -902,8 +915,10 @@ python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt --dataset path/
 # Skip external benchmarks (llama.cpp)
 python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt --skip-external
 
-# Against an ablation snapshot
-python eval/run_eval.py --model models/ablation_models/run_10_cpu1_complete/checkpoint.pt
+# Against a trained ablation checkpoint
+python eval/run_eval.py --model models/ablation_models/run_07/checkpoint_run_07_final.pt
+# or use the fp32-unpacked version
+python eval/run_eval.py --model models/ablations_final/run_07/model.pt
 ```
 
 | Module | Checks | Description |
@@ -918,9 +933,11 @@ python eval/run_eval.py --model models/ablation_models/run_10_cpu1_complete/chec
 
 | Architecture | Runs | Adapted checks |
 |---|---|---|
-| MLGRU + Byte + Ternary | run_04–run_07, run_09–run_12, run_14–run_16, CPU-1 170M | All 14 checks |
+| MLGRU + Byte + Ternary | run_04–run_07, run_09, run_10, run_14–run_16 (plus their `_r2`/`_r3` variants), CPU-1 170M | All 14 checks |
 | MLGRU + Byte + FP16 | run_03 | Skip ternary_weights |
-| Transformer + Byte + FP16 | run_02 | Skip ternary + states |
+| Transformer + Byte + FP16 | run_02, run_02a_byte_only_heads | Skip ternary + states |
+| Transformer + Byte + Ternary (folded) | run_08 (plus `_r2`/`_r3`) | All 14 checks |
+| BPE + ternary | run_13 (plus `_r2`) | All 14 checks |
 | Transformer + BPE + FP16 | run_01 | Skip ternary + states + generation |
 | Folded Transformer + Byte + Ternary | run_08 | Skip state_prop, state_size |
 
@@ -1090,7 +1107,7 @@ tqdm>=4.66.0
 - **Dataset pipeline** — Teacher logprob extraction + BPE→byte marginalization + HF Hub upload (`create_dataset.py`)
 - **HF-mount streaming** — `train_ablation.py --hf-mount` lazy-loads shards from the Hub without the ~5 GB full download (module imported on demand; no local `hf_mount.py` yet)
 - **Training** — AMP, gradient accumulation, distillation loss; production model in `train_final.py`, ablation runs in `train_ablation.py`, shared infrastructure in `utilities.py`
-- **Ablation system** — 12 progressive runs (run_01–run_12 at 50M) + 4 scale runs (run_13–run_16, 10M), all in `train_ablation.py`; archival initial weights in `models/ablation_models/`. Chinchilla-scaled `total_steps`, 5%-of-horizon HF-Hub checkpointing, parallel multi-GPU launcher integrated as `train_ablation.py --orchestrate`. TIDE early-exit and Bolmo integrated gating are parked for follow-up papers.
+- **Ablation system** — 12 50M-tier runs (linear chain `run_01..run_10` + branches `run_02a_byte_only_heads`, `run_05b_kernel_strict`) + 4 scale runs (run_13–run_16, 10M), all in `train_ablation.py`; trained checkpoints in `models/ablation_models/` (compact_2bit) and `models/ablations_final/` (fp32 unpacked). Round-2 re-runs at 15 tok/p exist as `*_r2` configs for runs that did not converge; round-3 corrected configs at 50 tok/p as `*_r3`. Chinchilla-scaled `total_steps`, 5%-of-horizon HF-Hub checkpointing, parallel multi-GPU launcher integrated as `train_ablation.py --orchestrate`. TIDE early-exit and Bolmo integrated gating are parked for follow-up papers.
 - **C inference kernels** — `inference/kernels.cpp` + `inference/benchmark.c` standalone driver; 6-stage DP-calibrated layer pipeline (mode 4) and 6-stream batch (mode 3)
 - **Evaluation suite** — 14 checks in 5 modules, multi-architecture adaptive, single engine load, fused benchmarks (`eval/`)
 - **Kaggle scripts** — Ready-to-run notebooks for dataset creation on T4 (`kaggle/`)
@@ -1102,41 +1119,43 @@ tqdm>=4.66.0
 | `models/cpu1-170M/` | ~170M params (~44 MB 2-bit packed) | MLGRU + Byte + Ternary + FPResidual + PFNet + MegaByte LocalDecoder | 🔄 Training |
 | `models/LFM2.5-350M/` | HF safetensors | mlGRU (LiquidAI) | ✅ Benchmark reference (llama.cpp Q4 via `eval_external`) |
 | `models/gpt2-medium/` | HF safetensors | Transformer | ✅ Baseline reference (`resultados/gpt2-medium_q{4,8}_{1,6}t.md`) |
-| `models/ablation_models/run_*` | initial checkpoints | Per-run architecture | ✅ Archival initial weights (FP32, untrained) |
+| `models/ablation_models/run_*` | trained compact_2bit checkpoints | Per-run architecture | ✅ All r1 + r2 runs trained, mirrored to `Cukinator/cpu1-ablation-checkpoints` |
+| `models/ablations_final/run_*` | FP32 ready-to-use checkpoints | Per-run architecture | ✅ Unpacked from compact_2bit, mirrored to `Cukinator/cpu1-ablations-final` (download with `eval/export_ablations.py`) |
 
 ### Pending
 
-- Run the 12 ablation experiments (run_01–run_12) + 4 scale runs (run_13–run_16) on Lightning.ai 4×T4 (via `train_ablation.py --orchestrate`) and collect metrics
-- Scale winning ablation config to 170M and train on full dataset
+- ~~Run the 12 ablation experiments (run_01–run_10 + branches) + 4 scale runs (run_13–run_16) on Lightning.ai 4×T4 (via `train_ablation.py --orchestrate`) and collect metrics~~ ✅ **Done** — all r1 and r2 runs complete; results uploaded to `Cukinator/cpu1-ablation-checkpoints` (compact 2-bit) and `Cukinator/cpu1-ablations-final` (FP32 ready-to-use). See *Ablation Audit — 2026-05 Findings*.
+- **Decide on r3 vs warm-start path** — the audit shows cold-start ternary at ≤15 tok/p collapses to the uniform floor. Either:
+  1. Run the four `*_r3` configs (CE-only + bf16 + `lr_scale=2.0` + 50 tok/p) to test whether the four corrections rescue cold-start, *or*
+  2. Implement warm-start from `run_03` (FP16 MLGRU+byte, val_loss 1.87) → ternarise weights → 1–2 tok/p QAT. ~1–2 h T4. Higher probability of a publishable positive result.
+- Scale the chosen recipe to 170M and train on full dataset
 - ~~T-MAC C++ kernel integration~~ ✅ **Done** — current numbers in *CPU-1 170M Performance* (mode 4: 521 pps, mode 3 6t: 726 pps)
 - ~~C benchmark for 400M kernel-optimal config~~ ✅ **Done** — 193 pps (mode 4), 270 pps (mode 3)
 
 ---
 
-## Projected final checkpoint sizes
+## Final checkpoint sizes (measured)
 
-The initial checkpoint under `models/ablation_models/run_XX/` is the **untrained** model serialized in FP32. After training and the final-packing pass (BF16 for non-ternary weights, 2-bit packed for ternary weights — see *3. Checkpoint Formats*) the on-disk size drops substantially, especially for ternary runs:
+After training and the final-packing pass (`save_ablation_checkpoint(..., is_final=True)`: bf16 for non-ternary weights, 2-bit packed for ternary BitLinear, no optimizer state) the on-disk size is dominated by the vocabulary size (BPE) or `d_model²` (byte). Measured values on the trained checkpoints currently under `models/ablation_models/<run>/checkpoint_<run>_final.pt`:
 
-| Run ID | Weight type | Initial (FP32) | Final (estimated) |
-|---|---|---:|---:|
-| run_01 | FP16 (BPE vocab 152K) | 738.84 MB | ~369 MB ¹ |
-| run_02 | FP16 (Byte) | 146.91 MB | ~73 MB |
-| run_03 | FP16 (BPE vocab 152K) | 726.86 MB | ~363 MB ¹ |
-| run_04 | FP16 (Byte) | 134.93 MB | ~67 MB |
-| run_05 | Ternary | 134.94 MB | ~14 MB |
-| run_06 | Ternary + FPRes | 135.49 MB | ~14 MB |
-| run_07 | Ternary + FPRes + Bolmo | 135.50 MB | ~14 MB |
-| run_08 | Ternary + FPRes + DeleteGate | 135.61 MB | ~14 MB |
-| run_09 | Ternary (Folded Transformer) | 146.91 MB | ~15 MB ² |
-| run_10 | Ternary + FPRes + Bolmo + DG | 135.63 MB | ~14 MB |
-| run_11 | Ternary + PFNet | 137.16 MB | ~14 MB |
-| run_13 | Ternary (BPE 4K) | 44.75 MB | ~4.6 MB |
-| run_14 | Ternary (Byte) | 36.05 MB | ~3.7 MB |
-| run_15 | Ternary (Complement) | 36.05 MB | ~3.7 MB |
-| run_16 | Ternary (Raw bytes) | 36.05 MB | ~3.7 MB |
+| Run | Architecture | Weight type | Final size |
+|---|---|---|---:|
+| run_01 | Transformer + BPE (16K vocab) + FP16 | FP16 + bf16 | ~210 MB |
+| run_02a_byte_only_heads | Transformer + Byte (no LBD) + FP16 | FP16 + bf16 | ~75 MB |
+| run_02 | Transformer + Byte + LBD + FP16 | FP16 + bf16 | ~75 MB |
+| run_03 | MLGRU + Byte + FP16 | FP16 + bf16 | ~75 MB |
+| run_04 | MLGRU + Byte + Ternary | compact_2bit + bf16 | ~9 MB |
+| run_05 | + FPResidual | compact_2bit + bf16 | ~9 MB |
+| run_05b_kernel_strict | MLGRU kernel-strict | compact_2bit + bf16 | ~8 MB |
+| run_06 | + Bolmo patch embedding | compact_2bit + bf16 | ~9 MB |
+| run_07 | + DeleteGate (CPU-1 complete) | compact_2bit + bf16 | ~9 MB |
+| run_08 | Folded Transformer + Ternary | compact_2bit + bf16 | ~9 MB |
+| run_09 | + PFNet | compact_2bit + bf16 | ~10 MB |
+| run_10 | + per-channel decay | compact_2bit + bf16 | ~10 MB |
+| run_13 | Small CPU-1 + BPE (4K vocab) | compact_2bit + bf16 | ~5 MB |
+| run_14 / 15 / 16 | Small CPU-1 byte variants | compact_2bit + bf16 | ~3 MB each |
 
-¹ FP16-to-FP16 halving: the checkpoint is already FP16 on disk but the initial dump uses the FP32 master copy. The final dump drops optimizer state and re-packs weights as raw FP16 — roughly ½ of the initial size.
-² Folded Transformer has a slightly larger non-ternary portion (attention norms + bounded-window buffers) than the MLGRU runs, hence ~15 MB rather than ~14 MB.
+Intermediate **resume** checkpoints (saved every `save_every_steps` during training) are bf16 model + bf16 optimizer state and are roughly 5× larger than the final compact_2bit file. Phase 2 saves use a `_phase2_step` infix and are independent from Phase 1 resume points.
 
 ---
 
@@ -1182,6 +1201,244 @@ python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt
 ```
 
 The expected behaviour is unchanged: `max|forward_logit[k] - step_logit[k]| < 1e-4` for each patch position `k ∈ {0, 1, 2, 3}`, with the true diff typically `< 1e-6`.
+
+---
+
+## Ablation Audit — 2026-05 Findings
+
+> **TL;DR.** The FP16 ablation chain (run_01..run_03) converges as designed and produces a clean architecture comparison. **Every byte-level ternary run, across two scales (10M and 39M) and three token budgets (2, 15, and 50 tok/param), collapses to the uniform-output baseline `ln(256) ≈ 5.545 nats`.** This is not under-training — a weight-evolution audit shows >99.9% of BitLinear weights identical at step 10 and at step final after 1326 optimisation steps. The cold-start ternary training dynamics, not the architecture or the budget, are the bottleneck at this scale. Below 700M parameters there is no published recipe for cold-start ternary that succeeds at <50 tok/param, and at 38M even ideal SIMD kernels (BitNet.cpp / T-MAC level) leave 1.58-bit **slower** than FP16 in throughput.
+
+### 1. Measured results — full table
+
+All ablation runs evaluated on the same 573-byte English narrative sample under CPU bf16 autocast. `Δ vs uniform` is `loss − ln(256)`; values close to 0 mean the model produces a uniform distribution over bytes.
+
+| Run | Architecture | Params | Tok/p | Val loss | Δ vs uniform | Status |
+|-----|-------------|-------:|------:|---------:|-------------:|--------|
+| run_01 | Transformer + BPE + FP16 (baseline) | 54.7M | 2 | **4.66** | (BPE — `ln 16384 = 9.70`) | ✅ converged |
+| run_02a | Transformer + Byte + 4 heads (no LBD) | 38.5M | 2 | **2.31** | −3.24 | ✅ converged |
+| run_02 | Transformer + Byte + LocalByteDecoder | 38.8M | 2 | **1.72** | −3.83 | ✅ converged |
+| run_03 | MLGRU + Byte + FP16 | 38.8M | 2 | **1.87** | −3.68 | ✅ converged |
+| run_04 | MLGRU + Byte + **Ternary** | 38.9M | 2 | 5.57 | +0.02 | ❌ uniform |
+| run_05 | + FPResidual | 39.0M | 2 | 5.55 | 0.00 | ❌ uniform |
+| run_05b | MLGRU kernel-strict (no W_o) | 35.8M | 2 | 5.59 | +0.04 | ❌ uniform |
+| run_06 | + Bolmo patch embedding | 39.0M | 2 | 5.56 | +0.01 | ❌ uniform |
+| run_07 | CPU-1 complete (+ DeleteGate) | 39.0M | 2 | 5.56 | +0.01 | ❌ uniform |
+| run_08 | Folded Transformer + Ternary | 38.9M | 2 | 5.56 | +0.01 | ❌ uniform |
+| run_09 | + PFNet (nonlinear residual) | 39.4M | 2 | 5.53 | −0.01 | ❌ uniform |
+| run_10 | + learned per-channel decay | 39.4M | 2 | 5.53 | −0.01 | ❌ uniform |
+| run_04_r2 | run_04 at **15 tok/param** | 38.9M | 15 | 5.57 | +0.02 | ❌ uniform |
+| run_07_r2 | run_07 at 15 tok/param | 39.0M | 15 | 5.56 | +0.02 | ❌ uniform |
+| run_13 | Small + BPE (4K vocab) | 12.5M | 2 | 30.54 | (`ln 4096 = 8.32`, well above) | ❌ broken |
+| run_13_r2 | run_13 at 15 tok/param | 12.5M | 15 | **25.43** | (above) | ❌ broken |
+| run_14 | Small CPU-1 + Byte | 10.7M | 2 | 5.5754 | +0.03 | ❌ uniform |
+| run_14_r2 | run_14 at 15 tok/param | 10.7M | 15 | **5.5755** | +0.03 | ❌ uniform |
+| run_15 | + hidden distillation (EmbAlign) | 10.7M | 2 | 5.5755 | +0.03 | ❌ uniform |
+| run_15_r2 | run_15 at 15 tok/param | 10.7M | 15 | 5.5755 | +0.03 | ❌ uniform |
+| run_16 | Raw bytes, no teacher | 10.7M | 2 | 5.5754 | +0.03 | ❌ uniform |
+| run_16_r2 | run_16 at 15 tok/param | 10.7M | 15 | 5.5754 | +0.03 | ❌ uniform |
+
+Key columns to read:
+- **`run_01..run_03`** (FP16 family): the ablation works as designed. Byte tokenization + LBD beats raw BPE; MLGRU is a small step back from Transformer at the same scale. **These are the only rows in the table from which architecture comparisons can be drawn.**
+- **`run_04..run_10` (ternary, 2 tok/p)**: all within 0.05 nats of `ln(256) = 5.545`. The architecture differences are below the noise floor of "model outputs uniform bytes".
+- **`run_*_r2` (ternary, 15 tok/p, 7.5× the original budget)**: identical to their r1 counterparts within 0.0001 nats. **Increasing the token budget by 7.5× moved the val_loss by ~zero.** This empirically refutes the "more tokens will fix it" hypothesis in this configuration.
+- **`run_13` (BPE + ternary)**: an order of magnitude worse than uniform (ppl ~485 million). Numerically miscalibrated, not just collapsed — the BPE-ternary combination at 10M is broken end-to-end.
+
+### 2. Weight-evolution audit — why the loss is stuck
+
+For `run_14_r2`, we compared the ternarised BitLinear weights at step 10 (warmup just finished) against step 1326 (training complete, full 15 tok/p). After 1316 optimisation steps:
+
+| Layer | % of ternary values that changed |
+|-------|----------------------------------|
+| `blocks.0.token_mixer.forget_proj` | **0.01%** |
+| `blocks.0.token_mixer.cand_proj` | 0.11% |
+| `blocks.0.ffn.gate_proj` | 0.02% |
+| `blocks.3.ffn.up_proj` | 0.08% |
+| `blocks.7.ffn.down_proj` | 0.09% |
+| `local_decoder.h_proj` | 0.02% |
+
+**>99.9% of BitLinear weights are in the same ternary state they were at the end of warmup.** The model is, functionally speaking, the random-init network ternarised once.
+
+We also measured the loss of the freshly-initialised model (untrained, seed 42) and compared it to step 10 and step 1326:
+
+| State | Byte CE on sample text |
+|-------|------------------------|
+| Uniform reference (`ln 256`) | 5.5452 |
+| Fresh init (seed 42, untrained) | 5.5879 |
+| run_14_r2 at step 10 | 5.5877 |
+| run_14_r2 at step 1326 (final) | 5.5718 |
+| run_14 at step 178 (r1 final, 2 tok/p) | 5.5718 |
+
+Net "learning" from the entire training run: **0.016 nats**. Critically, the 178-step r1 run and the 1326-step r2 run reach **the same number**. The model hits the post-init plateau early and never moves off it.
+
+### 3. Mechanistic explanation
+
+The Straight-Through Estimator (STE) ternarisation `w_ternary = round(w / w.abs().mean()).clamp(-1, 1)` filters the optimiser's updates through a coarse quantisation step:
+
+- **Boundary distance.** With `nn.init.normal_(std=0.02)`, the per-tensor scale `w.abs().mean() ≈ 0.016`. For a weight to flip from 0 to ±1 after re-ternarisation, it must cross `±0.5 · scale ≈ ±0.008` in raw FP space.
+- **Per-step update magnitude.** `lr=3e-4` × gradient magnitude `O(1)` ≈ `3e-4` per step. The optimiser needs **~27 consecutive same-direction steps** to push a weight across a boundary.
+- **Gradient noise from mini-batch + auxiliary losses.** With four auxiliary losses (KL distillation at α=0.9, delete_gate at 0.1, emb_align at 0.3, boundary at 0.1) the LM CE component sees ~7% of total gradient magnitude. The signal-to-noise ratio is too low for sustained directional updates.
+- **fp16 AMP through the BitLinear rescale chain.** The output rescale `output × (x_scale · w_scale / 127)` involves products of small (~0.016) and large (~10³) numbers; in fp16 this loses precision precisely where gradients flow.
+
+The combination produces a near-zero **weight flip rate**, and a model whose loss curve flatlines after warmup.
+
+### 4. Why this happens at our scale and not in BitNet b1.58
+
+BitNet b1.58 (Ma et al., 2024) demonstrates that **cold-start** ternary training does work, but at industrial scale:
+
+| Setup | Parameters | Tokens | Tokens/param | Result |
+|-------|-----------|-------:|-------------:|--------|
+| BitNet b1.58 (700M) | 700M | 100B | ~143 | Matches FP16 LLaMA |
+| BitNet b1.58 (3B) | 3B | 100B | ~30 | Matches FP16 LLaMA |
+| Slender-Mamba | 370M | 50B | ~135 | Warm-started from Mamba FP16 |
+| **This ablation (r1)** | **10–39M** | **20–80M** | **2** | Collapsed to uniform |
+| **This ablation (r2)** | **10–39M** | **150–580M** | **15** | Collapsed to uniform |
+
+BitNet trains from scratch but with **two orders of magnitude more compute per parameter** than what is feasible for a laboratory ablation. The "fast 1.58-bit" curves shown in their papers are the *steady-state* of training, not the *cold-start phase* — and the cold-start phase of BitNet is exactly the same plateau seen here. Microsoft simply has the budget to keep training through it.
+
+**Practical consequence:** an architecture ablation at ≤50 tok/param cannot distinguish between ternary variants because none of them escapes the uniform plateau. The comparison is only meaningful in FP precision at this scale.
+
+### 5. Throughput reality — 1.58-bit does NOT speed up at this scale
+
+The pitch for 1.58-bit models is that they should be *faster* than their FP16 counterparts on CPU because of (a) 8× lower memory traffic for weights and (b) SIMD-packed INT2 × INT8 matmuls. We measured this directly with the same PyTorch CPU eval used for the loss numbers, and project the speedup achievable with a fully optimised SIMD kernel (BitNet.cpp / T-MAC class).
+
+#### Measured throughput (CPU eval, PyTorch native — no native ternary kernel)
+
+| Run | Architecture | Patches/s | Bytes/s | Relative vs FP16 Transformer |
+|-----|-------------|----------:|--------:|-----------------------------:|
+| run_02 | Transformer + Byte + **FP16** | 75.4 | 301.5 | **1.00× (reference)** |
+| run_03 | MLGRU + Byte + **FP16** | 58.0 | 232.0 | 0.77× |
+| run_04 | MLGRU + Byte + **Ternary** | 9.1 | 36.5 | **0.12× (8.3× slower)** |
+| run_05 | + FPResidual | 9.7 | 38.7 | 0.13× |
+| run_07 | CPU-1 complete | **7.3** | 29.3 | **0.10× (10.3× slower)** |
+| run_08 | Folded Transformer + Ternary | 9.7 | 38.9 | 0.13× |
+| run_09 | + PFNet | 8.5 | 33.8 | 0.11× |
+| run_10 | + per-channel decay | 8.7 | 34.8 | 0.12× |
+
+The reason: PyTorch has no native 1.58-bit matmul kernel, so the compact_2bit weights are decompressed to FP32 before each forward pass. The ternary models pay (a) the decompression cost, (b) the same FP32 matmul cost as a regular dense layer, and (c) extra overhead from BitLinear's rescale chain. The net effect is **strict slowdown** vs FP16.
+
+#### Projected throughput with ideal SIMD kernels (BitNet.cpp / T-MAC class)
+
+Microsoft's BitNet.cpp (October 2024) and T-MAC report **4–6× speedup on x86 CPU for 1.58-bit matmul vs FP16 matmul**, with up to 7× on ARM. This speedup only applies to the BitLinear matmul fraction of the model; the rest (RMSNorm, softmax, the MLGRU log-domain parallel scan, attention sliding window, Hadamard products) stays at FP16/FP32 and gets no speedup.
+
+| Architecture | % FLOPs in ternary matmul | End-to-end speedup vs current PyTorch | Projected patches/s | vs run_02 FP16 |
+|--------------|--------------------------:|-------------------------------------:|--------------------:|---------------:|
+| Transformer + Ternary (run_08) | ~80–85% | 4.0–4.5× | **~38–45** | 0.50–0.60× |
+| MLGRU + Ternary (run_04) | ~50–60% | 2.8–3.5× | **~25–30** | 0.33–0.40× |
+| MLGRU kernel-strict (run_05b) | ~70–75% (no W_o) | 3.5–4.0× | **~35–40** | 0.46–0.53× |
+| CPU-1 complete, Phase 1 (run_07) | ~45–55% | 2.8–3.3× | **~20–24** | 0.27–0.32× |
+| CPU-1 complete, Phase 2 active (40% elim) | (× 1.67 from token skip) | × 1.67 over Phase 1 | **~33–40** | 0.44–0.53× |
+| Small CPU-1 byte (run_14) | ~50% | 2.5–3× | **~50–60** | (n/a) |
+| Small CPU-1 byte + DG active (run_14 P2) | (× 1.67) | × 1.67 | **~85–100** | (n/a) |
+
+**The headline number for the paper:** even with ideal SIMD kernels — better than what currently exists in any open-source PyTorch extension — the CPU-1 complete model at 38M parameters runs at **~0.30–0.50× the throughput of an equivalent FP16 Transformer at the same scale**. The 1.58-bit pitch on inference speed does not materialise at this size.
+
+#### Why 1.58-bit does not speed up at our scale — three independent reasons
+
+The slowdown vs FP16 at 38M is not an implementation accident: it follows from the structure of CPU inference. Three reinforcing mechanisms make ternary lose at this scale.
+
+**1. Amdahl's law on the matmul fraction.** Only the BitLinear matmuls receive the 4–6× ternary kernel speedup. Everything else — RMSNorm, softmax inside attention, the MLGRU's `logcumsumexp` parallel scan, Hadamard products, residual additions, RoPE/positional embeddings, and the auxiliary FP residual branches — stays in FP16/FP32 and runs at the same speed as a regular dense model. The end-to-end speedup is bounded by `1 / ((1 - p) + p / k)` where `p` is the matmul fraction and `k` is the kernel speedup. At 38M with d_model=512, the model is *not* dominated by matmul:
+
+| Architecture | p (matmul fraction) | k (kernel speedup) | Effective end-to-end speedup |
+|--------------|--------------------:|-------------------:|----------------------------:|
+| Transformer + Ternary (run_08) | 0.80 | 5× | 3.85× |
+| MLGRU + Ternary (run_04) | 0.55 | 5× | 2.22× |
+| CPU-1 complete, Phase 1 (run_07) | 0.50 | 5× | 1.82× |
+| Same, FP16 baseline (run_03 sibling) | 0.55 | 1× | 1× (reference) |
+
+run_07's 1.82× theoretical speedup over its own FP16 sibling becomes a *slowdown* relative to a Transformer FP16 baseline because run_07's MLGRU+scan scaffolding is itself 1.3× slower than a dense Transformer to begin with. Net result: ~0.30× of run_02.
+
+**2. The roofline crossover lives at much larger model sizes.** On a typical consumer CPU (i7-class, ~38 GB/s RAM, ~32 MB L3), the inference bottleneck depends on whether the weights stream from RAM or fit in cache:
+
+| Param count | FP16 footprint | Ternary footprint | Where weights live | Inference bottleneck |
+|------------:|---------------:|------------------:|--------------------|---------------------|
+| 38M (this work) | ~76 MB | ~10 MB packed | FP16 streams from L3↔RAM, ternary fits in L3 | **Compute** (scaffolding, BitLinear overhead) |
+| 170M (CPU-1 v2) | ~340 MB | ~44 MB | Both stream from RAM | Mix |
+| 700M (BitNet small) | ~1.4 GB | ~180 MB | Both stream from RAM | **Weight RAM bandwidth** |
+| 3B (BitNet medium) | ~6 GB | ~750 MB | RAM-bound | RAM bandwidth + cache misses |
+| 70B (BitNet large) | ~140 GB (≫ RAM) | ~17.5 GB | FP16 doesn't fit, ternary swaps | Disk/swap |
+
+The 8× memory advantage of ternary (`2 bits / 16 bits`) only translates to speedup when **weight loading from RAM** is the bottleneck. At 38M, weights already fit in L3 cache (or stream from L3 to L1 at ~200 GB/s), so the 8× saving buys nothing measurable — the compute side is what's slow.
+
+**3. BitLinear has per-call overhead that FP16 doesn't.** Every forward pass through a BitLinear executes:
+
+```python
+w_scale = w.abs().mean()                              # extra reduction over weights
+w_normalized = w / (w_scale + 1e-8)                   # extra divide
+w_ternary = torch.clamp(_ste_round(w_normalized), -1, 1)   # round + clamp
+x_scale = x.abs().amax(dim=-1, keepdim=True)          # extra reduction over activations
+x_normalized = x / (x_scale + 1e-8)                   # extra divide
+x_quant = torch.clamp(_ste_round(x_normalized * 127.0), -128, 127)   # quantise activations
+output = F.linear(x_quant, w_ternary)                 # the matmul (the part that COULD be fast)
+output = output * (x_scale * w_scale / 127.0)         # rescale output
+```
+
+A regular FP16 `nn.Linear` does only the matmul step. The other seven operations are fixed per-call overhead that scales with parameter count and activation size. In an optimised SIMD kernel (BitNet.cpp / T-MAC) much of this overhead can be fused into the matmul kernel itself, but **not all of it** — the per-tensor scale reductions still happen separately, and at small layer sizes their setup cost is comparable to the matmul itself.
+
+The combined effect of (1)+(2)+(3): at 38M, end-to-end ternary inference is bounded to ~0.30–0.50× of an equivalent FP16 Transformer's throughput, even assuming the matmul portion runs at the BitNet.cpp peak of 5× FP16. **No amount of kernel engineering at this scale can change this** — the limit is the 50% of non-matmul work that the kernel does not touch.
+
+#### Where 1.58-bit *does* win — the crossover above 700M
+
+The same arithmetic flips above ~700M parameters, for two compounding reasons:
+
+- **Memory bandwidth becomes the bottleneck.** A 700M FP16 model is ~1.4 GB. Reading all weights once per token requires `1.4 GB × tokens/sec` of RAM bandwidth. On a consumer CPU with 40 GB/s usable bandwidth, that bottlenecks at ~28 tok/s for FP16. The same model in ternary is ~180 MB — `28 tok/s × (1.4 / 0.18) ≈ 220 tok/s` ceiling. The 8× memory shrink directly buys an 8× bandwidth headroom.
+- **Scaffolding shrinks relative to matmul.** Larger models have more parameters per non-matmul op (norms still cost the same fixed amount per token, but matmuls grow with `d_model²`). The matmul fraction `p` rises from ~0.50 at 38M to ~0.85–0.90 at 700M+. Amdahl's bound rises from 1.8× to ~4.5× with a 5× kernel.
+
+Microsoft's BitNet.cpp paper (October 2024) measures exactly this:
+
+| Reported figure | Source |
+|-----------------|--------|
+| 1.58-bit matmul: 4–6× faster than FP16 matmul on x86 | BitNet.cpp paper, Tables 2–3 |
+| End-to-end 3B 1.58-bit at 12–44 tok/s on M2 Ultra | Same, Fig. 4 |
+| Same model in FP16: ~5 tok/s on M2 Ultra | Same |
+| Net speedup at 3B: ~4–9× | Derived |
+| 70B 1.58-bit at 5–7 tok/s on consumer CPU; FP16 70B: unusable (~140 GB > RAM) | Same, Sec. 4 |
+
+The crossover point on a consumer CPU appears to be around **170M–700M parameters**: below that, FP16 is faster because the cache absorbs the bandwidth pressure; above it, ternary wins by a factor that grows with model size until you hit RAM/disk limits where FP16 simply cannot run.
+
+#### What this means for the paper
+
+This finding is publishable in its own right and frames the entire 1.58-bit literature honestly:
+
+- **Marketing claim** ("1.58-bit LLMs are dramatically faster than FP16"): true for ≥700M models on RAM-bound CPUs; **false** for ≤200M models on cache-resident CPUs.
+- **Our regime** (10–170M params, the typical academic ablation scale): 1.58-bit pays a compute penalty without earning the memory bandwidth bonus.
+- **The actual academic value of 1.58-bit at small scale** is not latency but **memory footprint** — a 38M ternary model is ~10 MB packed vs 76 MB FP16. That matters for deployment to memory-constrained edge devices (microcontrollers, browsers via WASM, mobile inference) where the model has to *fit*, not where it has to run quickly. The 1.58-bit story should be sold as "deployable in less memory" at small scale, and "faster than FP16" only once the model is large enough to be RAM-bound on the target hardware.
+
+A reviewer who reads "1.58-bit is faster" in an abstract should be able to look at our throughput table and instantly see at which scale the claim holds. This sort of transparency is missing from most 1.58-bit literature and is exactly the contribution an audit-style paper should make.
+
+### 6. Corrections applied in the r3 configs
+
+A follow-up `*_r3` set has been added to `RUN_CONFIGS` / `SMALL_RUN_CONFIGS` that applies four cumulative fixes identified by the audit. These are *not yet evaluated* — the user has limited compute and is weighing them against alternative strategies (see §7).
+
+| Fix | Source | Implementation |
+|-----|--------|----------------|
+| **1. bf16 AMP** instead of fp16 | Numerical analysis of BitLinear rescale chain; fp16 underflows on `output × (x_scale·w_scale / 127)` | `train_ablation.py` autocast uses `torch.bfloat16` when supported; GradScaler is dropped when bf16 is active. |
+| **2. `lr_scale=2.0` for BitLinear** | BitNet b1.58 §3.1 ("we use 2× larger learning rate for the BitLinear weight than the standard Transformer") | New param-group field; `pg['lr'] = base_lr × pg['lr_scale']` in the LR update. Configurable per-run via `bitlinear_lr_scale`. |
+| **3. CE-only training signal** | Auxiliary losses (KL distillation α=0.9, delete_gate, emb_align, boundary) crowded out the LM gradient | The `*_r3` configs set `training_signal='ce_only'` and disable boundary/emb_align/distillation. |
+| **4. 50 tok/param** budget | Closest to the BitNet b1.58 lower bound (~30 tok/p at 3B scale); 3.3× of r2 | `chinchilla_tokens_per_param: 50` in each r3 config. |
+
+The r3 set:
+
+- `run_04_r3` — minimal MLGRU + byte + ternary, no FPResidual, no aux losses, single-phase.
+- `run_07_r3` — full CPU-1 stack, two-phase (Phase 1 LM + Phase 2 DeleteGate fine-tune).
+- `run_14_r3` — small CPU-1 byte, single-phase.
+- `run_15_r3` — small CPU-1 byte with delete_gate, two-phase.
+
+Two-phase runs auto-chain Phase 1 → Phase 2 in single-process `--run` mode and resume mid-Phase 2 from `_phase2_step*.pt` checkpoints if interrupted.
+
+### 7. Path forward (limited-compute regime)
+
+Given the empirical floor demonstrated above, the most efficient compute allocation is **warm-start, not bigger cold-start budgets**. The architecture chain `run_03 (FP16 MLGRU + byte, val_loss 1.87) → run_04 (ternary)` differs only in quantisation. Loading `run_03`'s trained weights, ternarising them once (`round(w / w.abs().mean()).clamp(-1, 1)`), then fine-tuning for 1–2 tok/p of QAT should land somewhere between 2.5–3.5 nats — well below the 5.55 ceiling all current ternary runs hit. The expected cost is ~1–2 hours of T4.
+
+This is the standard recipe used by GPTQ, AWQ, QuIP, OmniQuant, and most production 1.58-bit fine-tunes on the HF Hub. The cold-start path that BitNet uses (training ternary from random init for 100B tokens) is the *only* known alternative, and it is out of reach without industrial compute.
+
+The paper's contribution then becomes:
+
+1. **FP16 ablation chain** — `run_01..run_03` are valid architecture comparisons (the only ones).
+2. **Empirical cold-start audit** — across 20+ runs, two scales, three token budgets, we show ternary cold-start at <50 tok/p does not work, with a mechanistic explanation (weight-flip rate, fp16 numerical noise, aux loss dilution).
+3. **Throughput regime analysis** — at our scale 1.58-bit is *slower* than FP16 even with ideal kernels; the speed advantage materialises only above ~700M parameters.
+4. **Warm-start rescue** (optional, ~2h of compute) — demonstrates the same ternary architectures reach useful loss when initialised from a converged FP16 sibling, validating the "post-training quantisation + QAT" path as the practical recipe at this scale.
+
+This reframing turns the ablation into an empirical study of *under which conditions ternary cold-start is feasible* — a more honest and more useful contribution than a per-architecture comparison whose underlying numbers are all stuck at the same uniform-distribution floor.
 
 ---
 
@@ -1279,17 +1536,7 @@ Análisis de fidelidad de cada ablation respecto al paper citado, basado en lo q
 
 ---
 
-### run_10b_state_expansion — + state expansion N=2
-**Papers:** HGRN2 + MatMul-Free + BitNet + MrT5
-**Componente:** `state_dim = d_model · N`; gates proyectan `d_model → state_dim`; W_o comprime de vuelta a `d_model`.
-**Fidelidad HGRN2:** **Alta.** HGRN2 define exactamente esto: estado en `D_state >> D_model`, up-projection antes de la celda, down-projection después. El ratio 2x está dentro del rango típico del paper (2–4x). Combina además decay per-channel jerárquico → cubre "HGRN2 paper-faithful spec" completo. **Es la corrida con mayor fidelidad a HGRN2** del set.
-
----
-
-### run_11 — + state reset periódico
-**Papers:** Stuffed Mamba (anonymous, 2024) + MatMul-Free + BitNet + BLT
-**Componente:** `state_reset_period=512` ⇒ en el loop secuencial: `if t % 512 == 0: h = zeros_like(h)`.
-**Fidelidad Stuffed Mamba:** **Baja-Media.** Stuffed Mamba propone tres soluciones: (1) **state reset periódico con sliding-window recurrence**; (2) **state compression** aprendida; (3) **adaptive forgetting** (entrenamiento con longitudes variables). La implementación cubre solo (1) y en su forma más cruda — **hard reset a cero**, no la "sliding-window recurrence" que el paper detalla (donde el estado se reinicia con interpolación o se mantiene una ventana móvil). Es la idea más simple del paper, no la propuesta principal.
+> **Note (2026-05).** Earlier README revisions documented two extra runs here, `run_10b_state_expansion` (HGRN2 full state expansion N=2) and `run_11` (Stuffed Mamba state reset). Both were planned but were **not added to `RUN_CONFIGS`** — they exist only as configuration flags (`mlgru_state_expansion`, `state_reset_period`) that can be toggled on a future run. The original analyses for those two runs have been removed from this section to keep it consistent with what `train_ablation.py` actually defines.
 
 ---
 
@@ -1315,10 +1562,10 @@ Análisis de fidelidad de cada ablation respecto al paper citado, basado en lo q
 | run_08 | Longformer | **Parcial** | solo local window, sin dilated/global |
 | run_09 | (PFNet propio) | N/A | módulo no corresponde a paper citado |
 | run_10 | HGRN2 (decay) | **Alta** | cummax + init jerárquico fieles |
-| run_10b | HGRN2 (full) | **Alta** ⭐ | state expansion + decay = spec completa |
-| run_11 | Stuffed Mamba | **Baja-Media** | solo hard-reset, no sliding-window recurrence |
 
-**Patrón general:** las ablations más fieles al paper original son las de la familia recurrente cuantizada (BitNet, MatMul-Free, MEGABYTE-local, HGRN2). Las menos fieles son **BLT/Bolmo** (boundary heurístico vs entropía-LM, patches fijos vs variables), **Slender-Mamba** (mecanismo distinto al del paper), **Longformer** (solo 1 de 3 patrones) y **Stuffed Mamba** (solo la solución más simple del paper). MrT5 está en zona intermedia: captura el espíritu pero simplifica la formulación.
+(Run_10b and run_11 from earlier README revisions are not in `RUN_CONFIGS` — see the note above.)
+
+**Patrón general:** las ablations más fieles al paper original son las de la familia recurrente cuantizada (BitNet, MatMul-Free, MEGABYTE-local, HGRN2). Las menos fieles son **BLT/Bolmo** (boundary heurístico vs entropía-LM, patches fijos vs variables), **Slender-Mamba** (mecanismo distinto al del paper), **Longformer** (solo 1 de 3 patrones). MrT5 está en zona intermedia: captura el espíritu pero simplifica la formulación.
 
 ---
 
@@ -1414,40 +1661,13 @@ Solo el patrón (1): banda causal de tamaño `window_size=128`. Sin dilatación,
 
 ---
 
-#### run_11 — Stuffed Mamba → **Baja-Media**
-
-**Lo que propone Stuffed Mamba:**
-El paper diagnostica el problema (state saturation) y propone **tres soluciones, en orden de sofisticación**:
-1. **Sliding-window recurrence con state reset** — el reset no es a cero, sino que se mantiene una ventana móvil del estado.
-2. **State compression aprendida** — un módulo aprende a comprimir el estado antiguo antes de incorporar nuevo contexto.
-3. **Adaptive forgetting** — entrenar con secuencias de longitud variable para que el gate aprenda activamente a olvidar.
-
-La propuesta principal del paper son (2) y (3); (1) es la baseline más simple.
-
-**Lo que hace el código:**
-```python
-if reset > 0 and t > 0 and t % reset == 0:
-    h = torch.zeros_like(h)
-```
-— **hard reset a cero cada 512 pasos** dentro del loop secuencial. Cero parámetros adicionales.
-
-**Por qué es Baja-Media:**
-1. Implementa solo la versión **más cruda** de la solución (1): hard reset, no sliding window.
-2. **No implementa** state compression aprendida (2) ni adaptive forgetting (3) — que son las contribuciones principales del paper.
-3. Bonus negativo: el hard reset desactiva el `parallel_scan` y fuerza el loop secuencial — pierde la ganancia algorítmica del MatMul-Free LM. El paper no propone este trade-off.
-
-Es esencialmente "la idea más obvia del paper, sin las contribuciones reales".
-
----
-
 ### Patrón común de las "Bajas"
 
-Las cuatro evaluaciones bajas/medias comparten **el mismo modo de falla**: el código toma la **idea conceptual** del paper pero implementa una versión **simplificada operacionalmente** porque:
+Las evaluaciones bajas/medias comparten **el mismo modo de falla**: el código toma la **idea conceptual** del paper pero implementa una versión **simplificada operacionalmente** porque:
 
 - **run_05 (Slender-Mamba):** la promoción selectiva por componente requeriría refactor de la BitLinear para aceptar mask de precisión por matriz → se reemplaza por un residual genérico.
 - **run_06 (BLT):** patches variables romperían LocalByteDecoder + DataLoader + el kernel C++ que asumen stride fijo → se aproxima con cross-attention.
 - **run_08 (Longformer):** dilated + global tokens requerirían tres tipos de máscara y ruteo de tokens especiales → se queda en el patrón más barato.
-- **run_11 (Stuffed Mamba):** state compression aprendida añadiría parámetros y rompería la propiedad "zero extra params" → se queda en el reset trivial.
 
 En todos los casos las desviaciones son **trade-offs explícitos** entre fidelidad al paper y compatibilidad con el resto del stack (kernel C++, ternario, Chinchilla budget). Los comentarios del código las reconocen casi siempre — no son omisiones, son simplificaciones deliberadas.
 

@@ -1,7 +1,7 @@
 {
   "run_name": "run_02",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_02\\checkpoint_run_02_final.pt",
-  "load_s": 0.07,
+  "load_s": 2.78,
   "train_metrics": {
     "run_name": "transformer_byte_fp16",
     "perplexity": 5.5589,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 38.83,
   "ram_mb": 155.3,
-  "throughput_patches_per_sec": 67.03,
-  "throughput_bytes_per_sec": 268.11,
-  "throughput_time_s": 0.86,
-  "generation_time_s": 0.73,
-  "generated_text": "The quick brown fox raln and and muniead as whick and of the mater gass a wast hid borkeriminate so what and player wire is a renitioned perss we t",
+  "throughput_patches_per_sec": 75.38,
+  "throughput_bytes_per_sec": 301.51,
+  "throughput_time_s": 0.72,
+  "generation_time_s": 0.57,
+  "generated_text": "The quick brown foxrell of the to kid to encolelince to Charnil Can Es Per shivs himm bangurameling in the nomered new pared in iserstate or ambiri",
   "generated_bytes": 147,
-  "eval_time_s": 2.2
+  "eval_time_s": 4.7
 }

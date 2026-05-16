@@ -1,7 +1,7 @@
 {
   "run_name": "run_05b_kernel_strict",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_05b_kernel_strict\\checkpoint_run_05b_kernel_strict_final.pt",
-  "load_s": 0.14,
+  "load_s": 2.91,
   "train_metrics": {
     "run_name": "mlgru_kernel_strict",
     "perplexity": 268.8192,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 35.84,
   "ram_mb": 143.4,
-  "throughput_patches_per_sec": 7.69,
-  "throughput_bytes_per_sec": 30.76,
-  "throughput_time_s": 7.19,
-  "generation_time_s": 5.28,
-  "generated_text": "The quick brown fox��\u0000x\u000e�\u001e�\u001d�\u0018m��ƣ���\n⫶D1l�\u0012�?��Z���L�~bl�cA)�+s)j��3q�52\u0005��טboE��N8�^ׯ���Zx�(�lkn�\u001d򳖞�\\�x��viW�=��%�!�a\u0001�N\u001c�+\u0013>�e\t>l\u001a\u001aU",
-  "generated_bytes": 238,
-  "eval_time_s": 13.0
+  "throughput_patches_per_sec": 10.19,
+  "throughput_bytes_per_sec": 40.74,
+  "throughput_time_s": 5.39,
+  "generation_time_s": 3.79,
+  "generated_text": "The quick brown fox3�JA���Ϋ���8����?*�JD��\u000e\u0003&φV\u0015��\u0018l����6q��l\u001b�5�juJ]N�r�ռ���ʈ�3����g�W'�L�\u0005�g����b6����?��~�3���u�g�\u0006\u00148�\u0016�3�$N7%�W\u001flm�\u001b�iU�",
+  "generated_bytes": 266,
+  "eval_time_s": 12.4
 }

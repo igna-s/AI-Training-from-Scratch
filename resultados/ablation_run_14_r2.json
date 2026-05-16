@@ -1,0 +1,24 @@
+{
+  "run_name": "run_14_r2",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_14_r2\\checkpoint_run_14_r2_final.pt",
+  "load_s": 0.07,
+  "train_metrics": {
+    "run_name": "small_cpu1_byte_15t",
+    "perplexity": 263.8785,
+    "tokens_per_sec_cpu": 25.4994,
+    "ram_mb": 42.7655,
+    "val_loss": 5.5755,
+    "n_params_M": 10.6914
+  },
+  "step": 1336,
+  "format": "compact_2bit",
+  "n_params_M": 10.69,
+  "ram_mb": 42.8,
+  "throughput_patches_per_sec": 23.66,
+  "throughput_bytes_per_sec": 94.64,
+  "throughput_time_s": 2.87,
+  "generation_time_s": 2.31,
+  "generated_text": "The quick brown fox9�8�|<�R����L�p��������\\8@�u�!c�t�����m������/�Q�����G��S���N��&Xd���Xկa������,8�Em8�qC��uh��39�@4���iD��GNY��@ˊ��\\!�����$8Ӈ�",
+  "generated_bytes": 269,
+  "eval_time_s": 5.4
+}

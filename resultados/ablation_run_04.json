@@ -1,7 +1,7 @@
 {
   "run_name": "run_04",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_04\\checkpoint_run_04_final.pt",
-  "load_s": 0.33,
+  "load_s": 1.71,
   "train_metrics": {
     "run_name": "mlgru_byte_ternary",
     "perplexity": 261.6833,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 38.85,
   "ram_mb": 155.4,
-  "throughput_patches_per_sec": 8.0,
-  "throughput_bytes_per_sec": 32.0,
-  "throughput_time_s": 7.06,
-  "generation_time_s": 5.93,
-  "generated_text": "The quick brown fox��f\u000b\u0016)��3�\u001bB�\u0017�\u001a&���O-_��a��\nd5��y���)o�O\u001c��\u001a���|˶\u001bϕ|\u0007�J�l;��b�\u000e\u0000�yL�\u0014b��T��\n\u0017�x�\u0015�F�\rF��\u0015\u0005B�b�@��}a5>\u001a�\u001eWcW\u0004�v�Ld��\u0006R��BW?",
-  "generated_bytes": 251,
-  "eval_time_s": 13.7
+  "throughput_patches_per_sec": 9.11,
+  "throughput_bytes_per_sec": 36.46,
+  "throughput_time_s": 6.0,
+  "generation_time_s": 4.16,
+  "generated_text": "The quick brown fox�����Ip�\u0011We_�|\u0006�\u0018ˀF�,\u0019$�[ja���R�1E ��\u0012��>b�\u0012u�W5\u0006r\u001a5����@����\u0018\u0019���E�0�u�ɩ�\u000fL��$�\\�\u001a���q�*;:~����/5�r\u0001�W�\u0012\u0018��d��D�\\GG�[��J",
+  "generated_bytes": 258,
+  "eval_time_s": 12.2
 }
