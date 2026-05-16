@@ -37,76 +37,33 @@ AVAILABLE_RUNS = [
     "run_05b_kernel_strict",
     "run_06",
     "run_07",
+    "run_08",
+    "run_09",
     "run_10",
     "run_13",
+    "run_14",
+    "run_15",
+    "run_16",
+    # Round-2 re-runs at 15 tok/param
+    "run_04_r2",
+    "run_05_r2",
+    "run_07_r2",
+    "run_08_r2",
+    "run_09_r2",
+    "run_10_r2",
+    "run_13_r2",
+    "run_14_r2",
+    "run_15_r2",
+    "run_16_r2",
+    # Round-3 cold-start rescue (bf16 AMP + lr_scale=2 + CE-only + 50 tok/p)
+    "run_04_r3",
+    "run_07_r3",
+    "run_14_r3",
+    "run_15_r3",
 ]
 
-USAGE_README = """\
----
-language:
-  - en
-license: apache-2.0
-tags:
-  - pytorch
-  - text-generation
-  - 1.58bit
-  - ternary
-  - byte-level
-  - mlgru
-  - ablation
-library_name: pytorch
-pipeline_tag: text-generation
-model_type: custom
----
-
-# CPU-1 Ablation Study — Ready-to-use Checkpoints
-
-Repo: `Cukinator/cpu1-ablations-final`
-Source (compact 2-bit): `Cukinator/cpu1-ablation-checkpoints`
-
-Each checkpoint is a standard PyTorch `.pt` file with **float32 weights** —
-no unpacking needed. Compatible with `train_ablation.py` from the
-[1.58bits repo](https://github.com/Cukinator/1.58bits).
-
-11 progressive ablation runs, each adding one component vs the previous.
-Most runs are **~50M parameters**; run_13 is a small 10M variant.
-
-## Quick start
-
-```python
-import torch, sys
-sys.path.insert(0, "/path/to/1.58bits")
-from train_ablation import build_ablation_model, generate
-
-ckpt = torch.load("run_02/model.pt", map_location="cpu")
-model = build_ablation_model(ckpt["config"])
-model.load_state_dict(ckpt["state_dict"])
-model.eval()
-
-text = generate(model, "The quick brown fox", 128, ckpt["config"], torch.device("cpu"))
-print(text)
-```
-
-## Ablation chain
-
-| Run | Architecture | Params | Val Loss | Perplexity |
-|-----|-------------|--------|----------|-----------|
-| run_01 | Transformer + BPE + FP16 (baseline) | 54.7M | 4.66 | 106.1 |
-| run_02a | Transformer + Byte + 4 heads (no LBD) | 38.5M | 2.31 | 10.1 |
-| run_02 | Transformer + Byte + LocalByteDecoder | 38.8M | 1.72 | 5.56 |
-| run_03 | MLGRU + Byte + FP16 | 38.8M | 1.87 | 6.49 |
-| run_04 | MLGRU + Byte + Ternary | 38.9M | 5.57 | 261.7 |
-| run_05 | + FPResidual | 39.0M | 5.55 | 257.7 |
-| run_05b | MLGRU kernel strict | 35.8M | 5.59 | 268.8 |
-| run_06 | + BolmoPatchEmbedding | 39.0M | 5.56 | 258.8 |
-| run_07 | + DeleteGate (CPU-1 complete) | 39.0M | 5.56 | 258.8 |
-| run_10 | + learned per-channel decay | 39.4M | 5.53 | 253.1 |
-| run_13 | Small 10M BPE model | 12.5M | 30.5 | — |
-
-> **Note**: ternary runs (04–10) were trained with only 2 tokens/param
-> (ablation budget). High perplexity reflects under-training, not architecture
-> failure. FP16 runs (01–03) are valid references.
-"""
+USAGE_README = (Path(__file__).parent.parent / "hf_readmes"
+                / "cpu1-ablations-final_README.md").read_text(encoding="utf-8")
 
 
 def get_hf_token() -> str | None:

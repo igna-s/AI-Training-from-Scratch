@@ -43,8 +43,29 @@ AVAILABLE_RUNS = [
     "run_05b_kernel_strict",
     "run_06",
     "run_07",
+    "run_08",
+    "run_09",
     "run_10",
     "run_13",
+    "run_14",
+    "run_15",
+    "run_16",
+    # Round-2 re-runs at 15 tok/param
+    "run_04_r2",
+    "run_05_r2",
+    "run_07_r2",
+    "run_08_r2",
+    "run_09_r2",
+    "run_10_r2",
+    "run_13_r2",
+    "run_14_r2",
+    "run_15_r2",
+    "run_16_r2",
+    # Round-3 cold-start rescue (bf16 AMP + lr_scale=2 + CE-only + 50 tok/p)
+    "run_04_r3",
+    "run_07_r3",
+    "run_14_r3",
+    "run_15_r3",
 ]
 
 # Prompts de generación — byte runs usan el primero, bpe runs el segundo
@@ -87,7 +108,7 @@ def download_checkpoint(run_name: str, token: str | None) -> Path:
     )
     elapsed = time.perf_counter() - t0
     size_mb = Path(path).stat().st_size / 1e6
-    print(f"  OK — {size_mb:.1f} MB en {elapsed:.1f}s  →  {path}")
+    print(f"  OK — {size_mb:.1f} MB en {elapsed:.1f}s  ->  {path}")
     return Path(path)
 
 
@@ -169,7 +190,9 @@ def evaluate_checkpoint(run_name: str, ckpt_path: Path) -> dict:
             temperature=0.8, top_k=40, top_p=0.0,
         )
         result["generation_time_s"] = round(time.perf_counter() - t0, 2)
-        result["generated_text"] = text
+        result["generated_text"] = ''.join(
+            c if c.isprintable() or c == '\n' else '�' for c in text
+        )
         result["generated_bytes"] = len(text.encode("utf-8"))
     except Exception as e:
         result["generation_error"] = str(e)
@@ -291,7 +314,7 @@ def main():
             p = MODELS_DIR / run_name / f"checkpoint_{run_name}_final.pt"
             if p.exists():
                 ckpt_paths[run_name] = p
-                print(f"  [ok] {run_name} → {p}")
+                print(f"  [ok] {run_name} -> {p}")
             else:
                 print(f"  [missing] {run_name} — {p}")
 

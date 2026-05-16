@@ -1,7 +1,7 @@
 {
   "run_name": "run_06",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_06\\checkpoint_run_06_final.pt",
-  "load_s": 0.15,
+  "load_s": 0.33,
   "train_metrics": {
     "run_name": "mlgru_byte_ternary_fpres_bolmo",
     "perplexity": 258.8084,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 38.99,
   "ram_mb": 156.0,
-  "throughput_patches_per_sec": 7.29,
-  "throughput_bytes_per_sec": 29.15,
-  "throughput_time_s": 7.72,
-  "generation_time_s": 5.85,
-  "generated_text": "The quick brown foxķE�}c\u000ej~#jL&����\t��~\u0010��?�\b1��\u001fcY�-���~х]\u0011\u0000���h�\u0005�$\u0002�\u001bwĽ�������|\u001f��\u0004|Wu��U�h�,NG�\u0006\b\u001c-��7��;.��zS�\u0002\u0002D�tV�퐾��\u000e9�\u0017~j�ΥL\u0006p&���",
-  "generated_bytes": 250,
-  "eval_time_s": 14.2
+  "throughput_patches_per_sec": 9.13,
+  "throughput_bytes_per_sec": 36.53,
+  "throughput_time_s": 6.05,
+  "generation_time_s": 4.3,
+  "generated_text": "The quick brown foxT�g\t\u00026,�\u001av6/&�&�\f:�q9�9yz?��\u0010M��T��|�W�?\u000b+��uИ\u0004O���9���l��J�\f7��{�+.�ް,K\u00169�������T������/N�&�;VkN�X�*��I�V�W��9�ķzJ�<l�H�",
+  "generated_bytes": 257,
+  "eval_time_s": 11.0
 }

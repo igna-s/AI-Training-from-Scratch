@@ -1901,11 +1901,17 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
     run_dir = Path(run_name)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = (
-        f"checkpoint_{run_name}_final.pt"
-        if is_final
-        else f"checkpoint_{run_name}_step{step}.pt"
-    )
+    # Phase 2 STEP checkpoints carry a `_phase2` infix so they don't collide
+    # with Phase 1 step checkpoints — lets Phase 2 resume from its own
+    # progress if interrupted. The FINAL checkpoint keeps the bare name so
+    # downstream tooling (eval/export) always finds the "fully trained"
+    # weights at `{run}/checkpoint_{run}_final.pt`.
+    phase = int(config.get('_current_phase', 1))
+    if is_final:
+        filename = f"checkpoint_{run_name}_final.pt"
+    else:
+        infix = '_phase2' if phase == 2 else ''
+        filename = f"checkpoint_{run_name}{infix}_step{step}.pt"
     path = str(run_dir / filename)
 
     # Strip DataParallel + torch.compile wrappers; otherwise state_dict keys
@@ -1973,7 +1979,17 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
 
     if not is_final:
         import glob as _glob
-        for old in _glob.glob(str(run_dir / f"checkpoint_{run_name}_step*.pt")):
+        infix = '_phase2' if phase == 2 else ''
+        # Phase-aware cleanup: Phase 1 only removes its own step ckpts, Phase 2
+        # only removes its own (so Phase 1 finals/steps survive Phase 2 if a
+        # user wants to look at them).
+        pattern = f"checkpoint_{run_name}{infix}_step*.pt"
+        for old in _glob.glob(str(run_dir / pattern)):
+            # Phase 1 pattern matches Phase 2 step ckpts too (since they also
+            # contain `_step`), so filter those out manually.
+            old_name = os.path.basename(old)
+            if phase == 1 and '_phase2_step' in old_name:
+                continue
             if old != path:
                 try:
                     os.remove(old)

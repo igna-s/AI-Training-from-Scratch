@@ -1,7 +1,7 @@
 {
   "run_name": "run_13",
   "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_13\\checkpoint_run_13_final.pt",
-  "load_s": 0.09,
+  "load_s": 0.13,
   "train_metrics": {
     "run_name": "small_cpu1_bpe",
     "perplexity": 485165195.4098,
@@ -14,11 +14,11 @@
   "format": "compact_2bit",
   "n_params_M": 12.55,
   "ram_mb": 50.2,
-  "throughput_patches_per_sec": 17.97,
-  "throughput_bytes_per_sec": 71.88,
-  "throughput_time_s": 3.04,
-  "generation_time_s": 6.58,
-  "generated_text": "The quick!! - M54523201200103861219692483106283111171 and B1201513806 the T062282040 1068045815135031 and F11, I can make you make two, a small \"G', and a single to work from the two (13500823107597221.391",
-  "generated_bytes": 205,
-  "eval_time_s": 9.9
+  "throughput_patches_per_sec": 23.77,
+  "throughput_bytes_per_sec": 95.07,
+  "throughput_time_s": 2.31,
+  "generation_time_s": 5.33,
+  "generated_text": "The quick!!. We really see its other 210 9 (0540209\nL\nC!. In the first 1148 78155020, 250863211131912341104273 and In 1209/331009, in 20120151519120100, 950018. To be to 21190. We need the first for your",
+  "generated_bytes": 203,
+  "eval_time_s": 7.9
 }

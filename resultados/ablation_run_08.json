@@ -1,0 +1,24 @@
+{
+  "run_name": "run_08",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_08\\checkpoint_run_08_final.pt",
+  "load_s": 0.11,
+  "train_metrics": {
+    "run_name": "folded_transformer_byte_ternary",
+    "perplexity": 260.3683,
+    "tokens_per_sec_cpu": 10.8297,
+    "ram_mb": 155.4166,
+    "val_loss": 5.5621,
+    "n_params_M": 38.8541
+  },
+  "step": 647,
+  "format": "compact_2bit",
+  "n_params_M": 38.85,
+  "ram_mb": 155.4,
+  "throughput_patches_per_sec": 9.72,
+  "throughput_bytes_per_sec": 38.87,
+  "throughput_time_s": 5.63,
+  "generation_time_s": 3.89,
+  "generated_text": "The quick brown fox\n\u001ao��mAe�2\u0016\u000f@\u0000����\u001c@\u0012�/�i���I����\u0002\f�0\u0003�;c�~�� {�J�e�R�!�\\Egȱ�Y�O؄B�\u001d\f��,\u0019� G��Ip�J���-q\u001c\u0011��n\u0012\u0005�I\n5k���P-�_�T;|��6�\u0002�\u0010\r� �˙&",
+  "generated_bytes": 250,
+  "eval_time_s": 10.0
+}
