@@ -467,69 +467,60 @@ Raw Text Corpus
 └─────────────────────────────┘
 ```
 
-### Ablation Pipeline (50M × 12 runs on Lightning.ai T4)
+### Ablation Pipeline (16 Parallel Runs on AMD MI300X 192GB)
 
-#### Lightning Studio Setup — Files to Upload
+The training infrastructure has been migrated from sequential T4 groups to **massive single-node parallelism** on an AMD MI300X with 192GB of VRAM using ROCm. All 16 core ablation runs are executed concurrently.
 
-Minimum set of files needed to train any ablation run on a Lightning Studio T4 instance:
+#### Server Setup — Files to Upload
+
+Minimum set of files needed to train any ablation run on the MI300X instance:
 
 | File | Purpose |
 |---|---|
 | `utilities.py` | Shared primitives (BitLinear, MLGRU, …) + training infrastructure (datasets, loss, LR, checkpointing) |
-| `train_ablation.py` | Ablation configs + `AblationModel` + `train_run` + multi-GPU orchestration (`--orchestrate`) |
-| `requirements.txt` | Python dependencies |
+| `train_ablation_amd.py` | ROCm-adapted ablation configs + orchestration (`--orchestrate`) tailored for MI300X |
+| `requirements_amd.txt` | Python dependencies tailored for PyTorch ROCm |
 
 Everything else is remote or not required:
 - **Dataset** — streamed from `Cukinator/cpu1-ablation-dataset` (or `HuggingFaceFW/fineweb` for the 50M chain) on HF Hub; use `--hf-mount` to avoid downloading
-- **Credentials** — set `HF_TOKEN` as a Lightning Secret (Settings → Secrets), not via `.env`
+- **Credentials** — set `HF_TOKEN` in the environment
 - `train_final.py` — only needed for the production 170M training, not the ablation chain
 - `create_dataset.py` — dataset already built and on HF Hub
 - `inference/`, `kaggle/`, `eval/` — not needed at training time
 
 ```bash
-# On the Lightning VM after uploading the files above:
-pip install -r requirements.txt
+# On the AMD VM after uploading the files above:
+pip install -r requirements_amd.txt
 
 # A) Single ablation run with lazy dataset streaming:
-python train_ablation.py --run run_10 --hf-mount
+python train_ablation_amd.py --run run_10 --hf-mount
 
-# B) Full ablation in parallel groups (one process per GPU):
-python train_ablation.py --orchestrate
+# B) Full massive parallel orchestration:
+HF_STAGGER_SECS=120 python train_ablation_amd.py --orchestrate
 ```
 
-#### Parallel groups — running ablations concurrently across GPUs
+#### Massive Parallel Orchestration — 16 Runs on 192GB VRAM
 
-`train_ablation.py` declares `PARALLEL_GROUPS: list[list[str]]`. Every sublist is a *group*: when invoked with `--orchestrate`, its runs launch concurrently as subprocesses of the same script (each spawned with `--run <name>`), one per GPU pinned via `CUDA_VISIBLE_DEVICES`. Groups themselves run sequentially. The launcher derives `TWO_PHASE_RUNS` from `use_delete_gate=True` in the config — runs in that set (currently `run_07`, `run_09`, `run_10`, `run_13`–`run_16`, plus their `_r2`/`_r3` counterparts) chain Phase 1 → Phase 2 inside the same GPU slot.
+`train_ablation_amd.py` abandons the old T4 `PARALLEL_GROUPS` sequential chaining. When invoked with `--orchestrate`, it launches **all 16 ablation runs concurrently** as subprocesses, all sharing the same MI300X GPU via ROCm. 
 
-Default groups (kept in sync with the code):
-
-| Group | Runs | Notes |
-|---|---|---|
-| 0 | `run_01 run_02a_byte_only_heads` | FP16 baselines — batch A |
-| 1 | `run_02 run_03` | FP16 baselines — batch B |
-| 2 | `run_04 run_05` | Ternary progression — batch A |
-| 3 | `run_05b_kernel_strict run_06` | Ternary progression — batch B |
-| 4 | `run_07 run_08` | CPU-1 complete + folded Transformer (run_07 two-phase) |
-| 5 | `run_09 run_10` | + PFNet, + per-channel decay (both two-phase) |
-| 6 | `run_13 run_14 run_15 run_16` | 10M scale-consistency (all two-phase) |
-| 7 | `run_04_r2 run_05_r2` | R2 — 39M ternary baseline at 15 tok/p |
-| 8 | `run_07_r2 run_08_r2` | R2 — 39M CPU-1 complete + folded Transformer |
-| 9 | `run_09_r2 run_10_r2` | R2 — 39M PFNet + per-channel decay |
-| 10 | `run_13_r2 run_14_r2 run_15_r2 run_16_r2` | R2 — 10M small re-runs |
-| 11 | `run_04_r3 run_07_r3` | R3 — 39M ternary cold-start rescue (50 tok/p, CE-only, bf16+lr_scale=2) |
-| 12 | `run_14_r3 run_15_r3` | R3 — 10M small cold-start rescue |
-
-Each subprocess streams stdout/stderr to `run_logs/<run_name>.log`, so a multi-GPU box completes each group in one wall-clock pass without log interleaving.
+**Critical Hugging Face Rate Limit Stagger (`HF_STAGGER_SECS`)**
+Because each run uses 4 DataLoader workers to query the massive `fineweb` parquet tree directly via the Hugging Face API, launching 16 runs simultaneously triggers exactly 64 concurrent `fsspec` glob calls. This instantly violates Hugging Face's `1000 requests per 5 minutes` API limit, resulting in `429 Too Many Requests` crashes during dataset initialization.
+To prevent the DDoS protection ban, the orchestrator uses `HF_STAGGER_SECS=120` (a 2-minute wait between each process spawn). This effectively spreads the initialization API burst over a 30-minute window, ensuring the rolling 5-minute limit is never breached. Checkpoint uploads also feature a built-in 5-minute exponential backoff retry in `utilities.py`.
 
 ```bash
-python train_ablation.py --orchestrate                       # all groups
-python train_ablation.py --orchestrate --groups 0 2          # only groups 0 and 2
-python train_ablation.py --orchestrate --runs run_05 run_09  # ad-hoc single group
-python train_ablation.py --orchestrate --max-parallel 1      # force fully sequential
-python train_ablation.py --orchestrate --dry-run             # 10-step smoke test
+# Launch all 16 runs staggered by 120 seconds to avoid HF 429 bans
+HF_STAGGER_SECS=120 python train_ablation_amd.py --orchestrate
+
+# Relaunch a specific subset of failed runs, capped to 4 concurrent spawns
+HF_STAGGER_SECS=120 python train_ablation_amd.py --orchestrate --runs run_07 run_09 run_10 run_16 --max-parallel 4
 ```
 
-Sized for **one full T4 (16 GB) per run**: `batch_per_gpu=24`, `gradient_accumulation_steps=1` (was 8 / 2). At `d_model=512`, `seq_len=5000`, 12 layers, AMP + grad-checkpointing, this fills ~10–12 GB and leaves room for the prefetch buffers below.
+Each subprocess streams stdout/stderr to `run_logs/<run_name>.log`, so you can tail individual logs in real-time.
+
+#### VRAM and Batch Sizing
+
+Sized for **Shared MI300X (192 GB)**: `batch_per_gpu=8`, `seq_len=5000`. At 12 layers with AMP and gradient checkpointing, each 50M parameter run consumes approximately **11.5 GB to 15 GB** of VRAM to store intermediate activations during the backward pass. 
+*Note:* A single 192GB GPU can comfortably host **12 parallel runs** of this size (~180 GB total). Attempting to pack all 16 simultaneously at `batch=8` will result in a `HIP out of memory` error on the 13th process. To fit all 16 concurrently, `batch_per_gpu` must be reduced to 4 or 6.
 
 #### CUDA latency hiding
 
