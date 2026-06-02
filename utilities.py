@@ -1963,19 +1963,28 @@ def save_ablation_checkpoint(model: nn.Module, optimizer, run_name: str,
 
     hub_repo = config.get('checkpoint_repo')
     if hub_repo:
-        try:
-            from huggingface_hub import HfApi
-            api = HfApi()
-            api.create_repo(hub_repo, repo_type="model", exist_ok=True)
-            api.upload_file(
-                path_or_fileobj=path,
-                path_in_repo=f"{run_name}/{filename}",
-                repo_id=hub_repo,
-                repo_type="model",
-            )
-            print(f"[Checkpoint] Uploaded to HF: {run_name}/{filename}")
-        except Exception as e:
-            print(f"[Checkpoint] Hub upload failed: {e}")
+        _max_retries = 3
+        _retry_wait  = 300  # 5 minutes — covers HF 429 rate-limit windows
+        for _attempt in range(1, _max_retries + 1):
+            try:
+                from huggingface_hub import HfApi
+                api = HfApi()
+                api.create_repo(hub_repo, repo_type="model", exist_ok=True)
+                api.upload_file(
+                    path_or_fileobj=path,
+                    path_in_repo=f"{run_name}/{filename}",
+                    repo_id=hub_repo,
+                    repo_type="model",
+                )
+                print(f"[Checkpoint] Uploaded to HF: {run_name}/{filename}")
+                break  # success
+            except Exception as e:
+                if _attempt < _max_retries:
+                    print(f"[Checkpoint] Hub upload failed (attempt {_attempt}/{_max_retries}): {e}")
+                    print(f"[Checkpoint] Waiting {_retry_wait//60} min before retry...")
+                    time.sleep(_retry_wait)
+                else:
+                    print(f"[Checkpoint] Hub upload failed after {_max_retries} attempts: {e}")
 
     if not is_final:
         import glob as _glob
