@@ -116,15 +116,23 @@ use_embedding_alignment: false # set true for embedding distillation
 
 | Paper | What it contributes to CPU-1 | Implemented |
 |---|---|---|
-| [Scalable MatMul-free LM (arXiv 2406.02528)](https://arxiv.org/abs/2406.02528) | MLGRU token mixer — Hadamard-only, no Q@K^T | ✅ `MatMulFreeTokenMixer` |
-| [Slender-Mamba (COLING 2025)](https://aclanthology.org/2025.coling-main.316/) | Ternary embedding and prediction heads | ✅ `BitEmbedding`, `BitLinear` |
-| [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) | LUT-based zero-multiply inference on CPU | ✅ `inference/kernels.cpp::ternary_lut_matmul_omp` + `forward_full_mad_*` |
-| [BitNet b1.58 (arXiv 2402.17764)](https://arxiv.org/abs/2402.17764) | 1.58-bit weight quantization with STE | ✅ `BitLinear` |
-| [Bolmo (arXiv 2410.20771)](https://arxiv.org/abs/2410.20771) | Dynamic byte patches via boundary prediction | ✅ `BoundaryPredictor` |
-| [MrT5](papers/mrt5-dynamic-token-merging-byte-level-lm.pdf) | Token deletion gate — prunes 40% of states | ✅ `DeleteGate` |
-| [Distilling Token-Trained Models into Byte-Level Models](papers/distilling-token-models-into-byte-level.pdf) | Embedding alignment distillation loss | ✅ `EmbeddingAligner` (CE-only for ablation) |
+| [Scalable MatMul-free LM (arXiv 2406.02528)](https://arxiv.org/abs/2406.02528) | MLGRU token mixer â Hadamard-only, no Q@K^T | â
+ `MatMulFreeTokenMixer` |
+| [Slender-Mamba (COLING 2025)](https://aclanthology.org/2025.coling-main.316/) | Ternary embedding and prediction heads | â
+ `BitEmbedding`, `BitLinear` |
+| [T-MAC (EuroSys 2025, arXiv 2407.00088)](https://arxiv.org/abs/2407.00088) | LUT-based zero-multiply inference on CPU | â
+ `inference/kernels.cpp::ternary_lut_matmul_omp` + `forward_full_mad_*` |
+| [BitNet b1.58 (arXiv 2402.17764)](https://arxiv.org/abs/2402.17764) | 1.58-bit weight quantization with STE | â
+ `BitLinear` |
+| [Bolmo (arXiv 2410.20771)](https://arxiv.org/abs/2410.20771) | Dynamic byte patches via boundary prediction | â
+ `BoundaryPredictor` |
+| [MrT5](papers/mrt5-dynamic-token-merging-byte-level-lm.pdf) | Token deletion gate â prunes 40% of states | â
+ `DeleteGate` |
+| [Distilling Token-Trained Models into Byte-Level Models](papers/distilling-token-models-into-byte-level.pdf) | Embedding alignment distillation loss | â
+ `EmbeddingAligner` (CE-only for ablation) |
 | [LFM2 (arXiv 2511.23404)](https://arxiv.org/abs/2511.23404) | Hybrid CNN + GQA architecture (LiquidAI) | ⚠️ **Not implemented** — external benchmark only (`models/LFM2.5-350M/` safetensors; a Q4_K_M GGUF is also benchmarked via `eval_external`) |
-| [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) | KL + CE distillation loss, T=4.0 | ✅ `train_final.py` distillation mode |
+| [Knowledge Distillation (Hinton et al., 2015)](https://arxiv.org/abs/1503.02531) | KL + CE distillation loss, T=4.0 | â
+ `train_final.py` distillation mode |
 
 ### Papers directory (`papers/`)
 
@@ -211,13 +219,20 @@ Note: the `--legacy-heads` flag (pass `config['legacy_heads']=True`) allows load
 
 | Check against MegaByte (Yu et al., 2023) | Status |
 |---|---|
-| Factorization `∏ P(bᵢ \| ctx, b<i)` — chain rule, not independence | ✅ |
-| Global→local via `W_proj(h_G) → P·D_L` with per-position reshape | ✅ |
-| Shift-right byte input with zero-pad at position 0 | ✅ |
-| FFN width 4× `d_local` | ✅ |
-| Teacher forcing in training / autoregressive in inference | ✅ |
-| Global model ≫ Local model in parameters | ✅ (50M vs ~700K ≈ 70×) |
-| Patch size 4 | ✅ |
+| Factorization `â P(báµ¢ \| ctx, b<i)` â chain rule, not independence | â
+ |
+| Globalâlocal via `W_proj(h_G) â PÂ·D_L` with per-position reshape | â
+ |
+| Shift-right byte input with zero-pad at position 0 | â
+ |
+| FFN width 4Ã `d_local` | â
+ |
+| Teacher forcing in training / autoregressive in inference | â
+ |
+| Global model â« Local model in parameters | â
+ (50M vs ~700K ≈ 70×) |
+| Patch size 4 | â
+ |
 
 **Deliberate deviations** (design choices, not bugs):
 
@@ -308,16 +323,25 @@ All ablation runs share the **same training recipe** so quality differences are 
 
 | Hyperparameter | Value | Equal across all runs? |
 |---|---|---|
-| `seed` | 42 | ✅ — matches `create_dataset.py:987` `SEED=42` |
+| `seed` | 42 | â
+ — matches `create_dataset.py:987` `SEED=42` |
 | `dataset_repo` | varies by scale (see *Dataset routing* above) | 50M + run_16 → `HuggingFaceFW/fineweb` (streamed); 10M run_13/14/15 → `Cukinator/cpu1-ablation-dataset`. The two paths both follow `create_dataset.py` params (same seed, seq_len, patch_size, max-doc-tokens). |
-| `lr` / `min_lr` | 3e-4 / 3e-5 | ✅ |
-| `batch_per_gpu` × `accum` × `seq_len` | 24 × 1 × 5000 = 120 K tok/step | ✅ |
-| `warmup_ratio` | 0.05 of `total_steps` | ✅ (was a bug — see below) |
-| `chinchilla_tokens_per_param` | 2 (ablation budget) | ✅ |
-| `weight_decay_bitlinear` / `_heads` | 0.1 / 0.01 | ✅ |
-| `grad_clip` | 1.0 | ✅ |
-| `temperature` / `alpha_kl` / `alpha_ce` | 4.0 / 0.9 / 0.1 | ✅ (unused: `training_signal='ce_only'`) |
-| `checkpoint_fraction` | 0.05 | ✅ |
+| `lr` / `min_lr` | 3e-4 / 3e-5 | â
+ |
+| `batch_per_gpu` Ã `accum` Ã `seq_len` | 24 Ã 1 Ã 5000 = 120 K tok/step | â
+ |
+| `warmup_ratio` | 0.05 of `total_steps` | â
+ (was a bug — see below) |
+| `chinchilla_tokens_per_param` | 2 (ablation budget) | â
+ |
+| `weight_decay_bitlinear` / `_heads` | 0.1 / 0.01 | â
+ |
+| `grad_clip` | 1.0 | â
+ |
+| `temperature` / `alpha_kl` / `alpha_ce` | 4.0 / 0.9 / 0.1 | â
+ (unused: `training_signal='ce_only'`) |
+| `checkpoint_fraction` | 0.05 | â
+ |
 
 **Two datasets, both anchored to `create_dataset.py`:**
 
@@ -1053,8 +1077,12 @@ Slender-Mamba proposes that the FP residual branch be a pure low-rank linear map
 
 | Deviation | Paper | Status | Blocked by | Recoverable in ablation? |
 |---|---|:---:|---|:---:|
-| `W_o` output projection | MatMul-free LM | ❌ in prod, ✅ in `AblationMLGRU` | Kernel ABI + L2 budget | ✅ (`use_wo=True`) |
-| State expansion N>1 | HGRN2 | ❌ in prod, ✅ in `AblationMLGRU` | L2 cache (i7-8750H, 256 KB) | ✅ (`state_expansion=2`) |
+| `W_o` output projection | MatMul-free LM | â in prod, â
+ in `AblationMLGRU` | Kernel ABI + L2 budget | â
+ (`use_wo=True`) |
+| State expansion N>1 | HGRN2 | â in prod, â
+ in `AblationMLGRU` | L2 cache (i7-8750H, 256 KB) | â
+ (`state_expansion=2`) |
 | Variable-length patches | BLT | ❌ everywhere | `LocalByteDecoder` + dataloader + kernel C++ all hardcode `P=4` | Partially (Bolmo gate) |
 | Real token deletion | MrT5 | ❌ everywhere | Sequential scan + checkpointing + Phase-1↔Phase-2 transition | Partially (DeleteGate + merge + bimodal) |
 | Parallel scan | MatMul-free LM | ❌ everywhere | State reset breaks associativity; inference is autoregressive | Not necessary |
@@ -1108,20 +1136,27 @@ tqdm>=4.66.0
 | Model | Size | Architecture | Status |
 |---|---|---|---|
 | `models/cpu1-170M/` | ~170M params (~44 MB 2-bit packed) | MLGRU + Byte + Ternary + FPResidual + PFNet + MegaByte LocalDecoder | 🔄 Training |
-| `models/LFM2.5-350M/` | HF safetensors | mlGRU (LiquidAI) | ✅ Benchmark reference (llama.cpp Q4 via `eval_external`) |
-| `models/gpt2-medium/` | HF safetensors | Transformer | ✅ Baseline reference (`resultados/gpt2-medium_q{4,8}_{1,6}t.md`) |
-| `models/ablation_models/run_*` | trained compact_2bit checkpoints | Per-run architecture | ✅ All r1 + r2 runs trained, mirrored to `Cukinator/cpu1-ablation-checkpoints` |
-| `models/ablations_final/run_*` | FP32 ready-to-use checkpoints | Per-run architecture | ✅ Unpacked from compact_2bit, mirrored to `Cukinator/cpu1-ablations-final` (download with `eval/export_ablations.py`) |
+| `models/LFM2.5-350M/` | HF safetensors | mlGRU (LiquidAI) | â
+ Benchmark reference (llama.cpp Q4 via `eval_external`) |
+| `models/gpt2-medium/` | HF safetensors | Transformer | â
+ Baseline reference (`resultados/gpt2-medium_q{4,8}_{1,6}t.md`) |
+| `models/ablation_models/run_*` | trained compact_2bit checkpoints | Per-run architecture | â
+ All r1 + r2 runs trained, mirrored to `Cukinator/cpu1-ablation-checkpoints` |
+| `models/ablations_final/run_*` | FP32 ready-to-use checkpoints | Per-run architecture | â
+ Unpacked from compact_2bit, mirrored to `Cukinator/cpu1-ablations-final` (download with `eval/export_ablations.py`) |
 
 ### Pending
 
-- ~~Run the 12 ablation experiments (run_01–run_10 + branches) + 4 scale runs (run_13–run_16) on Lightning.ai 4×T4 (via `train_ablation.py --orchestrate`) and collect metrics~~ ✅ **Done** — all r1 and r2 runs complete; results uploaded to `Cukinator/cpu1-ablation-checkpoints` (compact 2-bit) and `Cukinator/cpu1-ablations-final` (FP32 ready-to-use). See *Ablation Audit — 2026-05 Findings*.
+- ~~Run the 12 ablation experiments (run_01ârun_10 + branches) + 4 scale runs (run_13ârun_16) on Lightning.ai 4ÃT4 (via `train_ablation.py --orchestrate`) and collect metrics~~ â
+ **Done** — all r1 and r2 runs complete; results uploaded to `Cukinator/cpu1-ablation-checkpoints` (compact 2-bit) and `Cukinator/cpu1-ablations-final` (FP32 ready-to-use). See *Ablation Audit — 2026-05 Findings*.
 - **Decide on r3 vs warm-start path** — the audit shows cold-start ternary at ≤15 tok/p collapses to the uniform floor. Either:
   1. Run the four `*_r3` configs (CE-only + bf16 + `lr_scale=2.0` + 50 tok/p) to test whether the four corrections rescue cold-start, *or*
   2. Implement warm-start from `run_03` (FP16 MLGRU+byte, val_loss 1.87) → ternarise weights → 1–2 tok/p QAT. ~1–2 h T4. Higher probability of a publishable positive result.
 - Scale the chosen recipe to 170M and train on full dataset
-- ~~T-MAC C++ kernel integration~~ ✅ **Done** — current numbers in *CPU-1 170M Performance* (mode 4: 521 pps, mode 3 6t: 726 pps)
-- ~~C benchmark for 400M kernel-optimal config~~ ✅ **Done** — 193 pps (mode 4), 270 pps (mode 3)
+- ~~T-MAC C++ kernel integration~~ â
+ **Done** — current numbers in *CPU-1 170M Performance* (mode 4: 521 pps, mode 3 6t: 726 pps)
+- ~~C benchmark for 400M kernel-optimal config~~ â
+ **Done** — 193 pps (mode 4), 270 pps (mode 3)
 
 ---
 
@@ -1205,10 +1240,14 @@ All ablation runs evaluated on the same 573-byte English narrative sample under 
 
 | Run | Architecture | Params | Tok/p | Val loss | Δ vs uniform | Status |
 |-----|-------------|-------:|------:|---------:|-------------:|--------|
-| run_01 | Transformer + BPE + FP16 (baseline) | 54.7M | 2 | **4.66** | (BPE — `ln 16384 = 9.70`) | ✅ converged |
-| run_02a | Transformer + Byte + 4 heads (no LBD) | 38.5M | 2 | **2.31** | −3.24 | ✅ converged |
-| run_02 | Transformer + Byte + LocalByteDecoder | 38.8M | 2 | **1.72** | −3.83 | ✅ converged |
-| run_03 | MLGRU + Byte + FP16 | 38.8M | 2 | **1.87** | −3.68 | ✅ converged |
+| run_01 | Transformer + BPE + FP16 (baseline) | 54.7M | 2 | **4.66** | (BPE â `ln 16384 = 9.70`) | â
+ converged |
+| run_02a | Transformer + Byte + 4 heads (no LBD) | 38.5M | 2 | **2.31** | â3.24 | â
+ converged |
+| run_02 | Transformer + Byte + LocalByteDecoder | 38.8M | 2 | **1.72** | â3.83 | â
+ converged |
+| run_03 | MLGRU + Byte + FP16 | 38.8M | 2 | **1.87** | â3.68 | â
+ converged |
 | run_04 | MLGRU + Byte + **Ternary** | 38.9M | 2 | 5.57 | +0.02 | ❌ uniform |
 | run_05 | + FPResidual | 39.0M | 2 | 5.55 | 0.00 | ❌ uniform |
 | run_05b | MLGRU kernel-strict (no W_o) | 35.8M | 2 | 5.59 | +0.04 | ❌ uniform |
@@ -1497,9 +1536,12 @@ Análisis de fidelidad de cada ablation respecto al paper citado, basado en lo q
 **Papers:** MrT5 (Pagliardini et al., 2024) + MatMul-Free + BitNet + BLT + Slender-Mamba
 **Componente:** `DeleteGate` con `forward_gather` (TopK + sort temporal + scatter_back).
 **Fidelidad MrT5:** **Media-Alta.**
-- ✅ Replica el espíritu: gate produce score, eliminación al ~40%, gather físico que reduce la longitud para capas posteriores, scatter de vuelta.
-- ✅ Gumbel-sigmoid + STE para hard mask {0,1}.
-- ✅ Penalización bimodal (entropía del soft mask) y constraint de tasa.
+- â
+ Replica el espíritu: gate produce score, eliminación al ~40%, gather físico que reduce la longitud para capas posteriores, scatter de vuelta.
+- â
+ Gumbel-sigmoid + STE para hard mask {0,1}.
+- â
+ Penalización bimodal (entropía del soft mask) y constraint de tasa.
 - ⚠️ **Desviación:** MrT5 original usa una soft-mask con un **schedule continuo** que evoluciona durante entrenamiento (no TopK estricto + STE). Aquí se hace TopK con K fijo por batch — más simple, menos diferenciable que la formulación MrT5 pura.
 - ⚠️ El `merge_conv` depthwise de "merge deleted into neighbours" es propio (MrT5 usa un esquema de fusión basado en suma ponderada por scores; el conv depthwise es una aproximación parametrizada).
 
@@ -1624,9 +1666,12 @@ Está más cerca del paper "**Bolmo**" (boundary gating sobre embedding) que de 
 - Up-sampling al final para restaurar la resolución original con interpolación de las representaciones eliminadas.
 
 **Lo que hace `DeleteGate.forward_gather`:**
-- ✅ Gumbel-sigmoid + STE para `{0,1}` decisivo.
-- ✅ Constraint de tasa `((1-soft_mask).mean() - target_rate)²` + bimodal entropy regulariser.
-- ✅ Gather físico: TopK survivors → `[B, K, D]` post-gate.
+- â
+ Gumbel-sigmoid + STE para `{0,1}` decisivo.
+- â
+ Constraint de tasa `((1-soft_mask).mean() - target_rate)²` + bimodal entropy regulariser.
+- â
+ Gather físico: TopK survivors → `[B, K, D]` post-gate.
 - ⚠️ **TopK con K fijo** (≠ MrT5 que decide token-por-token con soft mask continua). Aquí siempre sobreviven exactamente `S·(1-rate)` tokens por batch.
 - ⚠️ El "up-sampling" de MrT5 (interpolar representaciones eliminadas) se reemplaza por `scatter_back` que **deja las posiciones eliminadas con su representación pre-gate**, sin refinamiento. Más simple, conserva gradiente, pero no es el up-sampling del paper.
 - ⚠️ El "merge" (redistribuir masa eliminada en vecinos) se hace con un **depthwise Conv1d k=3** inicializado a promedio uniforme. MrT5 hace una suma ponderada por scores aprendidos, no un conv depthwise.
@@ -1667,3 +1712,96 @@ En todos los casos las desviaciones son **trade-offs explícitos** entre fidelid
 ## License
 
 MIT
+
+## Ablation Audit  2026-05 Findings
+
+### 1. El Combate: Arquitectura V1 vs V3
+
+Al analizar los resultados de las ablaciones, encontramos que la arquitectura V1 clasica de Transformer en FP16 (
+un_02) funciona perfectamente (Loss: 1.72, PPL: 5.56). Sin embargo, la arquitectura V3 completa (
+un_07, CPU-1 con MLGRU, Bolmo y DeleteGate) usando pesos ternarios colapsa a ruido aleatorio (Loss: 5.56, PPL: 258.8).
+
+### 2. Duelo de Ternarios: Aislando el problema
+
+Para aislar la causa del colapso, comparamos la misma arquitectura V1 pero forzando el uso de pesos ternarios (
+un_08):
+
+| Modelo | Arquitectura Base | Pesos | Loss | Perplexity | Resultado |
+|---|---|---|---|---|---|
+| 
+un_08 | V1 (Transformer Clasico) | Ternarios | 5.56 | 260.4 | ?? Estancado |
+| 
+un_07 | V3 (MLGRU + Bolmo + DeleteGate) | Ternarios | 5.56 | 258.8 | ?? Estancado |
+
+**Conclusion:** Ambos modelos se estrellaron contra el mismo muro numerico (Loss = ~5.56, la entropia uniforme de 256 bytes)! Esto absuelve por completo a la arquitectura V3 (MLGRU/DeleteGate/Bolmo). El fracaso es culpa exclusiva de la mecanica de entrenamiento de los pesos ternarios 1.58-bits (BitLinear) en condicion de *cold-start* a esta escala.
+
+### 3. Progreso de los Runs V3 (Interrumpidos)
+
+Los entrenamientos actuales (Ronda 3 con presupuesto elevado a 150 tok/param) fueron interrumpidos prematuramente por falta de creditos en la nube (AMD MI300X, 192GB VRAM). Ninguno de ellos genero el JSON final. Extraidos desde el Hub de Hugging Face (Cukinator/cpu1-ablation-checkpoints-v3), estos son los porcentajes de avance de cada corrida al momento de apagarse:
+
+- **Total de pasos objetivo:** 62,500 pasos (50M) / 12,500 pasos (10M)
+- 
+un_01 (50M): 12,173 pasos -> **19.5%**
+- 
+un_02 (50M): 10,963 pasos -> **17.5%**
+- 
+un_04 (50M): 6,074 pasos -> **9.7%**
+- 
+un_05 (50M): 4,390 pasos -> **7.0%**
+- 
+un_06 (50M): 4,237 pasos -> **6.8%**
+- 
+un_08 (50M): 3,858 pasos -> **6.2%**
+- 
+un_13 (10M): 9,290 pasos -> **74.3%**
+- 
+un_14 (10M): 9,775 pasos -> **78.2%**
+- 
+un_15 (10M): 2,350 pasos -> **18.8%**
+
+El avance extremadamente lento (menos del 20% en 1 dia para los modelos de 50M) se debio al severo cuello de botella provocado por el context-switching del CPU al orquestar 16 procesos concurrentes sobre la misma GPU (MI300X).
+
+
+
+
+
+### Modelos Funcionales (Unpacked en HF Hub)
+
+Todos los modelos de la V3 y sus ablaciones, una vez entrenados, se descomprimen de su formato empaquetado de 2-bits a FP32 puro para facilitar la inferencia directa en PyTorch sin necesidad del kernel C++ personalizado. Estos modelos listos para usar viven en el repositorio de Hugging Face: [Cukinator/cpu1-ablations-final](https://huggingface.co/Cukinator/cpu1-ablations-final/tree/main).
+
+La estructura del repositorio contiene una carpeta por cada experimento y un archivo \model.pt\ (state_dict nativo) dentro:
+
+\\\	ext
+Cukinator/cpu1-ablations-final/
++-- run_01/model.pt                 # Transformer BPE FP16
++-- run_02/model.pt                 # Transformer Byte FP16 (Mejor resultado)
++-- run_03/model.pt                 # MLGRU Byte FP16
++-- run_07/model.pt                 # CPU-1 COMPLETE (V3 Ternaria con DeleteGate)
++-- run_09/model.pt                 # CPU-1 + PFNet
++-- run_14_r2/model.pt              # Modelo pequeo 10M Byte (Ronda 2)
+\\\
+
+#### Cmo probarlos localmente
+
+Para probar cualquiera de estos modelos funcionales, no necesitas escribir cdigo extra. El script \	rain_ablation_amd.py\ tiene un modo \INFER\ integrado. Slo edita la configuracin al principio del archivo:
+
+\\\python
+# 0. Mode switch  flip one of the two bools
+TRAIN = False
+INFER = True
+
+INFER_CONFIG = {
+    'ckpt':             'ruta/a/tu/model.pt',  # Descargado de cpu1-ablations-final
+    'prompt':           'Habia una vez',
+    'max_new_bytes':    256,
+    'temperature':      0.8,
+    'elimination_rate': 0.0,    # Usar 0.4 si es run_07 o run_09 (DeleteGate)
+    'device':           'cuda', # o 'cpu'
+}
+\\\
+
+Luego simplemente ejecuta el script:
+\\\ash
+python train_ablation_amd.py
+\\\
+
