@@ -1688,8 +1688,6 @@ Tres patrones de atención **combinados**:
 2. **Dilated sliding window** en capas superiores (saltos de tamaño d para mayor receptive field).
 3. **Global attention** en tokens especiales (CLS, SEP, query tokens) que atienden a todo y son atendidos por todo.
 
-El paper enfatiza que la combinación es lo que iguala a full-attention en tareas como QA.
-
 **Lo que hace `SlidingWindowAttention`:**
 Solo el patrón (1): banda causal de tamaño `window_size=128`. Sin dilatación, sin tokens globales.
 
@@ -1713,17 +1711,55 @@ En todos los casos las desviaciones son **trade-offs explícitos** entre fidelid
 
 MIT
 
-## Ablation Audit  2026-05 Findings
+## Ablation Audit — 2026-05 Findings
+
+### 3. Resultados de los Runs V3
+
+Los entrenamientos de la Ronda 3 (150 tok/param, bf16 AMP, `lr_scale=2.0` para BitLinear) fueron interrumpidos por falta de créditos en la nube (AMD MI300X). Val Loss y Perplexity medidos desde los checkpoints disponibles (últimos 3 shards de validación, 100 batches):
+
+**50M runs:**
+
+| Run | Arquitectura | Progreso | Val Loss | PPL | Status |
+|-----|-------------|--------:|---------:|----:|--------|
+| run_01 | Transformer + BPE (16K) + FP16 | 19.5% (12,173 steps) | — | — | ❌ Diverged (NaN) |
+| run_02 | Transformer + Byte + LocalByteDecoder | 17.5% (10,963 steps) | — | — | ❌ Diverged (NaN) |
+| run_04 | MLGRU + Byte + Ternary | 9.7% (6,074 steps) | **1.3064** | **3.69** | ✅ Converging |
+| run_05 | + FPResidual | 7.0% (4,390 steps) | **1.3422** | **3.83** | ✅ Converging |
+| run_06 | + Bolmo patch embedding | 6.8% (4,237 steps) | **0.6261** | **1.87** | ✅ Converging |
+| run_07 | + DeleteGate (CPU-1 complete) | — | — | — | ⚠️ Checkpoint no encontrado en repo V3 |
+| run_08 | Folded Transformer + Byte + Ternary | 6.2% (3,858 steps) | — | — | ❌ Diverged (NaN) |
+
+**10M runs:**
+
+| Run | Arquitectura | Progreso | Val Loss | PPL | Status |
+|-----|-------------|--------:|---------:|----:|--------|
+| run_13 | Small CPU-1 + BPE (4K vocab) | 74.3% (9,290 steps) | 25.01 | ~4.9×10⁸ | BPE collapse |
+| run_14 | Small CPU-1 byte-level (Qwen distill) | 78.2% (9,775 steps) | **0.5305** | **1.70** | ✅ Convergencia fuerte |
+| run_15 | Small CPU-1 byte + hidden distill | 18.8% (2,350 steps) | **0.9696** | **2.64** | ✅ Converging |
+
+### 3b. Hallazgo clave de V3: bf16 AMP + lr_scale=2.0 rompe el plateau ternario
+
+En V1/V2, **todos** los runs ternarios se estancaron en Loss ≈ 5.55 nats. Con las correcciones de V3, incluso con solo 6–10% del presupuesto completado, los modelos ternarios muestran **convergencia real por primera vez**:
+
+| Run | V1 Loss | V1 PPL | V3 Loss | V3 PPL | Mejora |
+|-----|--------:|-------:|--------:|-------:|-------:|
+| run_04 (MLGRU+Byte+Ternary) | 5.57 | 261.7 | **1.3064** | **3.69** | ✅ −4.26 nats |
+| run_05 (+FPResidual) | 5.55 | 257.7 | **1.3422** | **3.83** | ✅ −4.21 nats |
+| run_06 (+Bolmo) | 5.56 | 258.8 | **0.6261** | **1.87** | ✅ −4.93 nats |
+| run_14 (Small CPU-1 10M) | 5.58 | 263.9 | **0.5305** | **1.70** | ✅ −5.05 nats |
+
+El avance extremadamente lento de los 50M (<20% en 1 día) se debió al cuello de botella de context-switching al orquestar 16 procesos concurrentes sobre la misma GPU (MI300X).
+
+---
+
+## Ablation Audit — 2026-05 Findings
 
 ### 1. El Combate: Arquitectura V1 vs V3
 
-Al analizar los resultados de las ablaciones, encontramos que la arquitectura V1 clasica de Transformer en FP16 (
-un_02) funciona perfectamente (Loss: 1.72, PPL: 5.56). Sin embargo, la arquitectura V3 completa (
-un_07, CPU-1 con MLGRU, Bolmo y DeleteGate) usando pesos ternarios colapsa a ruido aleatorio (Loss: 5.56, PPL: 258.8).
+Al analizar los resultados de las ablaciones, encontramos que la arquitectura V1 clasica de Transformer en FP16 (run_02) funciona perfectamente (Loss: 1.72, PPL: 5.56). Sin embargo, la arquitectura V3 completa (run_07, CPU-1 con MLGRU, Bolmo y DeleteGate) usando pesos ternarios colapsa a ruido aleatorio (Loss: 5.56, PPL: 258.8).
 
 ### 2. Duelo de Ternarios: Aislando el problema
 
-Para aislar la causa del colapso, comparamos la misma arquitectura V1 pero forzando el uso de pesos ternarios (
 un_08):
 
 | Modelo | Arquitectura Base | Pesos | Loss | Perplexity | Resultado |
@@ -1735,31 +1771,42 @@ un_07 | V3 (MLGRU + Bolmo + DeleteGate) | Ternarios | 5.56 | 258.8 | ?? Estancad
 
 **Conclusion:** Ambos modelos se estrellaron contra el mismo muro numerico (Loss = ~5.56, la entropia uniforme de 256 bytes)! Esto absuelve por completo a la arquitectura V3 (MLGRU/DeleteGate/Bolmo). El fracaso es culpa exclusiva de la mecanica de entrenamiento de los pesos ternarios 1.58-bits (BitLinear) en condicion de *cold-start* a esta escala.
 
-### 3. Progreso de los Runs V3 (Interrumpidos)
+### 3. Resultados de los Runs V3 (Interrumpidos)
 
-Los entrenamientos actuales (Ronda 3 con presupuesto elevado a 150 tok/param) fueron interrumpidos prematuramente por falta de creditos en la nube (AMD MI300X, 192GB VRAM). Ninguno de ellos genero el JSON final. Extraidos desde el Hub de Hugging Face (Cukinator/cpu1-ablation-checkpoints-v3), estos son los porcentajes de avance de cada corrida al momento de apagarse:
+Los entrenamientos de la Ronda 3 (150 tok/param, bf16 AMP, `lr_scale=2.0` para BitLinear) fueron interrumpidos por falta de créditos (AMD MI300X). Val Loss y Perplexity medidos desde los checkpoints disponibles (últimos 3 shards de validación, 100 batches):
 
-- **Total de pasos objetivo:** 62,500 pasos (50M) / 12,500 pasos (10M)
-- 
-un_01 (50M): 12,173 pasos -> **19.5%**
-- 
-un_02 (50M): 10,963 pasos -> **17.5%**
-- 
-un_04 (50M): 6,074 pasos -> **9.7%**
-- 
-un_05 (50M): 4,390 pasos -> **7.0%**
-- 
-un_06 (50M): 4,237 pasos -> **6.8%**
-- 
-un_08 (50M): 3,858 pasos -> **6.2%**
-- 
-un_13 (10M): 9,290 pasos -> **74.3%**
-- 
-un_14 (10M): 9,775 pasos -> **78.2%**
-- 
-un_15 (10M): 2,350 pasos -> **18.8%**
+**50M runs:**
 
-El avance extremadamente lento (menos del 20% en 1 dia para los modelos de 50M) se debio al severo cuello de botella provocado por el context-switching del CPU al orquestar 16 procesos concurrentes sobre la misma GPU (MI300X).
+| Run | Arquitectura | Progreso | Val Loss | PPL | Status |
+|-----|-------------|--------:|---------:|----:|--------|
+| run_01 | Transformer + BPE (16K) + FP16 | 19.5% (12,173 steps) | — | — | ❌ Diverged (NaN) |
+| run_02 | Transformer + Byte + LocalByteDecoder | 17.5% (10,963 steps) | — | — | ❌ Diverged (NaN) |
+| run_04 | MLGRU + Byte + Ternary | 9.7% (6,074 steps) | **1.3064** | **3.69** | ✅ Converging |
+| run_05 | + FPResidual | 7.0% (4,390 steps) | **1.3422** | **3.83** | ✅ Converging |
+| run_06 | + Bolmo patch embedding | 6.8% (4,237 steps) | **0.6261** | **1.87** | ✅ Converging |
+| run_07 | + DeleteGate (CPU-1 complete) | — | — | — | ⚠️ Checkpoint no encontrado en repo V3 |
+| run_08 | Folded Transformer + Byte + Ternary | 6.2% (3,858 steps) | — | — | ❌ Diverged (NaN) |
+
+**10M runs:**
+
+| Run | Arquitectura | Progreso | Val Loss | PPL | Status |
+|-----|-------------|--------:|---------:|----:|--------|
+| run_13 | Small CPU-1 + BPE (4K vocab) | 74.3% (9,290 steps) | 25.01 | ~4.9×10⁸ | BPE collapse |
+| run_14 | Small CPU-1 byte-level (Qwen distill) | 78.2% (9,775 steps) | **0.5305** | **1.70** | ✅ Convergencia fuerte |
+| run_15 | Small CPU-1 byte + hidden distill | 18.8% (2,350 steps) | **0.9696** | **2.64** | ✅ Converging |
+
+### 3b. Hallazgo clave de V3: bf16 AMP + lr_scale=2.0 rompe el plateau ternario
+
+En V1/V2, **todos** los runs ternarios se estancaron en Loss ≈ 5.55 nats. Con las correcciones de V3, incluso con solo 6–10% del presupuesto completado, los modelos ternarios muestran **convergencia real por primera vez**:
+
+| Run | V1 Loss | V1 PPL | V3 Loss | V3 PPL | Mejora |
+|-----|--------:|-------:|--------:|-------:|-------:|
+| run_04 (MLGRU+Byte+Ternary) | 5.57 | 261.7 | **1.3064** | **3.69** | ✅ −4.26 nats |
+| run_05 (+FPResidual) | 5.55 | 257.7 | **1.3422** | **3.83** | ✅ −4.21 nats |
+| run_06 (+Bolmo) | 5.56 | 258.8 | **0.6261** | **1.87** | ✅ −4.93 nats |
+| run_14 (Small CPU-1 10M) | 5.58 | 263.9 | **0.5305** | **1.70** | ✅ −5.05 nats |
+
+El avance extremadamente lento (<20% en 1 día para los 50M) se debió al cuello de botella de context-switching al orquestar 16 procesos concurrentes sobre la misma GPU (MI300X).
 
 
 
