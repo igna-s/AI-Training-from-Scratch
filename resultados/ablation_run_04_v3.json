@@ -11,12 +11,17 @@
   "n_params_M": 38.854,
   "ram_fp32_mb": 155.4,
   "loss_metrics": {
-    "val_loss_available": false
+    "val_loss": 2.598808,
+    "perplexity": 13.448,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": 3.74929,
+    "delta_uniform": -2.94637
   },
   "correctness": {
     "forward_shapes": {
       "status": "PASS",
-      "time_s": 1.94,
+      "time_s": 1.54,
       "result": {
         "configs_tested": 6,
         "heads": 4
@@ -24,14 +29,14 @@
     },
     "probs": {
       "status": "PASS",
-      "time_s": 0.28,
+      "time_s": 0.26,
       "result": {
-        "max_error": 3.5762786865234375e-07
+        "max_error": 4.76837158203125e-07
       }
     },
     "determinism": {
       "status": "PASS",
-      "time_s": 0.39,
+      "time_s": 0.36,
       "result": {
         "deterministic": true
       }
@@ -42,14 +47,14 @@
     },
     "ternary_weights": {
       "status": "PASS",
-      "time_s": 1.33,
+      "time_s": 2.45,
       "result": {
         "modules_checked": 101
       }
     },
     "state_size": {
       "status": "PASS",
-      "time_s": 0.12,
+      "time_s": 0.11,
       "result": {
         "state_kb": 24.0,
         "kv_cache_kb": 81920.0,
@@ -60,36 +65,28 @@
   "performance": {
     "throughput_latency_jitter": {
       "status": "PASS",
-      "time_s": 62.64,
+      "time_s": 56.3,
       "result": {
-        "throughput_sps": 8.4,
-        "throughput_bps": 33.6,
-        "p50_ms": 118.95,
-        "p95_ms": 137.64,
-        "p99_ms": 147.17,
-        "jitter_cv": 0.0776,
+        "throughput_sps": 9.5,
+        "throughput_bps": 37.9,
+        "p50_ms": 105.66,
+        "p95_ms": 132.43,
+        "p99_ms": 152.42,
+        "jitter_cv": 0.1093,
         "backend": "pytorch_pure"
       }
     },
     "context_scaling": {
-      "status": "PASS",
-      "time_s": 39.68,
-      "result": {
-        "throughput_by_ctx": {
-          "0": 8.2,
-          "512": 8.2,
-          "2048": 8.5
-        },
-        "baseline_sps": 8.2
-      }
+      "status": "FAIL",
+      "error": "Throughput degrada 29.8% con ctx=512 (limite 20%)"
     },
     "ram": {
       "status": "PASS",
-      "time_s": 11.99,
+      "time_s": 11.88,
       "result": {
         "model_mb": 155.4,
         "delta_mb": 0.0,
-        "total_mb": 1226.4
+        "total_mb": 1720.7
       }
     }
   },
@@ -118,5 +115,5 @@
     "skipped": true,
     "reason": "sin GGUF (no aplica a ablation)"
   },
-  "eval_time_s": 158.3
+  "eval_time_s": 194.5
 }

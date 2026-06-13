@@ -11,7 +11,12 @@
   "n_params_M": 38.854,
   "ram_fp32_mb": 155.4,
   "loss_metrics": {
-    "val_loss_available": false
+    "val_loss": 5.589393,
+    "perplexity": 267.573,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": 8.06379,
+    "delta_uniform": 0.04422
   },
   "correctness": {
     "forward_shapes": {

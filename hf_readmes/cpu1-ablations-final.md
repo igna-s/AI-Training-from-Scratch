@@ -21,7 +21,7 @@ Repo:    `Cukinator/cpu1-ablations-final`
 Source:  [`Cukinator/cpu1-ablation-checkpoints`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints)
 Code:    [github.com/Cukinator/1.58bits](https://github.com/Cukinator/1.58bits)
 
-> **Tablas recalculadas 2026-06-12** — criterio homogéneo:
+> **Tablas recalculadas 2026-06-13** — criterio homogéneo:
 > `perplexity = exp(val_loss)` para todos los runs sin excepción.
 > `BPB = val_loss / ln(2)` — solo byte-level.
 > Referencia uniforme byte: **ln(256) = 5.545 nats → PPL=256 → BPB=8.000**
@@ -53,12 +53,12 @@ Code:    [github.com/Cukinator/1.58bits](https://github.com/Cukinator/1.58bits)
 | run_15 | Small CPU-1 byte + hidden distill. | 10.7 | 42.9 | 5.5755 | 263.88 | 8.0437 | byte |
 | run_16 | Small CPU-1 raw bytes, no teacher | 10.7 | 42.8 | 5.5754 | 263.85 | 8.0436 | byte |
 
-## Round 2 — re-runs a 15 tok/param
+## Round 2 — re-runs a 15 tok/param (y r3 budget extendido)
 
 | Run | Arquitectura | Params M | Loss r1 | PPL r1 | Loss r2 | PPL r2 | Δ loss | BPB r2 | Nivel |
 |-----|-------------|--------:|--------:|-------:|--------:|-------:|-------:|-------:|-------|
-| run_04_r2 | run_04 @ 15 tok/param | 38.9 | 5.5671 | 261.68 | — | — | — | — | byte |
-| run_07_r2 | run_07 @ 15 tok/param | 39.0 | 5.5561 | 258.81 | — | — | — | — | byte |
+| run_04_r2 | run_04 @ 15 tok/param | 38.9 | 5.5671 | 261.68 | 5.5894 | 267.57 | +0.02226 | 8.0638 | byte |
+| run_07_r2 | run_07 @ 15 tok/param | 39.0 | 5.5561 | 258.81 | 5.5434 | 255.54 | -0.01271 | 7.9974 | byte |
 | run_13_r2 | run_13 @ 15 tok/param | 12.5 | 30.5375 | 18293109063475.55 | 25.4264 | 110288596599.28 | -5.11118 | — | token |
 | run_14_r2 | run_14 @ 15 tok/param | 10.7 | 5.5755 | 263.88 | 5.5755 | 263.88 | -0.00000 | 8.0437 | byte |
 | run_15_r2 | run_15 @ 15 tok/param | 10.7 | 5.5755 | 263.88 | 5.5755 | 263.88 | -0.00000 | 8.0437 | byte |
@@ -68,18 +68,18 @@ Code:    [github.com/Cukinator/1.58bits](https://github.com/Cukinator/1.58bits)
 
 | Run | Arquitectura | Params M | Val Loss | PPL | BPB | Step | P/s | Bytes/s | Nivel |
 |-----|-------------|--------:|--------:|----:|----:|-----:|----:|--------:|-------|
-| run_01_v3 | run_01 v3 | 54.7 | — | — | — | 12173 | 74.7 | 75 | token |
-| run_02_v3 | run_02 v3 | 38.8 | — | — | — | 10963 | 81.6 | 326 | byte |
-| run_02a_byte_only_heads_v3 | run_02a v3 | 38.5 | — | — | — | 16327 | 90.2 | 361 | byte |
-| run_03_v3 | run_03 v3 | 38.8 | — | — | — | 6187 | 64.1 | 256 | byte |
-| run_04_v3 | run_04 v3 | 38.9 | — | — | — | 6074 | 8.4 | 34 | byte |
-| run_05_v3 | run_05 v3 | 39.0 | — | — | — | 4390 | 8.2 | 33 | byte |
-| run_05b_kernel_strict_v3 | run_05b v3 | 35.8 | — | — | — | 2573 | 8.5 | 34 | byte |
-| run_06_v3 | run_06 v3 | 39.0 | — | — | — | 4237 | 8.1 | 32 | byte |
-| run_08_v3 | run_08 v3 | 38.9 | — | — | — | 3858 | 8.3 | 33 | byte |
-| run_13_v3 | run_13 v3 | 12.5 | — | — | — | 9290 | 22.5 | 22 | token |
-| run_14_v3 | run_14 v3 | 10.7 | — | — | — | 9775 | 22.7 | 91 | byte |
-| run_15_v3 | run_15 v3 | 10.7 | — | — | — | 2350 | 21.8 | 87 | byte |
+| run_01_v3 | run_01 v3 | 54.7 | nan | nan | — | 12173 | 196.0 | 196 | token |
+| run_02_v3 | run_02 v3 | 38.8 | nan | nan | nan | 10963 | 91.4 | 366 | byte |
+| run_02a_byte_only_heads_v3 | run_02a v3 | 38.5 | nan | nan | nan | 16327 | 96.0 | 384 | byte |
+| run_03_v3 | run_03 v3 | 38.8 | 3.7841 | 43.99 | 5.4592 | 6187 | 65.5 | 262 | byte |
+| run_04_v3 | run_04 v3 | 38.9 | 2.5988 | 13.45 | 3.7493 | 6074 | 9.5 | 38 | byte |
+| run_05_v3 | run_05 v3 | 39.0 | 2.7034 | 14.93 | 3.9002 | 4390 | 7.0 | 28 | byte |
+| run_05b_kernel_strict_v3 | run_05b v3 | 35.8 | 3.2144 | 24.89 | 4.6374 | 2573 | 8.3 | 33 | byte |
+| run_06_v3 | run_06 v3 | 39.0 | 2.1493 | 8.58 | 3.1008 | 4237 | 7.0 | 28 | byte |
+| run_08_v3 | run_08 v3 | 38.9 | nan | nan | nan | 3858 | 7.5 | 30 | byte |
+| run_13_v3 | run_13 v3 | 12.5 | 5.4113 | 223.92 | — | 9290 | 19.6 | 20 | token |
+| run_14_v3 | run_14 v3 | 10.7 | 2.2977 | 9.95 | 3.3149 | 9775 | 19.2 | 77 | byte |
+| run_15_v3 | run_15 v3 | 10.7 | 2.8020 | 16.48 | 4.0424 | 2350 | 18.2 | 73 | byte |
 
 **Hallazgo clave de V3:** El cuello de botella de los modelos ternarios en *cold-start* fue resuelto en la **v3** (usando bf16 AMP y `lr_scale=2.0` en BitLinear). Esto permitió romper el plateau de entropía uniforme (~5.55 nats) en el que caían las versiones anteriores, logrando convergencia estable y permitiendo que generen texto imprimible (`PASS` en los tests de generación).
 

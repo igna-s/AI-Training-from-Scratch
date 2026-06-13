@@ -113,6 +113,11 @@ RUN_META = {
     "run_13_v3":              {"label": "run_13 v3",                                "group": "10M", "round": "v3"},
     "run_14_v3":              {"label": "run_14 v3",                                "group": "10M", "round": "v3"},
     "run_15_v3":              {"label": "run_15 v3",                                "group": "10M", "round": "v3"},
+    # ── Round 3 (r3 label — extended budget from r2) ──
+    "run_04_r3":              {"label": "run_04 r3 (extended)",                    "group": "50M", "round": "r3"},
+    "run_07_r3":              {"label": "run_07 r3 (extended)",                    "group": "50M", "round": "r3"},
+    "run_14_r3":              {"label": "run_14 r3 (extended)",                    "group": "10M", "round": "r3"},
+    "run_15_r3":              {"label": "run_15 r3 (extended)",                    "group": "10M", "round": "r3"},
 }
 
 
@@ -556,12 +561,15 @@ def build_readme(all_results: list[dict]) -> str:
         "run_08_r2":"run_08","run_09_r2":"run_09","run_10_r2":"run_10",
         "run_13_r2":"run_13","run_14_r2":"run_14","run_15_r2":"run_15",
         "run_16_r2":"run_16",
+        # r3 — extended budget re-runs (map to their r1 base)
+        "run_04_r3":"run_04","run_07_r3":"run_07",
+        "run_14_r3":"run_14","run_15_r3":"run_15",
     }
-    r2_runs = [nm for nm in by_run if nm.endswith("_r2")]
+    r2_runs = [nm for nm in by_run if nm.endswith("_r2") or nm.endswith("_r3")]
     if r2_runs:
         lines += [
             "",
-            "## Round 2 — re-runs a 15 tok/param",
+            "## Round 2 — re-runs a 15 tok/param (y r3 budget extendido)",
             "",
             "| Run | Arquitectura | Params M | Loss r1 | PPL r1 | Loss r2 | PPL r2 | Δ loss | BPB r2 | Nivel |",
             "|-----|-------------|--------:|--------:|-------:|--------:|-------:|-------:|-------:|-------|",
