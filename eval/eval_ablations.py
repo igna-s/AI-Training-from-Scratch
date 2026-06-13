@@ -597,21 +597,27 @@ def build_readme(all_results: list[dict]) -> str:
             "",
             "## Round 3 — v3 runs (bf16 AMP + lr×2 + 50 tok/p)",
             "",
-            "| Run | Arquitectura | Params M | Val Loss | PPL | BPB | Step | Nivel |",
-            "|-----|-------------|--------:|--------:|----:|----:|-----:|-------|",
+            "| Run | Arquitectura | Params M | Val Loss | PPL | BPB | Step | P/s | Bytes/s | Nivel |",
+            "|-----|-------------|--------:|--------:|----:|----:|-----:|----:|--------:|-------|",
         ]
         for nm in sorted(v3_runs):
             meta = RUN_META.get(nm, {})
             r = by_run[nm]
             is_b = r.get("is_byte_level", True)
             nivel = "byte" if is_b else "token"
+            pps, bps = _perf(nm)
             lines.append(
                 f"| {nm} | {meta.get('label','?')} "
                 f"| {_params(nm)} "
                 f"| {_lm(nm,'val_loss',4)} | {_lm(nm,'perplexity',2)} "
                 f"| {_lm(nm,'bpb',4) if is_b else '—'} "
-                f"| {_f(r.get('step'))} | {nivel} |"
+                f"| {_f(r.get('step'))} | {pps} | {bps} | {nivel} |"
             )
+            
+        lines += [
+            "",
+            "**Hallazgo clave de V3:** El cuello de botella de los modelos ternarios en *cold-start* fue resuelto en la **v3** (usando bf16 AMP y `lr_scale=2.0` en BitLinear). Esto permitió romper el plateau de entropía uniforme (~5.55 nats) en el que caían las versiones anteriores, logrando convergencia estable y permitiendo que generen texto imprimible (`PASS` en los tests de generación).",
+        ]
 
     lines += [
         "",
