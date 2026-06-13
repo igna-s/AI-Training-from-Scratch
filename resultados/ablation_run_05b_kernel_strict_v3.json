@@ -11,12 +11,17 @@
   "n_params_M": 35.842,
   "ram_fp32_mb": 143.4,
   "loss_metrics": {
-    "val_loss_available": false
+    "val_loss": 3.214431,
+    "perplexity": 24.889,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": 4.63744,
+    "delta_uniform": -2.33075
   },
   "correctness": {
     "forward_shapes": {
       "status": "PASS",
-      "time_s": 1.91,
+      "time_s": 1.57,
       "result": {
         "configs_tested": 6,
         "heads": 4
@@ -24,14 +29,14 @@
     },
     "probs": {
       "status": "PASS",
-      "time_s": 0.29,
+      "time_s": 0.25,
       "result": {
-        "max_error": 4.172325134277344e-07
+        "max_error": 3.5762786865234375e-07
       }
     },
     "determinism": {
       "status": "PASS",
-      "time_s": 0.44,
+      "time_s": 0.37,
       "result": {
         "deterministic": true
       }
@@ -42,14 +47,14 @@
     },
     "ternary_weights": {
       "status": "PASS",
-      "time_s": 1.5,
+      "time_s": 1.21,
       "result": {
         "modules_checked": 89
       }
     },
     "state_size": {
       "status": "PASS",
-      "time_s": 0.14,
+      "time_s": 0.11,
       "result": {
         "state_kb": 24.0,
         "kv_cache_kb": 81920.0,
@@ -60,36 +65,36 @@
   "performance": {
     "throughput_latency_jitter": {
       "status": "PASS",
-      "time_s": 61.91,
+      "time_s": 63.97,
       "result": {
-        "throughput_sps": 8.5,
-        "throughput_bps": 34.0,
-        "p50_ms": 117.72,
-        "p95_ms": 131.0,
-        "p99_ms": 150.38,
-        "jitter_cv": 0.0709,
+        "throughput_sps": 8.3,
+        "throughput_bps": 33.4,
+        "p50_ms": 119.8,
+        "p95_ms": 147.96,
+        "p99_ms": 162.42,
+        "jitter_cv": 0.0948,
         "backend": "pytorch_pure"
       }
     },
     "context_scaling": {
       "status": "PASS",
-      "time_s": 41.72,
+      "time_s": 38.93,
       "result": {
         "throughput_by_ctx": {
-          "0": 7.3,
-          "512": 7.9,
+          "0": 8.5,
+          "512": 8.4,
           "2048": 8.4
         },
-        "baseline_sps": 7.3
+        "baseline_sps": 8.5
       }
     },
     "ram": {
       "status": "PASS",
-      "time_s": 11.86,
+      "time_s": 12.04,
       "result": {
         "model_mb": 143.4,
         "delta_mb": 0.0,
-        "total_mb": 1345.1
+        "total_mb": 1744.8
       }
     }
   },
@@ -118,5 +123,5 @@
     "skipped": true,
     "reason": "sin GGUF (no aplica a ablation)"
   },
-  "eval_time_s": 158.1
+  "eval_time_s": 195.2
 }

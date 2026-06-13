@@ -11,7 +11,12 @@
   "n_params_M": 38.83,
   "ram_fp32_mb": 155.3,
   "loss_metrics": {
-    "val_loss_available": false
+    "val_loss": NaN,
+    "perplexity": NaN,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": NaN,
+    "delta_uniform": NaN
   },
   "correctness": {
     "forward_shapes": {
@@ -54,36 +59,36 @@
   "performance": {
     "throughput_latency_jitter": {
       "status": "PASS",
-      "time_s": 6.52,
+      "time_s": 5.99,
       "result": {
-        "throughput_sps": 81.6,
-        "throughput_bps": 326.4,
-        "p50_ms": 12.26,
-        "p95_ms": 14.31,
-        "p99_ms": 15.74,
-        "jitter_cv": 0.0938,
+        "throughput_sps": 91.4,
+        "throughput_bps": 365.6,
+        "p50_ms": 10.94,
+        "p95_ms": 13.61,
+        "p99_ms": 13.95,
+        "jitter_cv": 0.0974,
         "backend": "pytorch_pure"
       }
     },
     "context_scaling": {
       "status": "PASS",
-      "time_s": 5.61,
+      "time_s": 5.1,
       "result": {
         "throughput_by_ctx": {
-          "0": 81.7,
-          "512": 75.0,
-          "2048": 81.2
+          "0": 83.8,
+          "512": 86.9,
+          "2048": 86.9
         },
-        "baseline_sps": 81.7
+        "baseline_sps": 83.8
       }
     },
     "ram": {
       "status": "PASS",
-      "time_s": 1.24,
+      "time_s": 1.18,
       "result": {
         "model_mb": 155.3,
         "delta_mb": 0.0,
-        "total_mb": 1058.7
+        "total_mb": 1447.2
       }
     }
   },
@@ -105,5 +110,5 @@
     "skipped": true,
     "reason": "sin GGUF (no aplica a ablation)"
   },
-  "eval_time_s": 15.4
+  "eval_time_s": 69.0
 }
