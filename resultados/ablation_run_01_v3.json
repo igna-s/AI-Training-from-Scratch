@@ -1,0 +1,109 @@
+{
+  "run_name": "run_01_v3",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablations_final\\run_01_v3\\model.pt",
+  "ckpt_format": "fp32",
+  "step": 12173,
+  "tok": "bpe",
+  "quant": "fp16",
+  "eff_bits": 16.0,
+  "is_byte_level": false,
+  "is_recurrent": false,
+  "n_params_M": 54.735,
+  "ram_fp32_mb": 218.9,
+  "loss_metrics": {
+    "val_loss_available": false
+  },
+  "correctness": {
+    "forward_shapes": {
+      "status": "FAIL",
+      "error": "NaN en logits batch=1 seq=1 head=0\nNaN en logits batch=1 seq=64 head=0\nNaN en logits batch=1 seq=256 head=0\nNaN en logits batch=2 seq=1 head=0\nNaN en logits batch=2 seq=64 head=0\nNaN en logits batch=2 seq=256 head=0"
+    },
+    "probs": {
+      "status": "FAIL",
+      "error": "Head 0: suma de probs error=nan"
+    },
+    "determinism": {
+      "status": "FAIL",
+      "error": "Head 0: output no deterministico, diff=nan"
+    },
+    "state_prop": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo FP16 (sin BitLinear)"
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    }
+  },
+  "performance": {
+    "throughput_latency_jitter": {
+      "status": "PASS",
+      "time_s": 7.2,
+      "result": {
+        "throughput_sps": 74.7,
+        "throughput_bps": 74.7,
+        "p50_ms": 13.39,
+        "p95_ms": 17.35,
+        "p99_ms": 21.32,
+        "jitter_cv": 0.1767,
+        "backend": "pytorch_pure"
+      }
+    },
+    "context_scaling": {
+      "status": "PASS",
+      "time_s": 5.62,
+      "result": {
+        "throughput_by_ctx": {
+          "0": 75.0,
+          "512": 75.8,
+          "2048": 74.9
+        },
+        "baseline_sps": 75.0
+      }
+    },
+    "ram": {
+      "status": "PASS",
+      "time_s": 1.71,
+      "result": {
+        "model_mb": 218.9,
+        "delta_mb": 0.0,
+        "total_mb": 1093.4
+      }
+    }
+  },
+  "quality": {
+    "generation": {
+      "status": "N/A",
+      "reason": "BPE model"
+    },
+    "utf8": {
+      "status": "N/A",
+      "reason": "BPE model"
+    }
+  },
+  "dataset_eval": {
+    "skipped": true,
+    "reason": "sin dataset local"
+  },
+  "external_eval": {
+    "skipped": true,
+    "reason": "sin GGUF (no aplica a ablation)"
+  },
+  "eval_time_s": 16.2
+}

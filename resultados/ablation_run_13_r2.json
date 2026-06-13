@@ -1,24 +1,118 @@
 {
   "run_name": "run_13_r2",
-  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_13_r2\\checkpoint_run_13_r2_final.pt",
-  "load_s": 1.0,
-  "train_metrics": {
-    "run_name": "small_cpu1_bpe_15t",
-    "perplexity": 485165195.4098,
-    "tokens_per_sec_cpu": 25.7324,
-    "ram_mb": 50.1911,
-    "val_loss": 25.4264,
-    "n_params_M": 12.5478
-  },
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablations_final\\run_13_r2\\model.pt",
+  "ckpt_format": "fp32",
   "step": 1568,
-  "format": "compact_2bit",
-  "n_params_M": 12.55,
-  "ram_mb": 50.2,
-  "throughput_patches_per_sec": 25.7,
-  "throughput_bytes_per_sec": 102.79,
-  "throughput_time_s": 2.96,
-  "generation_time_s": 67.58,
-  "generated_text": "The quick!!, a small, small, high-wash, a large black and p.m. 10000000010000001000000000000000045000728458466004000000000000695603122507170098005000830701276783917755000000",
-  "generated_bytes": 173,
-  "eval_time_s": 92.7
+  "tok": "bpe",
+  "quant": "ternary",
+  "eff_bits": 1.58,
+  "is_byte_level": false,
+  "is_recurrent": true,
+  "n_params_M": 12.548,
+  "ram_fp32_mb": 50.2,
+  "loss_metrics": {
+    "val_loss": 25.426366,
+    "perplexity": 110288596599.283,
+    "ppl_type": "token-level",
+    "val_loss_available": true
+  },
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 0.7,
+      "result": {
+        "configs_tested": 6,
+        "heads": 1
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.12,
+      "result": {
+        "max_error": 1.9073486328125e-06
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.15,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 9.393903"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 0.43,
+      "result": {
+        "modules_checked": 57
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.04,
+      "result": {
+        "state_kb": 10.0,
+        "kv_cache_kb": 81920.0,
+        "reduction_x": 8192.0
+      }
+    }
+  },
+  "performance": {
+    "throughput_latency_jitter": {
+      "status": "PASS",
+      "time_s": 25.46,
+      "result": {
+        "throughput_sps": 20.7,
+        "throughput_bps": 20.7,
+        "p50_ms": 48.28,
+        "p95_ms": 58.35,
+        "p99_ms": 62.12,
+        "jitter_cv": 0.1109,
+        "backend": "pytorch_pure"
+      }
+    },
+    "context_scaling": {
+      "status": "PASS",
+      "time_s": 15.63,
+      "result": {
+        "throughput_by_ctx": {
+          "0": 20.7,
+          "512": 20.4,
+          "2048": 20.9
+        },
+        "baseline_sps": 20.7
+      }
+    },
+    "ram": {
+      "status": "PASS",
+      "time_s": 4.84,
+      "result": {
+        "model_mb": 50.2,
+        "delta_mb": -0.0,
+        "total_mb": 1322.4
+      }
+    }
+  },
+  "quality": {
+    "generation": {
+      "status": "N/A",
+      "reason": "BPE model"
+    },
+    "utf8": {
+      "status": "N/A",
+      "reason": "BPE model"
+    }
+  },
+  "dataset_eval": {
+    "skipped": true,
+    "reason": "sin dataset local"
+  },
+  "external_eval": {
+    "skipped": true,
+    "reason": "sin GGUF (no aplica a ablation)"
+  },
+  "eval_time_s": 49.5
 }

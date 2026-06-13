@@ -20,14 +20,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from inference import (  # noqa: E402
-    CPU1InferenceEngine,
-    forward_with_prefetch,
-    ModelInfo,
-    detect_model_info,
-)
-from train_final import CPU1ModelV2  # noqa: E402
+try:
+    from inference import (  # noqa: E402
+        CPU1InferenceEngine,
+        forward_with_prefetch,
+        ModelInfo,
+        detect_model_info,
+    )
+except ImportError:
+    # Fallback: production engine no disponible (p.ej. en eval de ablation models).
+    # get_model() y run_check() siguen funcionando; solo falla create_engine().
+    CPU1InferenceEngine = None
+    forward_with_prefetch = None
+    ModelInfo = None
+    detect_model_info = None
+
+try:
+    from train_final import CPU1ModelV2  # noqa: E402
+except ImportError:
+    CPU1ModelV2 = None
+
 from utilities import BitLinear  # noqa: E402
+
 
 
 def create_engine(checkpoint_path: str,

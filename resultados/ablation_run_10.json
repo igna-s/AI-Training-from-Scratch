@@ -1,24 +1,120 @@
 {
   "run_name": "run_10",
-  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_10\\checkpoint_run_10_final.pt",
-  "load_s": 0.75,
-  "train_metrics": {
-    "run_name": "cpu1_decay_learned",
-    "perplexity": 253.0802,
-    "tokens_per_sec_cpu": 10.463,
-    "ram_mb": 157.7363,
-    "val_loss": 5.5337,
-    "n_params_M": 39.4341
-  },
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablations_final\\run_10\\model.pt",
+  "ckpt_format": "fp32",
   "step": 657,
-  "format": "compact_2bit",
-  "n_params_M": 39.43,
-  "ram_mb": 157.7,
-  "throughput_patches_per_sec": 8.7,
-  "throughput_bytes_per_sec": 34.78,
-  "throughput_time_s": 6.5,
-  "generation_time_s": 4.27,
-  "generated_text": "The quick brown foxmD��؊#|ތ\u000fs���`Ӭ�j#��e޼$R\u001c�]��NVV��s�8���τ_����t|9��l\u001a��+���jJ�0L\u0013Ĭfr:ɡ�\u0018p��y&;��ifbb���\u001084U�Yf#\u0019\r�Rgʜ\u000f�p�&�]c\u0011\u0017�\u0012I�{�",
-  "generated_bytes": 234,
-  "eval_time_s": 11.9
+  "tok": "byte_dynamic",
+  "quant": "ternary",
+  "eff_bits": 1.58,
+  "is_byte_level": true,
+  "is_recurrent": true,
+  "n_params_M": 39.434,
+  "ram_fp32_mb": 157.7,
+  "loss_metrics": {
+    "val_loss": 5.533706,
+    "perplexity": 253.08,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": 7.98345,
+    "delta_uniform": -0.01147
+  },
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 2.11,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.29,
+      "result": {
+        "max_error": 2.384185791015625e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.46,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 0.081635"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 1.77,
+      "result": {
+        "modules_checked": 125
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.13,
+      "result": {
+        "state_kb": 24.0,
+        "kv_cache_kb": 81920.0,
+        "reduction_x": 3413.0
+      }
+    }
+  },
+  "performance": {
+    "throughput_latency_jitter": {
+      "status": "PASS",
+      "time_s": 74.76,
+      "result": {
+        "throughput_sps": 7.1,
+        "throughput_bps": 28.3,
+        "p50_ms": 141.38,
+        "p95_ms": 167.72,
+        "p99_ms": 201.81,
+        "jitter_cv": 0.0903,
+        "backend": "pytorch_pure"
+      }
+    },
+    "context_scaling": {
+      "status": "PASS",
+      "time_s": 45.59,
+      "result": {
+        "throughput_by_ctx": {
+          "0": 7.1,
+          "512": 7.1,
+          "2048": 7.3
+        },
+        "baseline_sps": 7.1
+      }
+    },
+    "ram": {
+      "status": "PASS",
+      "time_s": 13.76,
+      "result": {
+        "model_mb": 157.7,
+        "delta_mb": 0.0,
+        "total_mb": 1315.1
+      }
+    }
+  },
+  "quality": {
+    "generation": {
+      "status": "FAIL",
+      "error": "Solo 39.1% bytes printables — modelo degenerado"
+    },
+    "utf8": {
+      "status": "FAIL",
+      "error": "Demasiados bytes UTF-8 invalidos: 0.0%"
+    }
+  },
+  "dataset_eval": {
+    "skipped": true,
+    "reason": "sin dataset local"
+  },
+  "external_eval": {
+    "skipped": true,
+    "reason": "sin GGUF (no aplica a ablation)"
+  },
+  "eval_time_s": 186.9
 }

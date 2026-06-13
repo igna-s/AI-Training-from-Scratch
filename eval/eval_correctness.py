@@ -36,9 +36,18 @@ def _unpack_forward(result):
 
 
 def _get_logits_list(logits, info):
-    """Normalizar logits a lista (siempre)."""
+    """Normalizar logits a lista de tensores [B, S, V] siempre.
+
+    Casos:
+      - tuple/list de heads (byte sin LocalDecoder): devuelve lista tal cual.
+      - LocalByteDecoder: [B, S, P, 256] → lista de P tensores [B, S, 256].
+      - tensor 3D (BPE o produccion): devuelve lista de 1 elemento.
+    """
     if isinstance(logits, (tuple, list)):
         return list(logits)
+    if logits.dim() == 4:
+        # LocalByteDecoder: [B, S, P, 256] → P × [B, S, 256]
+        return [logits[:, :, i, :] for i in range(logits.shape[2])]
     return [logits]
 
 

@@ -1,24 +1,131 @@
 {
   "run_name": "run_02",
-  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_02\\checkpoint_run_02_final.pt",
-  "load_s": 2.78,
-  "train_metrics": {
-    "run_name": "transformer_byte_fp16",
-    "perplexity": 5.5589,
-    "tokens_per_sec_cpu": 52.5134,
-    "ram_mb": 155.3183,
-    "val_loss": 1.7154,
-    "n_params_M": 38.8296
-  },
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablations_final\\run_02\\model.pt",
+  "ckpt_format": "fp32",
   "step": 647,
-  "format": "compact_2bit",
+  "tok": "byte",
+  "quant": "fp16",
+  "eff_bits": 16.0,
+  "is_byte_level": true,
+  "is_recurrent": false,
   "n_params_M": 38.83,
-  "ram_mb": 155.3,
-  "throughput_patches_per_sec": 75.38,
-  "throughput_bytes_per_sec": 301.51,
-  "throughput_time_s": 0.72,
-  "generation_time_s": 0.57,
-  "generated_text": "The quick brown foxrell of the to kid to encolelince to Charnil Can Es Per shivs himm bangurameling in the nomered new pared in iserstate or ambiri",
-  "generated_bytes": 147,
-  "eval_time_s": 4.7
+  "ram_fp32_mb": 155.3,
+  "loss_metrics": {
+    "val_loss": 1.715394,
+    "perplexity": 5.559,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": 2.47479,
+    "delta_uniform": -3.82978
+  },
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 0.43,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.07,
+      "result": {
+        "max_error": 3.5762786865234375e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.07,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo FP16 (sin BitLinear)"
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    }
+  },
+  "performance": {
+    "throughput_latency_jitter": {
+      "status": "PASS",
+      "time_s": 6.28,
+      "result": {
+        "throughput_sps": 86.1,
+        "throughput_bps": 344.5,
+        "p50_ms": 11.61,
+        "p95_ms": 13.64,
+        "p99_ms": 16.22,
+        "jitter_cv": 0.2226,
+        "backend": "pytorch_pure"
+      }
+    },
+    "context_scaling": {
+      "status": "PASS",
+      "time_s": 5.29,
+      "result": {
+        "throughput_by_ctx": {
+          "0": 83.5,
+          "512": 86.4,
+          "2048": 79.9
+        },
+        "baseline_sps": 83.5
+      }
+    },
+    "ram": {
+      "status": "PASS",
+      "time_s": 1.18,
+      "result": {
+        "model_mb": 155.3,
+        "delta_mb": 0.0,
+        "total_mb": 983.4
+      }
+    }
+  },
+  "quality": {
+    "generation": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "printable_pct": 0.99,
+        "repeat_ratio": 0.0
+      }
+    },
+    "utf8": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "utf8_pct": 1.0
+      }
+    }
+  },
+  "dataset_eval": {
+    "skipped": true,
+    "reason": "sin dataset local"
+  },
+  "external_eval": {
+    "skipped": true,
+    "reason": "sin GGUF (no aplica a ablation)"
+  },
+  "eval_time_s": 21.7
 }

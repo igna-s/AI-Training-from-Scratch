@@ -1,24 +1,123 @@
 {
   "run_name": "run_08",
-  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablation_models\\run_08\\checkpoint_run_08_final.pt",
-  "load_s": 0.11,
-  "train_metrics": {
-    "run_name": "folded_transformer_byte_ternary",
-    "perplexity": 260.3683,
-    "tokens_per_sec_cpu": 10.8297,
-    "ram_mb": 155.4166,
-    "val_loss": 5.5621,
-    "n_params_M": 38.8541
-  },
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablations_final\\run_08\\model.pt",
+  "ckpt_format": "fp32",
   "step": 647,
-  "format": "compact_2bit",
-  "n_params_M": 38.85,
-  "ram_mb": 155.4,
-  "throughput_patches_per_sec": 9.72,
-  "throughput_bytes_per_sec": 38.87,
-  "throughput_time_s": 5.63,
-  "generation_time_s": 3.89,
-  "generated_text": "The quick brown fox\n\u001ao��mAe�2\u0016\u000f@\u0000����\u001c@\u0012�/�i���I����\u0002\f�0\u0003�;c�~�� {�J�e�R�!�\\Egȱ�Y�O؄B�\u001d\f��,\u0019� G��Ip�J���-q\u001c\u0011��n\u0012\u0005�I\n5k���P-�_�T;|��6�\u0002�\u0010\r� �˙&",
-  "generated_bytes": 250,
-  "eval_time_s": 10.0
+  "tok": "byte",
+  "quant": "ternary",
+  "eff_bits": 1.58,
+  "is_byte_level": true,
+  "is_recurrent": false,
+  "n_params_M": 38.854,
+  "ram_fp32_mb": 155.4,
+  "loss_metrics": {
+    "val_loss": 5.562097,
+    "perplexity": 260.368,
+    "ppl_type": "byte-level",
+    "val_loss_available": true,
+    "bpb": 8.02441,
+    "delta_uniform": 0.01692
+  },
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 1.5,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.24,
+      "result": {
+        "max_error": 2.980232238769531e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.38,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 1.81,
+      "result": {
+        "modules_checked": 101
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    }
+  },
+  "performance": {
+    "throughput_latency_jitter": {
+      "status": "PASS",
+      "time_s": 67.78,
+      "result": {
+        "throughput_sps": 8.0,
+        "throughput_bps": 31.9,
+        "p50_ms": 125.44,
+        "p95_ms": 167.65,
+        "p99_ms": 191.66,
+        "jitter_cv": 0.1331,
+        "backend": "pytorch_pure"
+      }
+    },
+    "context_scaling": {
+      "status": "PASS",
+      "time_s": 41.23,
+      "result": {
+        "throughput_by_ctx": {
+          "0": 8.0,
+          "512": 7.4,
+          "2048": 8.1
+        },
+        "baseline_sps": 8.0
+      }
+    },
+    "ram": {
+      "status": "PASS",
+      "time_s": 12.52,
+      "result": {
+        "model_mb": 155.4,
+        "delta_mb": 0.0,
+        "total_mb": 1305.7
+      }
+    }
+  },
+  "quality": {
+    "generation": {
+      "status": "FAIL",
+      "error": "Solo 38.0% bytes printables — modelo degenerado"
+    },
+    "utf8": {
+      "status": "FAIL",
+      "error": "Demasiados bytes UTF-8 invalidos: 0.0%"
+    }
+  },
+  "dataset_eval": {
+    "skipped": true,
+    "reason": "sin dataset local"
+  },
+  "external_eval": {
+    "skipped": true,
+    "reason": "sin GGUF (no aplica a ablation)"
+  },
+  "eval_time_s": 170.5
 }
