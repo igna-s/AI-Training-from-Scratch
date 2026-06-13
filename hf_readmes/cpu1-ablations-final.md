@@ -66,20 +66,22 @@ Code:    [github.com/Cukinator/1.58bits](https://github.com/Cukinator/1.58bits)
 
 ## Round 3 — v3 runs (bf16 AMP + lr×2 + 50 tok/p)
 
-| Run | Arquitectura | Params M | Val Loss | PPL | BPB | Step | Nivel |
-|-----|-------------|--------:|--------:|----:|----:|-----:|-------|
-| run_01_v3 | run_01 v3 | 54.7 | — | — | — | 12173 | token |
-| run_02_v3 | run_02 v3 | 38.8 | — | — | — | 10963 | byte |
-| run_02a_byte_only_heads_v3 | run_02a v3 | 38.5 | — | — | — | 16327 | byte |
-| run_03_v3 | run_03 v3 | 38.8 | — | — | — | 6187 | byte |
-| run_04_v3 | run_04 v3 | 38.9 | — | — | — | 6074 | byte |
-| run_05_v3 | run_05 v3 | 39.0 | — | — | — | 4390 | byte |
-| run_05b_kernel_strict_v3 | run_05b v3 | 35.8 | — | — | — | 2573 | byte |
-| run_06_v3 | run_06 v3 | 39.0 | — | — | — | 4237 | byte |
-| run_08_v3 | run_08 v3 | 38.9 | — | — | — | 3858 | byte |
-| run_13_v3 | run_13 v3 | 12.5 | — | — | — | 9290 | token |
-| run_14_v3 | run_14 v3 | 10.7 | — | — | — | 9775 | byte |
-| run_15_v3 | run_15 v3 | 10.7 | — | — | — | 2350 | byte |
+| Run | Arquitectura | Params M | Val Loss | PPL | BPB | Step | P/s | Bytes/s | Nivel |
+|-----|-------------|--------:|--------:|----:|----:|-----:|----:|--------:|-------|
+| run_01_v3 | run_01 v3 | 54.7 | — | — | — | 12173 | 74.7 | 75 | token |
+| run_02_v3 | run_02 v3 | 38.8 | — | — | — | 10963 | 81.6 | 326 | byte |
+| run_02a_byte_only_heads_v3 | run_02a v3 | 38.5 | — | — | — | 16327 | 90.2 | 361 | byte |
+| run_03_v3 | run_03 v3 | 38.8 | — | — | — | 6187 | 64.1 | 256 | byte |
+| run_04_v3 | run_04 v3 | 38.9 | — | — | — | 6074 | 8.4 | 34 | byte |
+| run_05_v3 | run_05 v3 | 39.0 | — | — | — | 4390 | 8.2 | 33 | byte |
+| run_05b_kernel_strict_v3 | run_05b v3 | 35.8 | — | — | — | 2573 | 8.5 | 34 | byte |
+| run_06_v3 | run_06 v3 | 39.0 | — | — | — | 4237 | 8.1 | 32 | byte |
+| run_08_v3 | run_08 v3 | 38.9 | — | — | — | 3858 | 8.3 | 33 | byte |
+| run_13_v3 | run_13 v3 | 12.5 | — | — | — | 9290 | 22.5 | 22 | token |
+| run_14_v3 | run_14 v3 | 10.7 | — | — | — | 9775 | 22.7 | 91 | byte |
+| run_15_v3 | run_15 v3 | 10.7 | — | — | — | 2350 | 21.8 | 87 | byte |
+
+**Hallazgo clave de V3:** El cuello de botella de los modelos ternarios en *cold-start* fue resuelto en la **v3** (usando bf16 AMP y `lr_scale=2.0` en BitLinear). Esto permitió romper el plateau de entropía uniforme (~5.55 nats) en el que caían las versiones anteriores, logrando convergencia estable y permitiendo que generen texto imprimible (`PASS` en los tests de generación).
 
 ## Licencia
 
