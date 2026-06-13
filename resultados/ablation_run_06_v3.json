@@ -1,0 +1,122 @@
+{
+  "run_name": "run_06_v3",
+  "ckpt_path": "D:\\GitHub\\1.58bits\\models\\ablations_final\\run_06_v3\\model.pt",
+  "ckpt_format": "fp32",
+  "step": 4237,
+  "tok": "byte_dynamic",
+  "quant": "ternary",
+  "eff_bits": 1.58,
+  "is_byte_level": true,
+  "is_recurrent": true,
+  "n_params_M": 38.994,
+  "ram_fp32_mb": 156.0,
+  "loss_metrics": {
+    "val_loss_available": false
+  },
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 1.95,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.31,
+      "result": {
+        "max_error": 5.960464477539062e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.45,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 9.772461"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 1.54,
+      "result": {
+        "modules_checked": 101
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.12,
+      "result": {
+        "state_kb": 24.0,
+        "kv_cache_kb": 81920.0,
+        "reduction_x": 3413.0
+      }
+    }
+  },
+  "performance": {
+    "throughput_latency_jitter": {
+      "status": "PASS",
+      "time_s": 65.51,
+      "result": {
+        "throughput_sps": 8.1,
+        "throughput_bps": 32.4,
+        "p50_ms": 123.64,
+        "p95_ms": 145.04,
+        "p99_ms": 161.42,
+        "jitter_cv": 0.0831,
+        "backend": "pytorch_pure"
+      }
+    },
+    "context_scaling": {
+      "status": "PASS",
+      "time_s": 41.83,
+      "result": {
+        "throughput_by_ctx": {
+          "0": 8.0,
+          "512": 7.8,
+          "2048": 7.7
+        },
+        "baseline_sps": 8.0
+      }
+    },
+    "ram": {
+      "status": "PASS",
+      "time_s": 12.67,
+      "result": {
+        "model_mb": 156.0,
+        "delta_mb": 0.0,
+        "total_mb": 1359.3
+      }
+    }
+  },
+  "quality": {
+    "generation": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "printable_pct": 0.959,
+        "repeat_ratio": 0.0
+      }
+    },
+    "utf8": {
+      "status": "PASS",
+      "time_s": 0.0,
+      "result": {
+        "utf8_pct": 0.833
+      }
+    }
+  },
+  "dataset_eval": {
+    "skipped": true,
+    "reason": "sin dataset local"
+  },
+  "external_eval": {
+    "skipped": true,
+    "reason": "sin GGUF (no aplica a ablation)"
+  },
+  "eval_time_s": 164.1
+}
