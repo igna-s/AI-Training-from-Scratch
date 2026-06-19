@@ -1,22 +1,29 @@
 # CPU-1 — Byte-Level Language Model with Ternary Weights
 
-> A ~170M parameter byte-level language model trained via knowledge distillation from Qwen2.5-3B, using fully ternary weights {-1, 0, 1}, MatMul-free token mixing (MLGRU), and zero matrix multiplications at inference (T-MAC LUT). Optimized for consumer CPU (4 cores, 16GB RAM, 32MB L3).
+> A 1B-parameter byte-level language model trained via knowledge distillation from Qwen2.5-3B, using fully ternary weights {-1, 0, 1}, MatMul-free token mixing (MLGRU), and zero matrix multiplications at inference (T-MAC LUT). Optimized for consumer CPU (4 cores, 16GB RAM, 32MB L3).
+>
+> The ablation study (this repo) trains 10M–50M scale models to validate each architectural choice before scaling to 1B. The best ternary model in the V3 ablation round is **run_06_v3** (MLGRU + Bolmo, 39M, val_loss 2.15, PPL 8.58) — the lightest architecture with strong convergence.
 
 ---
 
-## Architecture (v2 — 170M)
+## Ablation Architecture
 
-| Hyperparameter | Value |
-|---|---|
-| `d_model` | 1024 |
-| `n_layers` | 14 |
-| `d_ff` | 2730 (PyTorch) / 2688 (C benchmark, rounded to multiple of 64) |
-| `vocab_size` | 256 (byte-level) |
-| `patch_size` | 4 bytes |
-| `fp_rank` | 8 (FPResidual low-rank correction) |
-| `pfnet_hidden` | 64 (PFNet hidden dim, 224 KB total across all layers) |
-| `mlgru_state` | 28 KB fp16 / 56 KB fp32 (14 × 1024 × {2, 4} bytes — fits in L2) |
-| **Total parameters** | **~170M** |
+The repo contains two independent ablation tracks:
+
+- **50M track (run_01–run_10):** Architecture selection for the 1B production model. Each run adds one design choice to find the best combination of mixer, quantization, and auxiliary modules.
+- **10M track (run_13–run_16):** A separate experiment testing whether different dataset strategies (BPE vs byte, teacher distillation vs raw CE) help at very small scale.
+
+Both tracks use reduced-scale models to keep experiments cheap:
+
+| | 50M ablation | 10M ablation | Production target |
+|---|---|---|---|
+| `d_model` | 512 | 320 | 1024+ |
+| `n_layers` | 12 | 8 | 14+ |
+| `d_ff` | ~1365 | ~853 | 2730 |
+| `vocab_size` | 256 (byte) | 256 (byte) | 256 (byte) |
+| `patch_size` | 4 | 4 | 4 |
+| `fp_rank` | 4 | 4 | 8 |
+| **Params** | **~39M** | **~10M** | **~1B** |
 
 ### Key Components
 
@@ -24,20 +31,19 @@
 - **BytePatchEmbeddingV2** — Converts 4-byte patches to `d_model` dims: BitEmbedding (8 dims/byte) → concat (32 dims) → BitLinear → d_model.
 - **BitLinear** — Ternary weight projection with Straight-Through Estimator (STE).
 - **FPResidual** — Low-rank FP16 correction branches (rank-8) in parallel with BitLinear, initialized to zero.
-- **PFNet** — 2-layer ternary MLP residual per block (hidden=64). All PFNet weights across 14 layers (224 KB) fit in L2 alongside the MLGRU state (28 KB fp16), staying cache-resident while main weights stream from RAM.
+- **PFNet** — 2-layer ternary MLP residual per block. All PFNet weights fit in L2 alongside the MLGRU state, staying cache-resident while main weights stream from RAM.
 - **MatMulFreeTokenMixer (MLGRU)** — GRU-style recurrence with Hadamard products only, no Q@K^T (arXiv 2406.02528). O(d_model) per token, zero KV cache.
 - **SwiGLU FFN** — Gated feed-forward with fully ternary weights.
 - **BitHead** — 4 ternary prediction heads (one per byte in next patch) via MegaByte LocalByteDecoder.
 - **RMSNorm** — Pre-norm before token mixer and FFN.
 
-### Memory at Inference
+### Memory at Inference (1B target)
 
-| Component | v1 (Attention) | v2 (MLGRU + PFNet) |
+| Component | Attention baseline | CPU-1 (MLGRU + PFNet) |
 |---|---|---|
-| Token mixer state | 80 MB (KV cache) | **28 KB fp16** / **56 KB fp32** — L2 |
-| PFNet weights | — | **224 KB** (all layers) — L2 |
-| Active layer weights | — | ~3.1 MB (1 layer) — L3 |
-| Full model weights | — | ~44 MB — RAM streaming |
+| Token mixer state | Grows with context (KV cache) | **Fixed ~28 KB fp16** — L2 |
+| PFNet weights | — | L2-resident (all layers) |
+| Full model weights | ~2 GB (FP16) | **~250 MB** (2-bit packed) — RAM streaming |
 
 ### Extended Architecture (v3)
 
@@ -68,7 +74,11 @@ The local decoder uses: per-position global slice projection, shift-right byte i
 > Uniform byte reference: **ln(256) = 5.545 nats → PPL=256 → BPB=8.000**.
 > BPE runs (run_01, run_13): PPL is **token-level**.
 
-### 50M Runs — Round 1 (2 tok/param)
+### Purpose
+
+The **50M runs** are the main experiment: they test which architectural stack to scale to 1B. The **10M runs** are a side experiment to see if teacher distillation or hidden-state alignment improves training at very small scale.
+
+### 50M Runs — Architecture Selection — Round 1 (2 tok/param)
 
 | Run | Architecture | Params M | Val Loss | PPL | BPB | Δ uniform | P/s | Bytes/s |
 |-----|-------------|--------:|---------:|----:|----:|----------:|----:|--------:|
@@ -85,7 +95,7 @@ The local decoder uses: per-position global slice projection, shift-right byte i
 | run_09 | + PFNet | 39.4 | 5.5330 | 252.91 | 7.98 | −0.01 | 7.3 | 29 |
 | run_10 | + per-channel decay | 39.4 | 5.5337 | 253.08 | 7.98 | −0.01 | 7.1 | 28 |
 
-### 10M Runs — Round 1 (2 tok/param)
+### 10M Runs — Dataset Strategy Experiment — Round 1 (2 tok/param)
 
 | Run | Architecture | Params M | Val Loss | PPL | BPB |
 |-----|-------------|--------:|---------:|----:|----:|
@@ -124,29 +134,47 @@ The local decoder uses: per-position global slice projection, shift-right byte i
 | **run_14_v3** | **Small CPU-1 byte** | **10.7** | **2.2977** | **9.95** | **3.31** | **9,775** |
 | run_15_v3 | Small CPU-1 byte + hidden distill | 10.7 | 2.8020 | 16.48 | 4.04 | 2,350 |
 
-### Key Findings
+### Conclusions — 50M Architecture Selection
 
 **V3 broke the ternary cold-start plateau.** In rounds 1 and 2, every ternary model collapsed to the uniform-output baseline `ln(256) ≈ 5.545 nats` — the model was effectively outputting random bytes. The V3 corrections (bf16 AMP instead of fp16, `lr_scale=2.0` for BitLinear weights, CE-only training signal, 50 tok/param budget) produced **real convergence for the first time**:
 
 | Run | V1 Loss | V1 PPL | V3 Loss | V3 PPL | Improvement |
 |-----|--------:|-------:|--------:|-------:|-------:|
 | run_04 (MLGRU+Byte+Ternary) | 5.57 | 261.7 | **2.60** | **13.45** | −4.26 nats |
-| run_06 (+Bolmo) | 5.56 | 258.8 | **2.15** | **8.58** | −4.93 nats |
-| run_14 (Small CPU-1 10M) | 5.58 | 263.9 | **2.30** | **9.95** | −5.05 nats |
+| run_05 (+FPResidual) | 5.55 | 257.7 | **2.70** | **14.93** | −4.21 nats |
+| run_06 (+Bolmo) ⭐ | 5.56 | 258.8 | **2.15** | **8.58** | −4.93 nats |
 
-**The FP16 ablation chain works:** `run_01..run_03` converge as designed and produce clean architecture comparisons. Byte tokenization + LocalByteDecoder beats raw BPE; MLGRU is a small step back from Transformer at the same scale but provides O(d_model) recurrence with zero KV cache.
+**Winner: run_06 (MLGRU + Bolmo + ternary + FPResidual).** Best val_loss (2.15) and PPL (8.58) among all ternary runs, at only 6.8% of the training budget completed. This is the architecture chosen for the 1B production model. Key advantages:
+- Bolmo's boundary-aware patch embedding gives a large boost (+0.45 nats over run_04)
+- Ternary weights enable ~250 MB model size at 1B scale (vs ~2 GB FP16)
+- MLGRU provides O(d_model) per token with fixed 28 KB state — no KV cache
 
-**Cold-start ternary at <50 tok/param does not work at this scale.** A weight-evolution audit showed >99.9% of BitLinear weights remain in their random-init ternary state after the full training run at 2–15 tok/param. The STE quantization step filters out gradient updates that are too small to cross the ternary boundary. This matches the literature: BitNet b1.58 succeeds at cold-start only at ≥700M params with ≥30 tok/param (industrial compute).
+**The FP16 ablation chain validates each component:** `run_01→run_03` converge cleanly. Byte tokenization + LocalByteDecoder beats BPE (1.72 vs 4.66 nats). MLGRU is a small step back from Transformer (1.87 vs 1.72) but eliminates the KV cache entirely.
 
-**1.58-bit inference speed only wins above ~700M parameters.** At 38M params, even with ideal SIMD kernels (BitNet.cpp/T-MAC class), the ternary model runs at ~0.30–0.50× the throughput of FP16 Transformer. The 8× memory advantage of ternary only translates to speedup when weight loading from RAM is the bottleneck — at 38M, weights fit in L3 cache. Above ~700M, the crossover flips and ternary wins by a factor that grows with model size.
+**Cold-start ternary at <50 tok/param does not work.** A weight-evolution audit showed >99.9% of BitLinear weights remain in their random-init ternary state at 2–15 tok/param. The STE quantization step filters out gradient updates too small to cross the ternary boundary. Only at ≥50 tok/param with bf16 AMP + `lr_scale=2.0` does cold-start ternary converge.
 
-**Practical value of 1.58-bit at small scale is memory footprint, not speed.** A 38M ternary model is ~10 MB packed vs 76 MB FP16 — valuable for deployment to memory-constrained edge devices (microcontrollers, browsers via WASM, mobile inference).
+**1.58-bit speed advantage materializes at 1B scale, not 39M.** At 39M, ternary is ~0.30–0.50× the throughput of FP16 even with ideal SIMD kernels — weights fit in L3 cache so the 8× memory reduction doesn't help. At 1B (the production target), weights stream from RAM and ternary's bandwidth advantage dominates.
+
+### Conclusions — 10M Dataset Strategy Experiment
+
+**At 10M scale, dataset strategy made no difference in R1/R2 — all ternary runs collapsed to uniform.** run_14 (Qwen distillation), run_15 (+ hidden distillation), and run_16 (raw CE, no teacher) all landed at exactly val_loss ≈ 5.575, identical to random output. The ternary cold-start problem dominated any dataset effect.
+
+**V3 unlocked the comparison.** With the training fixes applied:
+- **run_14_v3** (byte + Qwen distill): val_loss **2.30**, PPL **9.95** — the strongest 10M result
+- **run_15_v3** (byte + hidden distill): val_loss **2.80**, PPL **16.48** — hidden alignment added overhead without benefit (and had only 24% of run_14's training progress)
+- **run_13_v3** (BPE 4K): val_loss **5.41**, PPL **223.92** — BPE at 10M scale is catastrophically worse than byte-level
+
+**Takeaways for the 1B model:**
+1. **BPE is wrong at any scale for this architecture** — the BPE+ternary combination is fundamentally broken (run_13 in all rounds)
+2. **Byte-level tokenization is the right choice** — confirmed by run_14_v3's strong convergence
+3. **Teacher distillation helps** (run_14 vs run_16 in V3), but **hidden-state alignment (EmbeddingAligner) does not clearly help** over logprob-only distillation — more training would be needed to separate the effect from the progress difference
+4. **The production 1B model should use byte-level CE training streaming from FineWeb**, matching the 50M runs' setup
 
 ---
 
-## Ablation Design
+## 50M Ablation Design
 
-The ablation tells a story: starting from a standard FP16 Transformer baseline, we add **one CPU-1 design choice per run** until we reach the full architecture.
+The 50M ablation chain is the core experiment for choosing the 1B architecture. Starting from a standard FP16 Transformer baseline, each run adds **one CPU-1 design choice** to measure its isolated contribution:
 
 ```
 LINEAR CHAIN (single Δ per arrow):
@@ -177,9 +205,9 @@ run_08                 ← from run_05  (Folded Transformer + Byte + Ternary, w=
 
 All runs: CE-only training from scratch under **ablation-scaled Chinchilla** (`tokens ≈ 2 × N_params`), same seed (42). Each run's `total_steps` is recomputed from its actual parameter count.
 
-### 10M Scale Runs (run_13 to run_16)
+### 10M Dataset Experiment (run_13 to run_16)
 
-Four **~10M parameter models** with the **same CPU-1 COMPLETE architecture**, varying only the training data strategy:
+A separate experiment with four **~10M parameter models** using the **same CPU-1 COMPLETE architecture**, varying only the training data strategy to answer dataset-related questions:
 
 | Run | Training strategy | Key question |
 |---|---|---|
@@ -187,6 +215,8 @@ Four **~10M parameter models** with the **same CPU-1 COMPLETE architecture**, va
 | `run_14` | **Byte-level**, distillation from Qwen logprobs | Pure byte baseline with teacher |
 | `run_15` | **Byte + hidden distillation** (EmbeddingAligner) | Does hidden-state alignment help over just logprobs? |
 | `run_16` | **Raw bytes**, no teacher | Do Qwen teacher logprobs actually help? |
+
+These runs use `Cukinator/cpu1-ablation-dataset` built by `create_dataset.py`, while the 50M architecture runs stream directly from FineWeb.
 
 ---
 
@@ -201,10 +231,11 @@ Four **~10M parameter models** with the **same CPU-1 COMPLETE architecture**, va
 │                            #   BoundaryPredictor, DeleteGate, EmbeddingAligner.
 │                            #   Plus datasets, loss functions, LR schedules,
 │                            #   checkpoint serialization (2-bit pack/unpack).
-├── train_final.py           # Production CPU-1 170M training (CPU1ModelV2)
+├── train_final.py           # Production CPU-1 1B training (CPU1ModelV2)
 ├── train_ablation.py        # Ablation training + multi-GPU orchestration
 ├── train_ablation_amd.py    # ROCm-adapted ablation for AMD MI300X
 ├── create_dataset.py        # Teacher logprob extraction + BPE→byte marginalization
+│                            #   (used only for 10M ablation dataset)
 ├── main.py                  # Dry-run validation suite for training fixes
 │
 │  Inference (C / C++ only — no Python engine)
@@ -236,7 +267,7 @@ Four **~10M parameter models** with the **same CPU-1 COMPLETE architecture**, va
 │
 │  Models
 ├── models/
-│   ├── cpu1-170M/               # CPU-1 170M checkpoint (in training)
+│   ├── cpu1-170M/               # CPU-1 checkpoint directory (production target: 1B)
 │   ├── LFM2.5-350M/             # LFM2.5-350M (HF safetensors) — benchmark reference
 │   ├── gpt2-medium/             # GPT-2 medium (HF safetensors) — baseline reference
 │   ├── ablation_models/         # Trained compact_2bit final checkpoints per run
@@ -255,22 +286,14 @@ Four **~10M parameter models** with the **same CPU-1 COMPLETE architecture**, va
 
 ## Training Pipeline
 
-### Full Training Pipeline (170M)
+### Production Pipeline (1B target)
 
 ```
-Raw Text Corpus
-      │
+HuggingFaceFW/fineweb (sample-10BT)
+      │  Streamed directly — no pre-processing
       ▼
 ┌─────────────────────────────┐
-│  create_dataset.py          │  Teacher logprob extraction
-│  (Qwen2.5-3B, 4-bit NF4)   │  + BPE→byte marginalization
-│                             │  → Parquet with patches, targets,
-│                             │    teacher_probs, teacher_mask
-└─────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────┐
-│  train_final.py             │  Student training with distillation
+│  train_final.py             │  Student training (CE-only)
 │  (AMP, gradient accum.)     │  → Checkpoints → HuggingFace Hub
 └─────────────────────────────┘
       │
@@ -280,6 +303,12 @@ Raw Text Corpus
 │  + inference/kernels.cpp    │  T-MAC LUT + layer pipeline
 └─────────────────────────────┘
 ```
+
+### Ablation Dataset (10M runs only)
+
+`create_dataset.py` extracts Qwen2.5-3B teacher logprobs and builds the pre-processed dataset used by the four 10M-scale runs (`run_13`–`run_16`). It produces `Cukinator/cpu1-ablation-dataset` with two subsets: `byte_marginalized/` and `bpe_tokenized/`.
+
+The 50M ablation runs stream directly from FineWeb (same as production) — they do **not** use `create_dataset.py`.
 
 ### Ablation Training
 
@@ -308,9 +337,13 @@ Runs with `use_delete_gate=True` (run_07, run_09, run_10, and 10M scale runs) tr
 
 The final inference checkpoint uses 2-bit ternary packing: {-1, 0, 1} → {0, 1, 2}, 4 values per byte. Load with `utilities.unpack_compact_state()`.
 
-### Dataset
+### Dataset Routing
 
-All ablation runs use CE training. 50M runs stream from `HuggingFaceFW/fineweb` `sample-10BT`; 10M runs use `Cukinator/cpu1-ablation-dataset` (two subsets: `byte_marginalized/` for byte runs, `bpe_tokenized/` for BPE runs). Both paths use the same params as `create_dataset.py` (seed=42, seq_len=5000, patch_size=4).
+| Runs | Dataset | Notes |
+|---|---|---|
+| 50M chain (`run_01`–`run_10` + branches) | `HuggingFaceFW/fineweb` `sample-10BT` (streamed) | Chinchilla at 50M needs ~1B tokens — too large for pre-processed dataset |
+| 10M runs (`run_13`–`run_16`) | `Cukinator/cpu1-ablation-dataset` | Pre-processed by `create_dataset.py` with Qwen2.5-3B teacher logprobs |
+| Production (`train_final.py`) | `HuggingFaceFW/fineweb` (streamed) | CE-only, no teacher pre-processing needed |
 
 ---
 
@@ -318,9 +351,9 @@ All ablation runs use CE training. 50M runs stream from `HuggingFaceFW/fineweb` 
 
 Production inference uses the standalone C driver `inference/benchmark.c` linked against `inference/kernels.cpp`. The kernels are optimized for the MLGRU architecture: OpenMP, AVX2 + FMA SIMD, deep data dependency unrolling, `thread_local` scratch reuse, and a layer-pipeline mode.
 
-### CPU-1 170M Performance — C Benchmark
+### C Benchmark — Ablation Scale (d_model=1024, 14 layers)
 
-> Hardware: Intel i7-8750H (6C/12T, Coffee Lake, AVX2 + FMA, no AVX-512). Model: CPU-1 170M, ~40.4 MB 2-bit packed weights.
+> Hardware: Intel i7-8750H (6C/12T, Coffee Lake, AVX2 + FMA, no AVX-512). Model config: d_model=1024, n_layers=14, ~40.4 MB 2-bit packed weights.
 
 | Mode | Description | Total pps | Per-stream pps | vs Single-thread |
 |---|---|---:|---:|---:|
@@ -364,14 +397,11 @@ g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math \
 14 checks across 5 modules. All inference goes through a single engine created once and reused across all checks. The suite is multi-architecture: it auto-detects the model type and adapts each check.
 
 ```bash
-# Basic (11 checks, no dataset needed)
-python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt
+# Against a trained ablation checkpoint
+python eval/run_eval.py --model models/ablations_final/run_06/model.pt
 
 # With dataset (adds perplexity + dataset quality checks)
-python eval/run_eval.py --model models/cpu1-170M/checkpoint.pt --dataset path/
-
-# Against a trained ablation checkpoint
-python eval/run_eval.py --model models/ablations_final/run_07/model.pt
+python eval/run_eval.py --model models/ablations_final/run_06/model.pt --dataset path/
 ```
 
 | Module | Checks | Description |
@@ -431,7 +461,7 @@ On CPU, attention's KV cache (80 MB for 20 layers) doesn't fit in L3 and causes 
 MLGRU's mixing `h_t = f*h + (1-f)*c` is a linear interpolation — all nonlinearity lives in the gates. PFNet adds a direct nonlinear pathway (2-layer ternary MLP with SiLU) as residual. Sized at 224 KB to fit in L2 alongside the recurrent state.
 
 **Why fully ternary weights?**
-{-1, 0, 1} weights reduce model size to ~44 MB and enable integer arithmetic (INT8 MAC or T-MAC LUT). FPResidual low-rank branches provide precision recovery.
+{-1, 0, 1} weights reduce model size drastically (a 1B model fits in ~250 MB vs ~2 GB FP16) and enable integer arithmetic (INT8 MAC or T-MAC LUT). FPResidual low-rank branches provide precision recovery.
 
 **Why distill from BPE models?**
 Strong pretrained BPE models (like Qwen2.5-3B) encode rich language knowledge. Distillation transfers this to the byte-level student more efficiently than training from scratch. First-byte marginalization solves the BPE-to-byte alignment problem.
@@ -440,13 +470,12 @@ Strong pretrained BPE models (like Qwen2.5-3B) encode rich language knowledge. D
 
 ## Size Comparison
 
-Theoretical comparison if CPU-1 were scaled to 350M parameters, vs LFM2.5-350M (LiquidAI):
-
 | Model | Format | Size | Ratio |
 |---|---|---|---|
-| LFM2.5-350M | BF16 (baseline) | ~700 MB | 1.0× |
+| CPU-1 1B (target) | 2-bit ternary packed | **~250 MB** | — |
+| LFM2.5-350M | BF16 | ~700 MB | 1.0× |
 | LFM2.5-350M | Q4_K_M (GGUF) | ~219 MB | 3.2× smaller |
-| **CPU-1 350M** | **2-bit ternary packed** | **~92 MB** | **7.6× smaller** |
+| **CPU-1 350M** (theoretical) | **2-bit ternary packed** | **~92 MB** | **7.6× smaller** |
 
 Beyond size, CPU-1 has **zero matrix multiplications at inference** (T-MAC LUT + Hadamard products only), while LFM2.5 requires standard Q4 matmul for both its convolution and GQA attention blocks.
 
@@ -516,23 +545,24 @@ pip install -r requirements_amd.txt
 
 ### Completed
 
-- ✅ Architecture — 170M model with MLGRU + PFNet + ternary + MegaByte LocalByteDecoder
-- ✅ Extended techniques (v3) — BoundaryPredictor, DeleteGate, EmbeddingAligner, two-phase training
-- ✅ Dataset pipeline — Teacher logprob extraction + BPE→byte marginalization
 - ✅ Ablation system — 12 50M runs + 4 10M runs, three rounds (r1/r2/r3)
+- ✅ V3 ternary convergence fix — bf16 AMP + lr_scale=2.0 breaks the cold-start plateau
+- ✅ Best ablation model: **run_06_v3** (MLGRU + Bolmo + ternary, 39M, val_loss 2.15, PPL 8.58)
 - ✅ C inference kernels — 6-stage pipeline (mode 4: 521 pps) and 6-stream batch (mode 3: 726 pps)
 - ✅ 400M kernel-optimal config — 193 pps (mode 4), 270 pps (mode 3)
 - ✅ Evaluation suite — 14 checks in 5 modules, multi-architecture adaptive
-- ✅ V3 ternary convergence fix — bf16 AMP + lr_scale=2.0 breaks the cold-start plateau
+- ✅ 10M ablation dataset pipeline (`create_dataset.py` + Qwen2.5-3B teacher)
 
 ### In Progress
 
-- 🔄 170M production model training (`models/cpu1-170M/`)
 - 🔄 V3 training completion (interrupted by cloud credit exhaustion)
+- 🔄 Scaling chosen architecture (run_06 variant: MLGRU + Bolmo + ternary) to 1B parameters
 
 ### Path Forward
 
-The V3 corrections demonstrated that **warm-start is not the only path**: cold-start ternary at 50 tok/param with bf16 AMP and `lr_scale=2.0` produces real convergence. The best next step is completing the interrupted V3 training runs, particularly run_06_v3 (val_loss 2.15, PPL 8.58 at only 6.8% progress) which is the strongest ternary result.
+The V3 ablation identified **run_06** (MLGRU + Bolmo + ternary + FPResidual) as the best architecture: lightest ternary model with strong convergence (val_loss 2.15 at only 6.8% of training budget). Next steps:
+1. Complete the interrupted V3 training to get final converged numbers
+2. Scale run_06's architecture to 1B parameters and train on the full FineWeb corpus via `train_final.py`
 
 ---
 
