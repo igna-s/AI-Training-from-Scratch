@@ -1,75 +1,73 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-.env
-ENV/
-env/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Data & checkpoints
-*.parquet
-*.pt
-*.bin
-*.safetensors
-checkpoints/
-dataset/
-shared_dataset/
-
-# Ablation outputs
+# Local assets, archived code, and generated reports
+/local/
+/outputs/
+/models/
+/papers/
+/resultados/
+/Prompts/
+/prompts/
+/checkpoints/
+/dataset/
+/shared_dataset/
+/logprobs/
+/run_*/
+/small_*/
+/run_logs/
+/run_results.json
 metrics_run_*.json
 ablation_results.json
 ablation_table.tex
 checkpoint_run_*
 
-# Logs
-*.log
-runs/
-wandb/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
+# Virtual environments, credentials, and personal tools
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+.claude/
+.claudeignore
+.codex/
+.agents/
+.aws/
 .vscode/
 .idea/
-*.swp
 
-# Claude Code internals
-.claude/
+# Python and notebook caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+.ipynb_checkpoints/
+build/
+dist/
+*.egg
 
-# Project-specific
-Prompts/
-prompts/
-
-# Large Files & External Repos
-#   Top-level model checkpoint dirs: ignored entirely
-models/cpu1-170M/
-models/LFM2.5-350M/
-models/gpt2-medium/
-#   Ablation: keep the *.py source files and __init__, ignore checkpoints + caches
-models/ablation_models/__pycache__/
-models/ablation_models/run_*/
-models/ablation_models/small_*/
-models/ablation_models/checkpoint*
-llamacpp/
-
-# Build artifacts
+# Downloaded weights, datasets, and binary build outputs
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+*.parquet
+*.arrow
+*.pdf
 *.exe
 *.dll
 *.so
 *.o
 *.obj
+*.pyd
+llamacpp/
+
+# Logs and temporary files
+*.log
+*.tmp
+runs/
+wandb/
+.DS_Store
+Thumbs.db
+*.swp

@@ -1,0 +1,2 @@
+-r training.txt
+psutil>=5.9.0

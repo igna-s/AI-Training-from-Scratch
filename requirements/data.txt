@@ -1,0 +1,4 @@
+-r training.txt
+psutil>=5.9.0
+tqdm>=4.66.0
+# Optional teacher quantization: install bitsandbytes or torchao when needed.
