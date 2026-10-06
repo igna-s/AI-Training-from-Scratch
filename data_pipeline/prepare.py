@@ -3222,7 +3222,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             #   Main: orchestrator
             from huggingface_hub import HfApi
             hf_token = os.environ.get('HF_TOKEN')
-            print(f"  [hub] HF_TOKEN: {'set (' + str(len(hf_token)) + ' chars)' if hf_token else 'NOT SET / EMPTY'}")
+            print(f"  [hub] HF_TOKEN: {'configured' if hf_token else 'NOT SET / EMPTY'}")
             api = HfApi(token=hf_token)
             try:
                 api.create_repo(DATASET_REPO, repo_type="dataset", exist_ok=True)

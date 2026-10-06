@@ -160,7 +160,7 @@ Training dependencies are in `requirements/training.txt`; CPU evaluation adds `r
 
 Set cache variables before importing Hugging Face libraries; see their [environment variable reference](https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables). The audit enforces D: storage, runs one model at a time, and deletes its downloaded `model.pt` after saving results. Manual examples retain one checkpoint until removed. Training writes checkpoints/logs relative to the working directory, so use the D: checkout to keep those outputs there.
 
-Public downloads need no write token. Publishing and training uploads use your own `HF_TOKEN` through the environment or Hugging Face authentication; keep credentials outside tracked files.
+Public downloads need no write token. Publishing and training uploads use your own `HF_TOKEN` through the environment or Hugging Face authentication; keep credentials outside tracked files. Scripts report only whether the token is configured, without revealing its characters. The card uploader hides interactive token entry. Private key files, credential JSONs, and local secret directories are also ignored.
 
 ## Load, score, and generate
 

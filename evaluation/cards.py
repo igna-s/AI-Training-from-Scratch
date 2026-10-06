@@ -262,8 +262,8 @@ def upload_cards(inventory):
     import os
     token = os.environ.get('HF_TOKEN')
     if not token:
-        print('Provide the authorized Hugging Face token on stdin (not saved).', flush=True)
-        token = sys.stdin.readline().strip()
+        from getpass import getpass
+        token = getpass('Hugging Face token (hidden input): ').strip()
     api = HfApi(token=token)
     identity = api.whoami()
     if identity['name'].lower() != 'cukinator':
