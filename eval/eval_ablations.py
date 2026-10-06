@@ -312,6 +312,8 @@ def load_run(ckpt_path: Path, run_name: str) -> tuple:
     config["use_gradient_checkpointing"] = False
     model = build_ablation_model(config)
     missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(f"Checkpoint incompatible: missing={missing}, unexpected={unexpected}")
     model.eval()
 
     info   = AblationInfo.from_config(run_name, config)
@@ -460,187 +462,14 @@ def save_summary_markdown(all_results: list[dict]) -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_readme(all_results: list[dict]) -> str:
-    """Reconstruye el README con tablas recalculadas desde los datos reales."""
-    by_run = {r["run_name"]: r for r in all_results}
-    date_str = time.strftime("%Y-%m-%d")
+    """Build only from the complete reproducible audit, never a legacy subset."""
+    from audit_model_cards import build_cards
+    from audit_readmes import OUT
+    inventory = json.loads((OUT / 'inventory.json').read_text(encoding='utf-8'))
+    corpus = json.loads((OUT / 'corpus.json').read_text(encoding='utf-8'))
+    build_cards(inventory, corpus)
+    return HF_README.read_text(encoding='utf-8')
 
-    yaml_block = ""
-    if HF_README.exists():
-        orig = HF_README.read_text(encoding="utf-8")
-        end = orig.find("---", 3)
-        if end > 0:
-            yaml_block = orig[:end + 3]
-
-    lines = []
-    if yaml_block:
-        lines.append(yaml_block)
-
-    lines += [
-        "",
-        "# CPU-1 Ablation Study — Ready-to-use Checkpoints (fp32 unpacked)",
-        "",
-        f"Repo:    `Cukinator/cpu1-ablations-final`",
-        f"Source:  [`Cukinator/cpu1-ablation-checkpoints`]"
-        f"(https://huggingface.co/Cukinator/cpu1-ablation-checkpoints)",
-        f"Code:    [github.com/Cukinator/1.58bits](https://github.com/Cukinator/1.58bits)",
-        "",
-        f"> **Tablas recalculadas {date_str}** — criterio homogéneo:",
-        f"> `perplexity = exp(val_loss)` para todos los runs sin excepción.",
-        f"> `BPB = val_loss / ln(2)` — solo byte-level.",
-        f"> Referencia uniforme byte: **ln(256) = {UNIFORM_BYTE:.3f} nats → PPL=256 → BPB=8.000**",
-        f"> BPE runs (run\\_01, run\\_13, \\*\\_r2): PPL es **token-level**.",
-        "",
-    ]
-
-    def _lm(nm, k, dec=4):
-        return _f(by_run.get(nm, {}).get("loss_metrics", {}).get(k), dec)
-
-    def _perf(nm):
-        r = by_run.get(nm, {})
-        tl = r.get("performance", {}).get("throughput_latency_jitter", {}).get("result", {})
-        return _f(tl.get("throughput_sps"), 1), _f(tl.get("throughput_bps"), 0)
-
-    def _params(nm):
-        return _f(by_run.get(nm, {}).get("n_params_M"), 1)
-
-    def _ram(nm):
-        return _f(by_run.get(nm, {}).get("ram_fp32_mb"), 1)
-
-    # ── 50M Round 1 ──────────────────────────────────────────────────────────
-    r1_50m_order = ["run_01","run_02a_byte_only_heads","run_02","run_03","run_04",
-                    "run_05","run_05b_kernel_strict","run_06","run_07","run_08",
-                    "run_09","run_10"]
-    r1_50m = [nm for nm in r1_50m_order if nm in by_run]
-
-    lines += [
-        "## Ablation chain — 50M runs (round 1, 2 tok/param)",
-        "",
-        "| Run | Arquitectura | Params M | RAM fp32 MB | Val Loss | PPL | BPB | Δ uniform | P/s | Bytes/s | Nivel |",
-        "|-----|-------------|--------:|------------:|---------:|----:|----:|----------:|----:|--------:|-------|",
-    ]
-    for nm in r1_50m:
-        meta = RUN_META.get(nm, {})
-        r = by_run[nm]
-        is_b = r.get("is_byte_level", True)
-        nivel = "byte" if is_b else "token"
-        pps, bps = _perf(nm)
-        lines.append(
-            f"| {nm} | {meta.get('label','?')} "
-            f"| {_params(nm)} | {_ram(nm)} "
-            f"| {_lm(nm,'val_loss',4)} | {_lm(nm,'perplexity',2)} "
-            f"| {_lm(nm,'bpb',4) if is_b else '—'} "
-            f"| {_lm(nm,'delta_uniform',4) if is_b else '—'} "
-            f"| {pps} | {bps} | {nivel} |"
-        )
-
-    # ── 10M Round 1 ──────────────────────────────────────────────────────────
-    r1_10m_order = ["run_13","run_14","run_15","run_16"]
-    r1_10m = [nm for nm in r1_10m_order if nm in by_run]
-    lines += [
-        "",
-        "## Small runs — 10M (round 1, 2 tok/param)",
-        "",
-        "| Run | Arquitectura | Params M | RAM fp32 MB | Val Loss | PPL | BPB | Nivel |",
-        "|-----|-------------|--------:|------------:|---------:|----:|----:|-------|",
-    ]
-    for nm in r1_10m:
-        meta = RUN_META.get(nm, {})
-        r = by_run[nm]
-        is_b = r.get("is_byte_level", True)
-        nivel = "byte" if is_b else "token"
-        lines.append(
-            f"| {nm} | {meta.get('label','?')} "
-            f"| {_params(nm)} | {_ram(nm)} "
-            f"| {_lm(nm,'val_loss',4)} | {_lm(nm,'perplexity',2)} "
-            f"| {_lm(nm,'bpb',4) if is_b else '—'} | {nivel} |"
-        )
-
-    # ── Round 2 ──────────────────────────────────────────────────────────────
-    r2_to_r1 = {
-        "run_04_r2":"run_04","run_05_r2":"run_05","run_07_r2":"run_07",
-        "run_08_r2":"run_08","run_09_r2":"run_09","run_10_r2":"run_10",
-        "run_13_r2":"run_13","run_14_r2":"run_14","run_15_r2":"run_15",
-        "run_16_r2":"run_16",
-        # r3 — extended budget re-runs (map to their r1 base)
-        "run_04_r3":"run_04","run_07_r3":"run_07",
-        "run_14_r3":"run_14","run_15_r3":"run_15",
-    }
-    r2_runs = [nm for nm in by_run if nm.endswith("_r2") or nm.endswith("_r3")]
-    if r2_runs:
-        lines += [
-            "",
-            "## Round 2 — re-runs a 15 tok/param (y r3 budget extendido)",
-            "",
-            "| Run | Arquitectura | Params M | Loss r1 | PPL r1 | Loss r2 | PPL r2 | Δ loss | BPB r2 | Nivel |",
-            "|-----|-------------|--------:|--------:|-------:|--------:|-------:|-------:|-------:|-------|",
-        ]
-        for nm in sorted(r2_runs):
-            meta = RUN_META.get(nm, {})
-            r = by_run[nm]
-            is_b = r.get("is_byte_level", True)
-            nivel = "byte" if is_b else "token"
-            r1_nm = r2_to_r1.get(nm)
-            r1_lm = by_run.get(r1_nm, {}).get("loss_metrics", {})
-            r2_lm = r.get("loss_metrics", {})
-            vl1 = r1_lm.get("val_loss")
-            vl2 = r2_lm.get("val_loss")
-            if vl1 is not None and vl2 is not None:
-                delta = vl2 - vl1
-                delta_s = f"+{delta:.5f}" if delta >= 0 else f"{delta:.5f}"
-            else:
-                delta_s = "—"
-            lines.append(
-                f"| {nm} | {meta.get('label','?')} "
-                f"| {_params(nm)} "
-                f"| {_f(vl1,4)} | {_f(r1_lm.get('perplexity'),2)} "
-                f"| {_lm(nm,'val_loss',4)} | {_lm(nm,'perplexity',2)} "
-                f"| {delta_s} "
-                f"| {_lm(nm,'bpb',4) if is_b else '—'} | {nivel} |"
-            )
-
-    # ── Round 3 ──────────────────────────────────────────────────────────────
-    v3_runs = [nm for nm in by_run if nm.endswith("_v3")]
-    if v3_runs:
-        lines += [
-            "",
-            "## Round 3 — v3 runs (bf16 AMP + lr×2 + 50 tok/p)",
-            "",
-            "| Run | Arquitectura | Params M | Val Loss | PPL | BPB | Step | P/s | Bytes/s | Nivel |",
-            "|-----|-------------|--------:|--------:|----:|----:|-----:|----:|--------:|-------|",
-        ]
-        for nm in sorted(v3_runs):
-            meta = RUN_META.get(nm, {})
-            r = by_run[nm]
-            is_b = r.get("is_byte_level", True)
-            nivel = "byte" if is_b else "token"
-            pps, bps = _perf(nm)
-            lines.append(
-                f"| {nm} | {meta.get('label','?')} "
-                f"| {_params(nm)} "
-                f"| {_lm(nm,'val_loss',4)} | {_lm(nm,'perplexity',2)} "
-                f"| {_lm(nm,'bpb',4) if is_b else '—'} "
-                f"| {_f(r.get('step'))} | {pps} | {bps} | {nivel} |"
-            )
-            
-        lines += [
-            "",
-            "**Hallazgo clave de V3:** El cuello de botella de los modelos ternarios en *cold-start* fue resuelto en la **v3** (usando bf16 AMP y `lr_scale=2.0` en BitLinear). Esto permitió romper el plateau de entropía uniforme (~5.55 nats) en el que caían las versiones anteriores, logrando convergencia estable y permitiendo que generen texto imprimible (`PASS` en los tests de generación).",
-        ]
-
-    lines += [
-        "",
-        "## Licencia",
-        "",
-        "Apache-2.0. Same as the source code at "
-        "[github.com/Cukinator/1.58bits](https://github.com/Cukinator/1.58bits).",
-        "",
-    ]
-    return "\n".join(lines)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HuggingFace: descarga y upload
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _get_hf_token() -> str | None:
     """Lee HF_TOKEN del entorno o del archivo .env del repo."""

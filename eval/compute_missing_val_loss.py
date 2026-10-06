@@ -193,7 +193,7 @@ def compute_val_loss(model, config: dict, n_batches: int = 300,
                     patches = patches[:, :MAX_STEPS]
                     targets = targets[:, :MAX_STEPS]
 
-                result  = model(patches)
+                result  = model(patches, **({'byte_targets': targets} if is_byte else {}))
                 logits  = result[0]
 
 

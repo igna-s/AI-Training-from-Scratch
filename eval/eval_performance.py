@@ -136,6 +136,8 @@ def check_context_scaling(engine) -> dict:
     ctx_lengths = [0, 512, 2048]
     results = {}
     is_ablation = getattr(engine, '_is_ablation', False)
+    if is_ablation and not info.is_recurrent:
+        return {'skipped': True, 'reason': 'Transformer ablation sin KV cache: el test de pasos aislados no conserva contexto'}
 
     with torch.inference_mode():
         for ctx_len in ctx_lengths:

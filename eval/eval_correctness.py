@@ -147,12 +147,11 @@ def check_state_propagation(engine) -> dict:
             chunk = x[:, i:i + 32] if x.dim() == 2 else x[:, i:i + 32, :]
             result = model(chunk, states)
             logits_chunk, states = _unpack_forward(result)
-            first_head = _get_logits_list(logits_chunk, info)[0]
-            chunk_outputs.append(first_head)
+            chunk_outputs.append(_get_logits_list(logits_chunk, info))
 
-    out_chunked = torch.cat(chunk_outputs, dim=1)
-    out_full = _get_logits_list(logits_full, info)[0]
-    diff = (out_full - out_chunked).abs().max().item()
+    full_heads = _get_logits_list(logits_full, info)
+    diff = max((full_heads[k] - torch.cat([chunk[k] for chunk in chunk_outputs], dim=1)).abs().max().item()
+               for k in range(len(full_heads)))
     assert diff < 1e-4, f"State propagation error: {diff:.6f}"
     return {'max_diff': diff}
 
@@ -206,12 +205,8 @@ def check_state_size(engine) -> dict:
     state_bytes = sum(s.numel() * s.element_size() for s in valid_states)
     state_kb = state_bytes / 1024
 
-    kv_cache_kb = 20 * 512 * 2048 * 2 * 2 / 1024
-    reduction = kv_cache_kb / state_kb if state_kb > 0 else 0
-
     assert state_kb < 1024, f"Estado MLGRU demasiado grande: {state_kb:.1f} KB"
-    return {'state_kb': round(state_kb, 1), 'kv_cache_kb': round(kv_cache_kb, 1),
-            'reduction_x': round(reduction, 0)}
+    return {'state_kb': round(state_kb, 1), 'batch_size': 1, 'dtype': 'float32'}
 
 
 # =========================================================================
