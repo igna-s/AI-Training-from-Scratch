@@ -1,4 +1,4 @@
-"""Generate every model README from the audited Hub inventory and fresh JSONs."""
+"""Generate Hub model cards and the dataset template from audited evidence."""
 from collections import defaultdict
 from datetime import datetime
 import json
@@ -208,9 +208,8 @@ def build_cards(inventory, corpus):
             (directory/(stem+suffix)).write_text(content, encoding='utf-8')
     save_environment(records)
     (OUT/'CORPUS_LICENSE.txt').write_text('The text excerpts in corpus.json originate from WikiText (Salesforce/wikitext), based on English Wikipedia.\nDataset authors and contributors: see https://huggingface.co/datasets/Salesforce/wikitext .\nUpstream dataset metadata declares CC-BY-SA-3.0 and GFDL.\nCC-BY-SA-3.0: https://creativecommons.org/licenses/by-sa/3.0/\nGFDL: https://www.gnu.org/licenses/fdl-1.3.html\nChanges: selection of 32 test paragraphs and truncation to 260 UTF-8 bytes.\nThe corpus remains under its upstream terms; the model repository Apache-2.0 metadata does not relicense these excerpts.\n',encoding='utf-8')
-    root_card(records, inventory)
     dataset_card()
-    print('Generated source README and both model cards (including duplicate templates).', flush=True)
+    print('Generated both model cards and the dataset template; source README preserved.', flush=True)
 
 
 def dataset_card():
@@ -251,48 +250,6 @@ def save_environment(records):
     packages = {name: version(name) for name in ('torch','transformers','tokenizers','huggingface_hub','datasets','numpy','pyarrow','psutil')}
     tokenizer_revision = next((r['tokenizer_revision'] for r in records if r.get('tokenizer_revision')), None)
     save(OUT/'environment.json', {'python': sys.version, 'packages': packages, 'hardware': 'Intel Core i7-8750H, 6 cores/12 logical processors', 'platform': records[0]['platform'], 'threads': 1, 'source_commit': '18826ec2827a09950797463633c1f5187af29a5b', 'source_changes': 'audit evaluator and correctness/quality fixes in this checkout', 'audit_script_sha256': sha(ROOT/'eval'/'audit_readmes.py'), 'qwen_tokenizer_resolved_revision': tokenizer_revision})
-
-
-def root_card(records, inventory):
-    causal = sum(r.get('correctness',{}).get('causality',{}).get('status')=='FAIL' for r in records)
-    state = sum(r.get('correctness',{}).get('state_prop',{}).get('status')=='FAIL' for r in records)
-    errors = sum(bool(r.get('error')) for r in records)
-    lines = ['# CPU-1: language-model ablation research', '',
-        'CPU-1 explores byte-patch language models, MLGRU recurrent mixers, and ternary projections. This repository contains training code, custom checkpoint codecs, native kernel experiments, and a reproducible CPU audit of the published ablation exports. The published checkpoints are small research models; the larger production configurations in the source are development targets.', '',
-        '## Published artifacts', '', '| Repository | Contents |', '|---|---|',
-        f'| [{FINAL}](https://huggingface.co/{FINAL}) | 34 custom PyTorch FP32 exports, each with saved config and step |',
-        f'| [{ARCHIVE}](https://huggingface.co/{ARCHIVE}) | Packed finals and intermediate training checkpoints; exact inventory in the model card |',
-        '| [Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) | Precomputed teacher signals for the dataset experiments |', '',
-        '## Verified status: 2026-10-06', '',
-        f'The fresh audit attempted all {len(records)} published exports with strict state compatibility, the same 32 WikiText test passages, and CPU forward timing and byte generation under one protocol. **{causal} models failed the prefix causality check; {state} failed recurrent chunk equivalence; {errors} had a loading or numerical evaluation error.** Detailed failures and all raw evidence are retained, including samples that look printable but are not coherent language.', '',
-        'The audit does not establish a production-ready streaming language model. Some boundary-aware embedding configurations allow future inputs to affect earlier outputs. A separate primitive test also finds that the implemented parallel scan does not satisfy the intended serial recurrence; see [implementation_diagnostics.json](resultados/readme_audit/implementation_diagnostics.json). A small full-sequence loss from a model that fails causality is a reconstruction diagnostic, not evidence of causal next-byte prediction quality. Byte PPL and mapped BPE PPL are separate units. We do not infer component improvements from experiments with different parameter counts, training signals, saved steps, or budgets.', '',
-        'Read the complete [export model card](hf_readmes/cpu1-ablations-final.md) for per-model results, configurations, protocol and limitations. Read the [archive model card](hf_readmes/cpu1-ablation-checkpoints.md) for the pinned file inventory and storage formats. Historical files in `resultados/ablation_*.json` use older protocols and should not be combined with `resultados/readme_audit/`.', '',
-        '## Architecture and source', '',
-        '- `utilities.py`: BitLinear and BitEmbedding, RMSNorm, MLGRU and attention variants, SwiGLU, FPResidual, PFNet, byte patch embeddings, LocalByteDecoder, DeleteGate, dataset adapters, and checkpoint serialization.',
-        '- `train_ablation.py`: constructs an AblationModel from its saved configuration; trains individual experiments and orchestrates run groups. `train_ablation_amd.py` is the ROCm-oriented variant.',
-        '- `train_final.py`: larger CPU1ModelV2 training configurations. These are separate from the exported ablation collection.',
-        '- `create_dataset.py` and `kaggle/`: teacher signal extraction and dataset preparation.',
-        '- `inference/kernels.cpp`, `inference/benchmark.c`, and `inference/links.md`: native kernel experiments and build notes. The Python audit does not use these kernels. Synthetic native-kernel throughput must not be presented as measured trained-model generation speed.',
-        '- `eval/audit_readmes.py`: sequential downloads, scoring, correctness checks, generation samples, and timing. `eval/audit_model_cards.py`: cards and publication.', '',
-        'The exact model depends on `config` stored in the checkpoint. Experiments mix BPE and four-byte patches, Transformer and MLGRU mixers, floating-point and ternary projections, optional low-rank residuals, boundary-aware embedding, DeleteGate, PFNet, and learned decay. Check the configuration table instead of assuming all variants form a one-change chain.', '',
-        '## Setup and reproduce the audit', '',
-        'Use Python 3.12 with PyTorch installed for your hardware. For the CPU audit:', '', '```powershell',
-        'python -m venv .venv', '.venv/Scripts/python -m pip install torch transformers tokenizers huggingface_hub datasets numpy pyarrow psutil',
-        '.venv/Scripts/python eval/audit_readmes.py --storage D:/cpu1-readme-audit --threads 1',
-        '.venv/Scripts/python eval/audit_readmes.py --storage D:/cpu1-readme-audit --cards', '```', '',
-        'Exact package versions are recorded in [environment.json](resultados/readme_audit/environment.json). Use them to reproduce the recorded run. The audit pins both Hub inventories and the dataset revision, saves the text sample, hashes each model, and records errors instead of silently filling missing weights. All model downloads, tokenizer caches, and temporaries go to D:. One checkpoint is kept at a time and removed after its JSON is saved. Existing results are reused only when the evaluator hash matches. Use `--force` to repeat or `--runs run_04 run_14_v3` to inspect a subset.', '',
-        'The scoring sample is diagnostic: 32 short passages, batch 1, no teacher model, DeleteGate disabled. Byte models use shifted next-patch targets with proper intra-patch teacher forcing. BPE uses the truncated Qwen vocabulary mapping used during training and reports the fraction mapped to ID 0. Forward steps/s and generated bytes/s are measured separately. The full protocol is in both cards.', '',
-        'Legacy `eval/run_eval.py` expects a production inference engine that is absent from this checkout; use the audit above for the published ablation models. `eval/eval_ablations.py` and `eval/compute_missing_val_loss.py` are legacy entry points and do not reproduce the new common corpus or cards.', '',
-        *quickstart(FINAL, inventory[FINAL]['sha']),
-        '## Training', '', '```powershell', 'python train_ablation.py --run run_04 --dry_run --total_steps 2', 'python train_ablation.py --run run_04', 'python train_ablation.py --run run_04 --resume_ckpt D:/cpu1/active/run_04/checkpoint_run_04_step640.pt', '```', '',
-        'Normal training uses CUDA/ROCm-capable PyTorch and dataset access. The dry run uses synthetic CPU data and checks plumbing rather than model quality. Intermediate checkpoints may include optimizer state for resumption; packed finals are inference artifacts. `chinchilla_tokens_per_param` is a configured target, not proof of actual training exposure. All reported saved steps come from the evaluated payloads.', '',
-        '## Checkpoints and storage', '',
-        '- Export: `format="fp32"`, `state_dict`, `config`, `metrics`, `step`, `run_name`. Build from config and load strictly.',
-        '- Packed ternary final: `format="compact_2bit"`; use `load_ablation_checkpoint()` to unpack. Floating-point baselines have floating-point payloads.',
-        '- Training step: model/configuration and training state, typically BF16 storage. Inspect the payload rather than relying solely on its filename.', '',
-        'A ternary alphabet has log2(3)≈1.585 bits of information per value. The codec stores two bits per packed value plus scales and other floating-point tensors. Unpacked exports hold FP32 tensors; neither their disk footprint nor their Python resident parameter storage is 1.58 bits per parameter. Peak runtime RAM and native packed-inference speed are separate measurements.', '',
-        '## License', '', 'The Hugging Face model repositories declare Apache-2.0. This checkout has no standalone LICENSE file. Dataset and tokenizer assets have separate upstream licenses.', '']
-    (ROOT/'README.md').write_text('\n'.join(lines), encoding='utf-8')
 
 
 def upload_cards(inventory):
