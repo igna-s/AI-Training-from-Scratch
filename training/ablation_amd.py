@@ -2211,7 +2211,7 @@ def check_env() -> int:
         print("  En Lightning Studio: Settings → Secrets → HF_TOKEN")
         print("  Sin token los checkpoints NO se subirán a HF Hub.\n")
     else:
-        print(f"\nHF_TOKEN: ****{hf_token[-4:]}")
+        print("\nHF_TOKEN: configured")
     return n_gpus
 
 

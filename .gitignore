@@ -32,6 +32,27 @@ ENV/
 .codex/
 .agents/
 .aws/
+.ssh/
+.azure/
+.gcloud/
+.kaggle/
+.cache/
+/secrets/
+/credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+.netrc
+_netrc
+.pypirc
+.npmrc
+kaggle.json
+credentials.json
+service-account*.json
+service_account*.json
+application_default_credentials.json
 .vscode/
 .idea/
 

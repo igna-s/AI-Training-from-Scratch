@@ -214,7 +214,7 @@ def main():
     print(f"\n{'=' * 65}")
     print(f"  Export ablations -- {HF_REPO_SRC} -> {HF_REPO_DEST}")
     print(f"  Runs: {runs}")
-    print(f"  HF_TOKEN: {'****' + token[-4:] if token else 'None'}")
+    print(f"  HF_TOKEN: {'configured' if token else 'not set'}")
     print(f"  Local export dir: {EXPORT_DIR}")
     print(f"{'=' * 65}\n")
 
