@@ -73,7 +73,8 @@ def run_check(name: str, fn, *args, **kwargs) -> dict:
         t0 = time.perf_counter()
         result = fn(*args, **kwargs)
         elapsed = time.perf_counter() - t0
-        return {'status': 'PASS', 'time_s': round(elapsed, 2), 'result': result}
+        status = 'N/A' if isinstance(result, dict) and result.get('skipped') else 'PASS'
+        return {'status': status, 'time_s': round(elapsed, 2), 'result': result}
     except AssertionError as e:
         return {'status': 'FAIL', 'error': str(e)}
     except Exception as e:

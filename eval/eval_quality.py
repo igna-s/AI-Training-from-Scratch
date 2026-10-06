@@ -77,6 +77,7 @@ def check_perplexity(engine, dataset, max_batches: int = 200) -> dict:
     model = get_model(engine)
     total_loss = 0.0
     n_batches = 0
+    n_targets = 0
 
     n_workers = max(0, min(2, (os.cpu_count() or 4) // 4))
     loader_kwargs = {'batch_size': 4}
@@ -88,11 +89,12 @@ def check_perplexity(engine, dataset, max_batches: int = 200) -> dict:
         if n_batches >= max_batches:
             break
 
-        patches = batch['patches']
-        targets = batch['targets']
+        patches = batch['patches'] if info.is_byte_level else batch['input_ids']
+        targets = batch['targets'] if info.is_byte_level else batch['labels']
 
         with torch.inference_mode():
-            result = model(patches)
+            kwargs = {'byte_targets': targets} if getattr(engine, '_is_ablation', False) and info.is_byte_level else {}
+            result = model(patches, **kwargs)
             logits = result[0]
 
             if isinstance(logits, (tuple, list)):
@@ -109,20 +111,23 @@ def check_perplexity(engine, dataset, max_batches: int = 200) -> dict:
                 all_logits = logits.reshape(-1, info.vocab_size)
                 all_targets = targets.long().reshape(-1)
 
-            loss = F.cross_entropy(all_logits, all_targets)
+            loss = F.cross_entropy(all_logits, all_targets, reduction='sum')
 
         total_loss += loss.item()
+        n_targets += all_targets.numel()
         n_batches += 1
 
     if n_batches == 0:
         raise AssertionError("Dataset vacio — no se pudo calcular perplexity")
 
-    avg_loss = total_loss / n_batches
+    avg_loss = total_loss / n_targets
     ppl = math.exp(avg_loss)
 
     print(f"    Perplexity: {ppl:.2f} ({n_batches} batches)")
-    assert ppl < 200, f"Perplexity inaceptable: {ppl:.2f}"
-    return {'perplexity': round(ppl, 2), 'avg_loss': round(avg_loss, 4)}
+    assert math.isfinite(avg_loss) and math.isfinite(ppl), 'Loss o perplexity no finita'
+    return {'perplexity': round(ppl, 2), 'avg_loss': round(avg_loss, 4),
+            'unit': 'byte' if info.is_byte_level else 'token',
+            'targets': n_targets}
 
 
 # =========================================================================

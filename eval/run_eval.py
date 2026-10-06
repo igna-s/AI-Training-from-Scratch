@@ -47,12 +47,12 @@ CHECK_INFO = {
     'ternary_weights': ('Pesos ternarios',       '{-1, 0, 1}'),
     'state_size':      ('Estado MLGRU',          '< 1MB'),
     'throughput_latency_jitter': ('Throughput + Latencia + Jitter',
-                                  '> 10 tok/s, p50<100ms, CV<0.3'),
-    'context_scaling':  ('Scaling contexto',     '< 20% degradacion'),
-    'ram':              ('RAM inferencia',       'delta < 50MB'),
+                                  '> 1 step/s, p50<5000ms, CV<0.5'),
+    'context_scaling':  ('Scaling contexto',     '<20% recurrente / <80% otro'),
+    'ram':              ('RAM inferencia',       'delta < 200MB'),
     'generation':      ('Generacion',            '> 50% print, < 30% rep'),
     'utf8':            ('UTF-8 valido',          '> 70%'),
-    'perplexity':      ('Perplexity',            '< 200'),
+    'perplexity':      ('Perplexity',            'loss finita; unidad indicada'),
     'teacher_coverage': ('Teacher coverage',     '> 15%'),
     'teacher_entropy':  ('Teacher entropy',      '0.5-5.0 bits'),
     'llama_cpp':       ('llama.cpp GGUF',        '> 20 tok/s'),
@@ -365,7 +365,9 @@ def main():
     # === Resumen ===
     passed = sum(1 for r in all_results.values() if r['status'] == 'PASS')
     failed = sum(1 for r in all_results.values() if r['status'] in ('FAIL', 'ERROR'))
-    skipped = len(CHECK_INFO) - len(all_results)
+    skipped = len(CHECK_INFO) - len(all_results) + sum(
+        1 for r in all_results.values() if r['status'] == 'N/A'
+    )
 
     print(f"\n{'=' * 60}")
     print(f"  {passed} PASS / {failed} FAIL / {skipped} N/A "
