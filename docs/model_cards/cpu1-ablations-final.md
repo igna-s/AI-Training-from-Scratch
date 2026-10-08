@@ -11,13 +11,13 @@ tags:
 
 # CPU-1 ablations: FP32 checkpoint exports
 
-34 custom PyTorch model exports, 4.178 GB of checkpoint files (decimal units). This is a research ablation collection, not an instruction-tuned assistant. It includes Transformer and MLGRU variants with byte patches or truncated BPE vocabularies, and floating-point or simulated ternary projections.
+34 custom PyTorch model exports, 4.178 GB of checkpoint files (decimal units). These checkpoints are intended for research on the CPU-1 ablation configurations. It includes Transformer and MLGRU variants with byte patches or truncated BPE vocabularies, and floating-point or simulated ternary projections.
 
 Source: [igna-s/New-1.58](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). Training archive: [Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints). Training dataset companion: [Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset).
 
-## What the audit found
+## Evaluation summary
 
-The shared audit covers 34 FP32 exports on 32 short WikiText test passages, with CPU execution, one thread, and a fixed protocol. It does not evaluate every intermediate archive checkpoint.
+The evaluation covers 34 FP32 exports on 32 short WikiText test passages, with CPU execution, one thread, and a fixed protocol. It does not evaluate every intermediate archive checkpoint.
 
 | Check | Outcome |
 |---|---|
@@ -32,7 +32,7 @@ Full results, generation examples, and the recurrent implementation diagnostic f
 
 `<run>/model.pt` contains `format="fp32"`, `state_dict`, `config`, `step`, `run_name`, `metrics`, and source metadata. The exported parameters occupy four bytes each. “1.58-bit” describes the ternary value alphabet; these files are not stored as 1.58-bit tensors and this PyTorch path does not use packed-weight inference.
 
-Historical `metrics` may be empty or come from different training validation protocols. They are preserved as metadata, not relabeled as freshly measured test results.
+Historical `metrics` may be empty or come from different training validation protocols. The evaluation tables below use the shared test sample; stored training metrics remain separate.
 
 ## Load one checkpoint
 
@@ -60,90 +60,77 @@ with torch.inference_mode():
 print([tuple(head.shape) for head in logits])
 ```
 
-This forward uses zero target bytes in the local decoder; it is a shape smoke test. For scored likelihood, pass `byte_targets` as shown in the audit. For byte generation with retained Transformer context and one recurrent prefill, use `generation()` in `evaluation/audit.py`. Generation remains experimental; inspect the saved examples before choosing a checkpoint.
+This example supplies zero target bytes to the local decoder to demonstrate output shapes. For likelihood scoring with LocalByteDecoder, supply the ground-truth `byte_targets`; the decoder shifts them internally. Byte generation requires sampling within each patch and retaining the appropriate recurrent state or Transformer context. See the GitHub evaluation implementation and the recorded continuation examples.
 
-## Evaluation protocol
+## Evaluation methodology
 
-This card was rebuilt from a fresh CPU audit on **2026-10-06**. All 34 published FP32 exports were attempted; 34 loaded with zero missing or unexpected state keys. Numerical and loading errors remain visible. Raw JSON, the exact text sample, and the repository inventories are preserved in [the GitHub audit evidence](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06). Previous `resultados/ablation_*.json` reports are historical and were not mixed into these tables.
+Results were measured on **2026-10-06** for the 34 FP32 exports. Raw results, checkpoint hashes, the text sample, package versions, corpus attribution and evaluator metadata are available in the [GitHub evaluation files](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation).
 
-- Hardware: Intel Core i7-8750H (6 cores / 12 logical processors), Windows 11; CPU execution with **1 PyTorch thread**, batch size 1, FP32 parameters. PyTorch 2.6.0+cu124. No custom C/C++ kernels were used.
-- Test text: [`Salesforce/wikitext`, `wikitext-2-raw-v1`, test split](https://huggingface.co/datasets/Salesforce/wikitext). First 32 non-heading paragraphs with at least 260 UTF-8 bytes, each truncated to 260 bytes without an incomplete trailing character. This is a small diagnostic sample, not the complete benchmark. No exhaustive training-overlap audit was performed.
-- Corpus attribution: WikiText by its dataset authors, based on English Wikipedia contributions. The dataset metadata lists CC-BY-SA-3.0 and GFDL; the included corpus excerpt retains those upstream terms, separately from the model repository license. See [CORPUS_LICENSE.txt](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/CORPUS_LICENSE.txt).
-- Dataset revision: `b08601e04326c79dfdd32d625aee71d232d685c3`; exact file: `wikitext-2-raw-v1/test-00000-of-00001.parquet`; parquet SHA-256: `5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91`.
-- Shared sample JSON SHA-256: `11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798`.
-- Byte targets are the next patch; incomplete final patches are discarded. The first patch is context only. LocalByteDecoder receives ground-truth target bytes and shifts them internally for causal teacher forcing within a patch. Cross-entropy is summed over all targets and divided by their total count.
-- Byte loss is nats/byte; `BPB = NLL / ln(2)` and byte PPL is `exp(NLL)`. A uniform byte predictor gives BPB=8 and PPL=256. BPE loss uses Qwen2.5-3B token IDs with IDs outside the configured vocabulary mapped to 0, matching the dataset adapter. Its PPL is over that lossy mapped token stream and cannot be compared with byte PPL or interpreted as the likelihood of the original text.
-- BPE models shared one Qwen tokenizer, resolved at runtime. The original audit did not capture its resolved revision (null in the records); that missing pin limits exact BPE reproduction. Inspect tokenizer_revision in each result when reproducing later runs.
-- Causality: change the last 16 of 32 input steps and compare all prefix logits, tolerance `1e-5`. Recurrent chunk equivalence: compare a 128-step forward against four 32-step chunks across all output heads, tolerance `1e-4`. Failed checks remain visible.
-- DeleteGate is disabled consistently: phase 1, elimination rate 0. The audit does not measure token elimination, phase-2 quality, or the benefit of DeleteGate.
-- Forward timing: 10 warm-up steps, then 100 measured single-input forwards. `steps/s = 100 / total measured seconds`; p50 and p95 are per-step latency. One byte-model step consumes a patch of 4 bytes; one BPE step consumes one token. Local decoder inputs are zeros in this microbenchmark. Transformer timing has one input step and no persistent attention context. This is not a context-scaling test or a generation benchmark.
-- Byte generation: three prompts, 128 new bytes per prompt, seeds 42/43/44, temperature 1.0, top-k 40, top-p 0.9. Recurrent models carry state; Transformers reprocess the growing context. Generated bytes/s includes prompt prefill and local sampling. UTF-8 validity is tested on the complete continuation. Samples are retained as hex and decoded text. BPE generation is N/A because vocabulary truncation prevents an equivalent byte-output comparison.
-- Printable ASCII fraction, UTF-8 validity, and repetition are diagnostics; they do not measure factual accuracy, instruction following, or useful language quality. RAM columns report parameter storage, not a measured peak process footprint. Ternary models still hold FP32 parameters and simulate quantization in PyTorch.
+- Hardware: Intel Core i7-8750H, Windows 11, CPU execution, one PyTorch thread, batch size 1 and FP32 parameters. PyTorch 2.6.0+cu124. The measurements use the PyTorch implementation without custom C/C++ kernels.
+- Text: the first 32 non-heading paragraphs of the WikiText-2 raw test split with at least 260 UTF-8 bytes, truncated to 260 bytes at a complete character boundary. This sample supports small-scale comparisons; it is not the full benchmark. Training/test overlap has not been exhaustively checked.
+- Dataset: [Salesforce/wikitext](https://huggingface.co/datasets/Salesforce/wikitext), revision `b08601e04326c79dfdd32d625aee71d232d685c3`, file `wikitext-2-raw-v1/test-00000-of-00001.parquet`. Parquet SHA-256: `5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91`. Sample JSON SHA-256: `11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798`.
+- Corpus license: WikiText text derives from English Wikipedia contributions. The dataset metadata lists CC-BY-SA-3.0 and GFDL; CORPUS_LICENSE.txt in the evaluation files preserves the attribution and terms separately from the model license.
+- Byte scoring predicts the next four-byte patch. The first patch supplies context and incomplete final patches are discarded. LocalByteDecoder receives ground-truth target bytes, shifted internally for causal teacher forcing within the patch. Cross-entropy is summed over targets and divided by their total count.
+- Byte NLL is in nats/byte; BPB = NLL / ln(2), and byte PPL = exp(NLL). A uniform byte predictor has BPB=8 and PPL=256. BPE scoring uses Qwen2.5-3B token IDs, mapping IDs outside the saved vocabulary cap to 0. BPE PPL describes this lossy mapped stream; it is not full-vocabulary text likelihood and is not comparable to byte PPL.
+- The resolved Qwen tokenizer revision was not recorded. This limits exact reproduction of the BPE measurements; the environment and evaluator hashes are preserved in the result files.
+- Prefix causality changes the last 16 of 32 input steps and compares earlier logits at tolerance 1e-5. State chunk equivalence compares one 128-step forward with four 32-step chunks across all output heads at tolerance 1e-4.
+- DeleteGate uses phase 1 with elimination rate 0. Results do not measure phase-2 quality or the effect of token elimination.
+- Forward speed uses 10 warm-up steps and 100 measured single-step forwards. A step consumes four bytes for byte models or one mapped token for BPE models. Local decoder inputs are zeros; Transformer forwards have no persistent attention context. This microbenchmark does not measure growing-context throughput. Parameter MB reports FP32 parameter storage, not peak process RAM.
+- Byte continuations use three prompts, 128 new bytes each, seeds 42/43/44, temperature 1.0, top-k 40 and top-p 0.9. Recurrent models carry state; Transformers reprocess the growing context. Generated bytes/s includes prompt prefill and sampling. UTF-8 validity is checked on each complete continuation. BPE generation is not included because of the lossy vocabulary mapping.
 
-Export repository revision audited: `65951289352c1a036b12ba6d888af037e7c90b13`. Archive inventory revision: `fb402d025e843ed00fb990966bf2430c32eb958c`. Each result records its checkpoint SHA-256, actual parameter count, saved step, configuration, thread count, time, sample hash, and evaluator hash.
+Evaluated export revision: `65951289352c1a036b12ba6d888af037e7c90b13`. Archive inventory revision: `fb402d025e843ed00fb990966bf2430c32eb958c`.
 
-### Reproduce
+### Code and result files
 
-Code: [pinned GitHub checkout](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). Evidence: [original audit records](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06). Exact historical evaluator: [audit_readmes.py](https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/audit_readmes.py) (its SHA-256 matches the recorded suite hash).
+The [GitHub source](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08) contains the model implementation, training recipes and evaluation tools. The [evaluation files](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation) include all 34 per-run JSON results, exact corpus, dependency versions, checkpoint hashes and the reference evaluator location. Use these records when comparing or reproducing the measurements.
 
-From the source checkout, install PyTorch plus `huggingface_hub`, `transformers`, `tokenizers`, `pyarrow`, `psutil`, `numpy`, and `datasets`. Pin the versions from [environment.json](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/environment.json) when reproducing this run.
+## Evaluation results
 
-Code and evidence are maintained in the [pinned GitHub checkout](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). Original source/environment metadata remains in the audit records.
-
-```powershell
-python -m evaluation.audit --storage D:/cpu1-readme-audit --threads 1
-python -m evaluation.audit --storage D:/cpu1-readme-audit --cards
-```
-
-Model downloads, tokenizer files, Hugging Face caches, and temporary files go to D:. Only one model checkpoint is kept in the task storage at a time; it is removed after its result is saved. Interrupted runs resume from matching evaluator hashes. Raw reports remain in `outputs/audit/`.
-
-## Fresh diagnostic results
-
-**Do not rank models across tokenizations or treat a failed-causality loss as autoregressive language-model perplexity.** Saved training metrics are retained separately in the JSONs; the numbers below are recomputed on the shared test sample.
+**Do not rank models across tokenizations or treat a failed-causality loss as autoregressive language-model perplexity.** Saved training metrics are retained separately in the JSONs; the numbers below were measured on the shared test sample.
 
 ### Byte models
 
 | Run | Params M | Saved step | File MB | NLL | BPB | PPL | Causal | State chunks |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| [`run_02`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02.json) | 38.830 | 647 | 155.35 | 1.9702 | 2.8424 | 7.172 | PASS | N/A |
-| [`run_02_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02_v3.json) | 38.830 | 10963 | 155.35 | ERROR | — | — | ERROR | N/A |
-| [`run_02a_byte_only_heads`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02a_byte_only_heads.json) | 38.501 | 641 | 154.04 | 2.4755 | 3.5714 | 11.888 | PASS | N/A |
-| [`run_02a_byte_only_heads_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02a_byte_only_heads_v3.json) | 38.501 | 16327 | 154.03 | ERROR | — | — | ERROR | N/A |
-| [`run_03`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_03.json) | 38.830 | 647 | 155.38 | 2.1622 | 3.1194 | 8.690 | PASS | FAIL |
-| [`run_03_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_03_v3.json) | 38.830 | 6187 | 155.38 | 1.7640 | 2.5449 | 5.836 | PASS | FAIL |
-| [`run_04`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04.json) | 38.854 | 647 | 155.49 | 5.5551 | 8.0144 | 258.565 | PASS | FAIL |
-| [`run_04_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04_r2.json) | 38.854 | 4840 | 155.49 | 5.5676 | 8.0323 | 261.803 | PASS | FAIL |
-| [`run_04_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04_v3.json) | 38.854 | 6074 | 155.49 | 1.5515 | 2.2384 | 4.719 | PASS | FAIL |
-| [`run_05`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05.json) | 38.994 | 649 | 156.06 | 5.5485 | 8.0048 | 256.854 | PASS | FAIL |
-| [`run_05_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05_v3.json) | 38.994 | 4390 | 156.06 | 1.5921 | 2.2969 | 4.914 | PASS | FAIL |
-| [`run_05b_kernel_strict`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05b_kernel_strict.json) | 35.842 | 600 | 143.44 | 5.5789 | 8.0486 | 264.778 | PASS | FAIL |
-| [`run_05b_kernel_strict_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05b_kernel_strict_v3.json) | 35.842 | 2573 | 143.44 | 1.8552 | 2.6764 | 6.393 | PASS | FAIL |
-| [`run_06`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_06.json) | 38.994 | 649 | 156.06 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
-| [`run_06_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_06_v3.json) | 38.994 | 4237 | 156.06 | 1.0572 | 1.5253 | 2.878 | FAIL | FAIL |
-| [`run_07`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_07.json) | 39.029 | 650 | 156.20 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
-| [`run_07_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_07_r2.json) | 39.029 | 4860 | 156.20 | 5.5569 | 8.0169 | 259.010 | FAIL | FAIL |
-| [`run_08`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_08.json) | 38.854 | 647 | 155.46 | 5.5535 | 8.0121 | 258.150 | PASS | N/A |
-| [`run_08_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_08_v3.json) | 38.854 | 3858 | 155.46 | ERROR | — | — | ERROR | N/A |
-| [`run_09`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_09.json) | 39.428 | 657 | 157.81 | 5.5334 | 7.9830 | 253.007 | FAIL | FAIL |
-| [`run_10`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_10.json) | 39.434 | 657 | 157.83 | 5.5337 | 7.9834 | 253.068 | FAIL | FAIL |
-| [`run_14`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14.json) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_14_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14_r2.json) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_14_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14_v3.json) | 10.691 | 9775 | 42.82 | 0.8811 | 1.2712 | 2.414 | FAIL | FAIL |
-| [`run_15`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15.json) | 10.732 | 600 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_15_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15_r2.json) | 10.732 | 1341 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_15_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15_v3.json) | 10.732 | 2350 | 42.99 | 1.3248 | 1.9113 | 3.761 | FAIL | FAIL |
-| [`run_16`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_16.json) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_16_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_16_r2.json) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_02`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_02/model.pt) | 38.830 | 647 | 155.35 | 1.9702 | 2.8424 | 7.172 | PASS | N/A |
+| [`run_02_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_02_v3/model.pt) | 38.830 | 10963 | 155.35 | ERROR | — | — | ERROR | N/A |
+| [`run_02a_byte_only_heads`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_02a_byte_only_heads/model.pt) | 38.501 | 641 | 154.04 | 2.4755 | 3.5714 | 11.888 | PASS | N/A |
+| [`run_02a_byte_only_heads_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_02a_byte_only_heads_v3/model.pt) | 38.501 | 16327 | 154.03 | ERROR | — | — | ERROR | N/A |
+| [`run_03`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_03/model.pt) | 38.830 | 647 | 155.38 | 2.1622 | 3.1194 | 8.690 | PASS | FAIL |
+| [`run_03_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_03_v3/model.pt) | 38.830 | 6187 | 155.38 | 1.7640 | 2.5449 | 5.836 | PASS | FAIL |
+| [`run_04`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_04/model.pt) | 38.854 | 647 | 155.49 | 5.5551 | 8.0144 | 258.565 | PASS | FAIL |
+| [`run_04_r2`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_04_r2/model.pt) | 38.854 | 4840 | 155.49 | 5.5676 | 8.0323 | 261.803 | PASS | FAIL |
+| [`run_04_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_04_v3/model.pt) | 38.854 | 6074 | 155.49 | 1.5515 | 2.2384 | 4.719 | PASS | FAIL |
+| [`run_05`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_05/model.pt) | 38.994 | 649 | 156.06 | 5.5485 | 8.0048 | 256.854 | PASS | FAIL |
+| [`run_05_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_05_v3/model.pt) | 38.994 | 4390 | 156.06 | 1.5921 | 2.2969 | 4.914 | PASS | FAIL |
+| [`run_05b_kernel_strict`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_05b_kernel_strict/model.pt) | 35.842 | 600 | 143.44 | 5.5789 | 8.0486 | 264.778 | PASS | FAIL |
+| [`run_05b_kernel_strict_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_05b_kernel_strict_v3/model.pt) | 35.842 | 2573 | 143.44 | 1.8552 | 2.6764 | 6.393 | PASS | FAIL |
+| [`run_06`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_06/model.pt) | 38.994 | 649 | 156.06 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
+| [`run_06_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_06_v3/model.pt) | 38.994 | 4237 | 156.06 | 1.0572 | 1.5253 | 2.878 | FAIL | FAIL |
+| [`run_07`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_07/model.pt) | 39.029 | 650 | 156.20 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
+| [`run_07_r2`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_07_r2/model.pt) | 39.029 | 4860 | 156.20 | 5.5569 | 8.0169 | 259.010 | FAIL | FAIL |
+| [`run_08`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_08/model.pt) | 38.854 | 647 | 155.46 | 5.5535 | 8.0121 | 258.150 | PASS | N/A |
+| [`run_08_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_08_v3/model.pt) | 38.854 | 3858 | 155.46 | ERROR | — | — | ERROR | N/A |
+| [`run_09`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_09/model.pt) | 39.428 | 657 | 157.81 | 5.5334 | 7.9830 | 253.007 | FAIL | FAIL |
+| [`run_10`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_10/model.pt) | 39.434 | 657 | 157.83 | 5.5337 | 7.9834 | 253.068 | FAIL | FAIL |
+| [`run_14`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_14/model.pt) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_14_r2`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_14_r2/model.pt) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_14_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_14_v3/model.pt) | 10.691 | 9775 | 42.82 | 0.8811 | 1.2712 | 2.414 | FAIL | FAIL |
+| [`run_15`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_15/model.pt) | 10.732 | 600 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_15_r2`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_15_r2/model.pt) | 10.732 | 1341 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_15_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_15_v3/model.pt) | 10.732 | 2350 | 42.99 | 1.3248 | 1.9113 | 3.761 | FAIL | FAIL |
+| [`run_16`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_16/model.pt) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_16_r2`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_16_r2/model.pt) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
 
 ### BPE models (mapped Qwen token stream)
 
 | Run | Params M | Saved step | File MB | NLL | BPB | PPL | Causal | State chunks |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| [`run_01`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_01.json) | 54.735 | 912 | 218.97 | 5.3742 | — | 215.773 | PASS | N/A |
-| [`run_01_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_01_v3.json) | 54.735 | 12173 | 218.97 | ERROR | — | — | ERROR | N/A |
-| [`run_13`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13.json) | 12.548 | 600 | 50.24 | 6.3429 | — | 568.445 | PASS | FAIL |
-| [`run_13_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13_r2.json) | 12.548 | 1568 | 50.24 | 6.4205 | — | 614.313 | PASS | FAIL |
-| [`run_13_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13_v3.json) | 12.548 | 9290 | 50.24 | 6.7925 | — | 891.155 | PASS | FAIL |
+| [`run_01`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_01/model.pt) | 54.735 | 912 | 218.97 | 5.3742 | — | 215.773 | PASS | N/A |
+| [`run_01_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_01_v3/model.pt) | 54.735 | 12173 | 218.97 | ERROR | — | — | ERROR | N/A |
+| [`run_13`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_13/model.pt) | 12.548 | 600 | 50.24 | 6.3429 | — | 568.445 | PASS | FAIL |
+| [`run_13_r2`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_13_r2/model.pt) | 12.548 | 1568 | 50.24 | 6.4205 | — | 614.313 | PASS | FAIL |
+| [`run_13_v3`](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/65951289352c1a036b12ba6d888af037e7c90b13/run_13_v3/model.pt) | 12.548 | 9290 | 50.24 | 6.7925 | — | 891.155 | PASS | FAIL |
 
 | BPE run | IDs mapped to 0 | Vocabulary cap |
 |---|---:|---:|
@@ -193,7 +180,7 @@ Model downloads, tokenizer files, Hugging Face caches, and temporary files go to
 
 ### Example continuations
 
-The following fixed examples use the first audit prompt, `The history of artificial intelligence`, seed 42, and the sampling settings above. They illustrate why low diagnostic loss or valid UTF-8 alone does not establish useful text generation. Escapes preserve the recorded characters; complete byte sequences and all three prompts are in the JSON reports.
+The following fixed examples use the first evaluation prompt, `The history of artificial intelligence`, seed 42, and the sampling settings above. They illustrate why low diagnostic loss or valid UTF-8 alone does not establish useful text generation. Escapes preserve the recorded characters; complete byte sequences and all three prompts are in the JSON reports.
 
 `run_04_v3`:
 
@@ -247,19 +234,19 @@ The following fixed examples use the first audit prompt, `The history of artific
 | `run_16` | PASS | PASS | PASS | FAIL | PASS | PASS | FAIL |
 | `run_16_r2` | PASS | PASS | PASS | FAIL | PASS | PASS | FAIL |
 
-**Causality failures: 14/34.** `run_06`, `run_06_v3`, `run_07`, `run_07_r2`, `run_09`, `run_10`, `run_14`, `run_14_r2`, `run_14_v3`, `run_15`, `run_15_r2`, `run_15_v3`, `run_16`, `run_16_r2`
+**Causality failures: 14/30 finite-output models.** `run_06`, `run_06_v3`, `run_07`, `run_07_r2`, `run_09`, `run_10`, `run_14`, `run_14_r2`, `run_14_v3`, `run_15`, `run_15_r2`, `run_15_v3`, `run_16`, `run_16_r2`
 
 Changing future inputs changed prefix logits in these models. Some saved configurations enable noncausal Bolmo cross-patch operations; the test detects the effect without isolating its individual source. Their full-sequence losses are descriptive reconstruction scores and cannot establish causal prediction quality.
 
 **State chunk failures: 26.** `run_03`, `run_03_v3`, `run_04`, `run_04_r2`, `run_04_v3`, `run_05`, `run_05_v3`, `run_05b_kernel_strict`, `run_05b_kernel_strict_v3`, `run_06`, `run_06_v3`, `run_07`, `run_07_r2`, `run_09`, `run_10`, `run_13`, `run_13_r2`, `run_13_v3`, `run_14`, `run_14_r2`, `run_14_v3`, `run_15`, `run_15_r2`, `run_15_v3`, `run_16`, `run_16_r2`
 
-These configurations did not reproduce a full-sequence forward when carrying state between chunks at the stated tolerance. An O(1) state tensor alone does not establish correct streaming equivalence. No fix to the trained architectures or weights was made for this audit.
+These configurations did not reproduce a full-sequence forward when carrying state between chunks at the stated tolerance. An O(1) state tensor alone does not establish correct streaming equivalence. These results describe the published implementation and checkpoints.
 
-### Recurrent implementation diagnostic
+### Recurrent scan implementation
 
-The source’s `AblationMLGRU._parallel_scan` was tested independently against its defining serial recurrence with random candidate/forget tensors, seed 19, shape `[1,32,8]`, FP32. The maximum difference was **19.100506**; splitting the same scan into two 16-step chunks differed by **11.471270** (tolerance `1e-4`). See [`implementation_diagnostics.json`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/implementation_diagnostics.json) and [evaluation/diagnostics.py](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/evaluation/diagnostics.py).
+The source’s `AblationMLGRU._parallel_scan` was tested independently against its defining serial recurrence with random candidate/forget tensors, seed 19, shape `[1,32,8]`, FP32. The maximum difference was **19.100506**; splitting the same scan into two 16-step chunks differed by **11.471270** (tolerance `1e-4`). See the [recorded implementation results](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation) and [evaluation/diagnostics.py](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/evaluation/diagnostics.py).
 
-The implementation replaces log-cumulative-sum-exp with a cumulative-maximum normalization followed by a cumulative sum; accumulated terms are not rescaled when that maximum changes. The observed outputs therefore do not satisfy the intended recurrence. This is a source implementation defect; disabling or repairing the scan would create a different inference protocol and was not silently applied to these results. The trained-checkpoint audit uses the source as supplied.
+The implementation replaces log-cumulative-sum-exp with a cumulative-maximum normalization followed by a cumulative sum; accumulated terms are not rescaled when that maximum changes. The observed outputs therefore do not satisfy the intended recurrence. This is a source implementation defect; disabling or repairing the scan would create a different inference protocol and was not silently applied to these results. The measurements use the published implementation.
 
 ### Evaluation errors
 
@@ -272,15 +259,17 @@ Scores and speed are unavailable when model loading or numerical evaluation fail
 | `run_02a_byte_only_heads_v3` | ValueError: nonfinite loss |
 | `run_08_v3` | ValueError: nonfinite loss |
 
-## Source and dataset provenance
+## Training and architecture
 
-Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are maintained in the source repository on GitHub. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.
+Training, dataset preparation and Kaggle/Lightning recipes are maintained in the [GitHub source](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08); AMD training is also supported by the source. The [saved configurations](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/published) record the 34 exported runs, checkpoint hashes, parameter counts and saved steps. Current presets can differ from the published runs; select a recorded configuration explicitly.
 
-The [dataset review](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) documents short/empty teacher arrays, an observed dense-signal reader alignment defect, and UTF-8 conversion limitations. These observations do not isolate their effect on a training run. No weights, stored datasets or numerical model implementation were repaired in this documentation update.
+Configured token budgets, including the v3 150 tokens/parameter setting, are not measurements of completed training exposure. The exact source commit and full dependency lock for each training job were not recorded.
 
-## Architecture recorded in each checkpoint
+The [training dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) contains teacher signals with documented short/empty arrays, dense-signal alignment limitations in the reader and UTF-8 conversion limitations. Their effect on each trained checkpoint has not been isolated.
 
-Run names identify experiments; dimensions and features below come from the saved configuration. FP16 is the training quantization label, while this audit executes the loaded tensors in FP32. “50M” and “10M” in older cards were design families, not exact model sizes.
+### Saved architecture settings
+
+Dimensions and features below come from the recorded configurations. The quantization column is the training label; all evaluated exports contain FP32 parameters. Parameter counts are measured from the loaded models.
 
 | Run | Mixer | Tokens | Quant. label | Width / layers / FFN | Local decoder | FP residual | Bolmo | DeleteGate | PFNet hidden | Channel decay |
 |---|---|---|---|---|---|---|---|---|---:|---|
@@ -319,8 +308,8 @@ Run names identify experiments; dimensions and features below come from the save
 | `run_16` | mlgru | byte_dynamic | ternary | 320 / 8 / 853 | yes | yes | yes | yes | 0 | no |
 | `run_16_r2` | mlgru | byte_dynamic | ternary | 320 / 8 / 853 | yes | yes | yes | yes | 0 | no |
 
-These experiments change parameter counts, representations, training signal, budgets, saved steps, and sometimes multiple architectural settings. The audit is not a controlled causal estimate of the benefit of an individual component. `chinchilla_tokens_per_param` is a configured budget; it does not prove that a run completed that budget. Actual saved steps are reported separately.
+These experiments change parameter counts, representations, training signal, budgets, saved steps, and sometimes multiple architectural settings. These differences prevent isolating the benefit of an individual component from these results alone. `chinchilla_tokens_per_param` is a configured budget; it does not prove that a run completed that budget. Actual saved steps are reported separately.
 
 ## License
 
-The Hub metadata declares Apache-2.0 for the model repository. The source checkout does not include a standalone LICENSE file. Upstream datasets and tokenizer assets retain their own licenses.
+The model repository declares Apache-2.0. Upstream datasets, corpus excerpts and tokenizer assets retain their own licenses.
