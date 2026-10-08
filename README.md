@@ -17,6 +17,7 @@ The published collection contains **34 research checkpoints with 10.7M–54.7M p
 - [Checkpoint formats and export](#checkpoint-formats-and-export)
 - [Reproduce the evaluation](#reproduce-the-evaluation)
 - [Native CPU kernels](#native-cpu-kernels)
+- [Experiment provenance and recovered history](#experiment-provenance-and-recovered-history)
 - [Repository map](#repository-map)
 - [Current limitations and next work](#current-limitations-and-next-work)
 - [Research references](#research-references)
@@ -122,7 +123,7 @@ The main family uses width 512, 12 layers, and FFN width 1,376. The small family
 | `run_15` | Boundary-aware bytes / MLGRU | Adds teacher hidden-state alignment | 10.732M |
 | `run_16` | Boundary-aware bytes / MLGRU | Small CE-only control on raw FineWeb | 10.691M |
 
-Published exports include selected `_r2` and `_v3` names. Current training presets include selected `_r2` and `_r3` names; **published names and current CLI presets are not identical**. Use `python -m training.ablation --help` for trainable names and the saved config to load an export. A suffix does not prove that architecture, data exposure, or training settings stayed constant.
+Published exports include selected `_r2` and `_v3` names. Current training presets include selected `_r2` and `_r3` names; **published names and current CLI presets are not identical**. Use `--config experiments/published/configs/<run>.json` to select one of the 34 recorded published configurations; without it, the CLI uses current presets. See [the manifest](experiments/published/manifest.json). A suffix does not prove that architecture, data exposure, or training settings stayed constant.
 
 Source budgets use `chinchilla_tokens_per_param` (including 2, 15, and 50 in different rounds). These are configured targets, not measured exposure. Complete saved configs and steps are in [the audit records](https://huggingface.co/Cukinator/cpu1-ablations-final/tree/d38678e7c5d18577f36edade64495237c72a44b5/evaluation).
 
@@ -331,7 +332,7 @@ python -m data_pipeline.prepare --n_docs 50000 --stream-to-hub
 python -m data_pipeline.prepare --logprobs-dir D:/cpu1/logprobs --output-dir D:/cpu1/dataset
 ```
 
-The full pipeline can publish as it builds; it is not a read-only preview. `--skip_extraction` reuses extraction output, `--only_upload` publishes existing data, and `--shard-offset` sets numbering. Full-pipeline output defaults to `./shared_dataset`. Use this module directly in cloud environments as well; old machine-specific upload wrappers are no longer part of the source repository.
+The [platform recipes](docs/provenance/README.md#current-platform-recipes) print a plan until `--execute` is supplied. Kaggle preserves the 500-document chunk recipe and Lightning the 3,000-document recipe, both with a configured 850,000-document target. These targets do not establish the number actually processed. The full pipeline can publish as it builds; it is not a read-only preview. `--skip_extraction` reuses extraction output, `--only_upload` publishes existing data, and `--shard-offset` sets numbering. Full-pipeline output defaults to `./shared_dataset`. Current package-based launchers live in `runners/`; the original platform wrappers and notebooks are preserved in Git history. Optional mounts use `cpu1/hub_storage.py` and require a separately installed hf-mount on Linux/macOS.
 
 ## Checkpoint formats and export
 
@@ -397,7 +398,7 @@ Correctness covers shapes, probabilities, determinism, recurrent carry, and pref
 
 The Qwen tokenizer's resolved commit was not captured (`null` in the environment record). Models and corpus are pinned, but this missing pin limits exact BPE reproducibility. Dependencies are recorded rather than locked.
 
-Only the common audit and its supporting tools are included here. Older runners and ad hoc reports were retired. Historical evidence remains on Hugging Face; restored reports and newly generated results stay under ignored `outputs/audit/`.
+The current tree contains the common audit and its supporting tools. Historical runners, experimental variants and 34 older training reports are preserved in Git history; they use different protocols and are not fresh evaluation results. Historical evidence remains on Hugging Face; restored reports and newly generated results stay under ignored `outputs/audit/`.
 
 ## Native CPU kernels
 
@@ -420,17 +421,41 @@ g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math -std=c
 
 The driver accepts `--d_model`, `--n_layers`, `--d_ff`, and `--fp_rank`; defaults differ from the larger PyTorch model. `--local 1` includes local decoding. Multi-stream aggregate and pipeline patch throughput are not end-to-end trained-model generation. [Build notes](inference/links.md) cover further experiments; trained-checkpoint loading and numerical parity need separate verification.
 
+## Experiment provenance and recovered history
+
+The first cleanup filtered experimental code too broadly. The correction restores **148 historical paths**: extraction/marginalization, early architectures, ablation implementations, Kaggle/Lightning code and notebooks, historical evaluation/inference, and 34 training reports plus their summary. The 87 original commits and the security commit retain their messages, authors, dates and relationships after remapping; historical hashes change. The current tree keeps the organized packages.
+
+[The provenance review](docs/provenance/README.md) explains every category. [The restored-file manifest](docs/provenance/restored-files.json) lists all recovered paths, their hashes and source links, plus the 109 paths still excluded. [The history map](docs/provenance/history-map.json) maps original commit IDs to their public replacements. Downloaded weights/caches, papers, compiled outputs and credentials remain excluded.
+
+[The published configuration manifest](experiments/published/manifest.json) binds 34 configuration records to pinned checkpoint hashes, saved steps, audited parameter counts and result URLs. The `_v3` records preserve the 150 tokens/parameter setting, consistent with the AMD preset. This does not establish each job's source commit or platform. The records came from the audit loader, which disabled gradient checkpointing; GPU training enables it. They are not an untouched copy of the checkpoint configuration bytes.
+
+```powershell
+# Print cloud recipes without starting work.
+python -m runners.kaggle dataset
+python -m runners.lightning dataset
+python -m runners.lightning ablation --backend amd --run run_04_v3 --config experiments/published/configs/run_04_v3.json
+
+# Inspect three pinned dataset shards and a synthetic tokenizer case, using D:.
+python -m evaluation.dataset --storage D:/cpu1-readme-audit --tokenizer
+```
+
+The dataset inspection reproduced a dense-signal reader mismatch (1,333 nonzero stored distributions became 369) and short boolean masks treated as indices. The tokenizer test also reproduced replacement-character decoding for partial UTF-8 tokens. See [the dataset card](docs/model_cards/cpu1-ablation-dataset.md) for sample scope and evidence. These defects remain visible; the recovery did not repair data or trained behavior, retrain models, or re-date the October 6 model evaluation. Exact end-to-end reconstruction remains limited by missing job/source/environment and per-shard extraction records.
+
 ## Repository map
 
 ```text
 cpu1/
   components.py             Shared modules, adapters, losses, checkpoint codecs
+  hub_storage.py            Optional HF mounts; credentials in child environment
 training/
   ablation.py               Main training/inference entry point and presets
   ablation_amd.py           ROCm-oriented variant
   final.py                  Larger CPU1ModelV2 training path
+  configuration.py          Explicit published configuration loader
 data_pipeline/
   prepare.py                Teacher extraction and dataset preparation
+runners/                    Kaggle/Lightning recipes; CUDA or AMD training
+experiments/published/      34 config records and pinned checkpoint manifest
 evaluation/
   audit.py                  Common scoring, correctness, timing and generation
   checkpoints.py            Strict checkpoint loader and model metadata
@@ -440,9 +465,11 @@ evaluation/
   diagnostics.py            Isolated recurrence diagnostic
   verify_checkpoints.py     Sequential packed/FP32 loading example
   helpers.py                Check result handling
+  dataset.py                Pinned shard/reader/tokenizer inspection
 inference/                  Native kernels, synthetic benchmark, build notes
 tests/                      Offline evaluator and integration tests
 docs/model_cards/           Three canonical model/dataset cards
+docs/provenance/            Recovery report, file manifest and commit map
 requirements/               Training, audit and data dependency sets
 README.md                   Project guide and verified status
 .gitignore                  Local assets, credentials, reports and build outputs
@@ -456,7 +483,7 @@ README.md                   Project guide and verified status
 
 Saved Bolmo configurations with noncausal boundary/cross-patch context allow future patches to change prefix logits in 14 exports. Fixing causality flags or recurrence changes behavior, so repairs need fresh evaluation rather than inheriting these scores. Existing weights may need retraining.
 
-Next milestones: correct and validate recurrence; make the boundary path causal in full and incremental execution; define independent, comparable splits; rerun quality/generation; and establish trained-checkpoint parity for native kernels. This collection currently has no demonstrated larger-model production result, reliable gate speedup, external leaderboard result, or packed native generation rate.
+Next milestones: resolve and validate teacher array positional layout and UTF-8 conversion; correct and validate recurrence; make the boundary path causal in full and incremental execution; define independent, comparable splits; rerun quality/generation; and establish trained-checkpoint parity for native kernels. This collection currently has no demonstrated larger-model production result, reliable gate speedup, external leaderboard result, or packed native generation rate.
 
 ## Research references
 

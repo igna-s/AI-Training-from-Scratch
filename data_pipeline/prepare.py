@@ -3,7 +3,7 @@ Dataset creation for CPU-1: BPE-to-byte alignment and dataset pipeline.
 
 Section 1 - Core algorithms: BPE-to-byte alignment, first-byte marginalization,
             document packing, and dynamic patch marginalization.
-Section 2 - Pipeline: teacher logprob extraction (Qwen-7B), byte-level and
+Section 2 - Pipeline: teacher logprob extraction (Qwen2.5-3B default), byte-level and
             BPE dataset construction, and HuggingFace Hub upload.
 
 Usage:
@@ -3181,7 +3181,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
     # Si hf-mount esta habilitado, montar bucket y escribir directo ahi
     mount_path = None
     if use_hf_mount:
-        from hf_mount import mount_bucket
+        from cpu1.hub_storage import mount_bucket
         mount_path = mount_bucket(DATASET_BUCKET)
         OUTPUT_DIR = mount_path
         print(f"[hf-mount] Output dir -> {OUTPUT_DIR} (bucket: {DATASET_BUCKET})")
@@ -3199,7 +3199,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
         n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
         _gpu_profile = gpu_profile_override or detect_gpu_profile()
         print(f"\n{'=' * 60}")
-        print("STEP 2: Extracting teacher logprobs (Qwen-7B)")
+        print(f"STEP 2: Extracting teacher logprobs ({TEACHER_MODEL})")
         print(f"  GPU: {_gpu_profile['name']}  ({_gpu_profile['vram_gb']:.1f} GB)  "
               f"fp8={_gpu_profile['fp8']}  batch={_gpu_profile['batch_size']}  "
               f"seq={_gpu_profile['max_tokens']}")
@@ -3874,7 +3874,7 @@ def build_full_dataset(corpus_name: str = "HuggingFaceFW/fineweb",
             print(f"\n{'=' * 60}")
             print("STEP 4: Datos ya en HF Bucket (hf-mount, sin upload separado)")
             print(f"{'=' * 60}")
-            from hf_mount import unmount
+            from cpu1.hub_storage import unmount
             unmount(mount_path)
         else:
             print(f"\n{'=' * 60}")

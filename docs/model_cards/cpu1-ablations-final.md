@@ -270,6 +270,12 @@ Scores and speed are unavailable when model loading or numerical evaluation fail
 | `run_02a_byte_only_heads_v3` | ValueError: nonfinite loss |
 | `run_08_v3` | ValueError: nonfinite loss |
 
+## Source and dataset provenance
+
+Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are included in `evaluation/source/`. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.
+
+The [dataset review](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) documents short/empty teacher arrays, an observed dense-signal reader alignment defect, and UTF-8 conversion limitations. These observations do not isolate their effect on a training run. No weights, stored datasets or numerical model implementation were repaired in this documentation update.
+
 ## Architecture recorded in each checkpoint
 
 Run names identify experiments; dimensions and features below come from the saved configuration. FP16 is the training quantization label, while this audit executes the loaded tensors in FP32. “50M” and “10M” in older cards were design families, not exact model sizes.
