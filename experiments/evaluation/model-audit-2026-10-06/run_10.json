@@ -1,0 +1,216 @@
+{
+  "run": "run_10",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_10/model.pt",
+  "sha256": "0419cfbeda000493465f3d275352a76a59511232d553275bfcbe0aa45cd84d16",
+  "file_bytes": 157833334,
+  "date_utc": "2026-10-06T22:33:55.298513+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 512,
+    "n_layers": 12,
+    "d_ff": 1376,
+    "fp_rank": 4,
+    "n_heads": 8,
+    "head_dim": 64,
+    "window_size": 512,
+    "pfnet_hidden": 32,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 50,
+    "total_steps": 657,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "ce_only",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "HuggingFaceFW/fineweb",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints",
+    "save_every_steps": 32,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 500,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 2,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": true,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": true,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": true,
+    "use_boundary_predictor": false,
+    "use_delete_gate": true,
+    "use_embedding_alignment": false,
+    "name": "cpu1_decay_learned",
+    "token_mixer": "mlgru",
+    "tokenization": "byte_dynamic",
+    "quantization": "ternary",
+    "fp_residual": true,
+    "use_bolmo_gating": true,
+    "mlgru_per_channel_decay": true,
+    "description": "run_09 + per-channel learnable decay in MLGRU (RWKV/HGRN2-style). Each hidden dim has its own decay rate — d_model × n_layers scalars total. State expansion stays at 1; isolated effect of decay alone.",
+    "cites": [
+      "MatMul-free LM (Zhu et al., 2024)",
+      "BitNet b1.58 (Wang et al., 2024)",
+      "BLT (Pagnoni et al., 2024)",
+      "MrT5 (Pagliardini et al., 2024)",
+      "RWKV (Peng et al., 2023)",
+      "HGRN2 (Qin et al., 2024)"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 657,
+  "stored_training_metrics": {
+    "run_name": "cpu1_decay_learned",
+    "perplexity": 253.08015455104868,
+    "tokens_per_sec_cpu": 10.463007160804935,
+    "ram_mb": 157.736332,
+    "val_loss": 5.533706254959107,
+    "n_params_M": 39.434083
+  },
+  "parameters": 39434083,
+  "parameter_bytes": 157736332,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 2.71,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.38,
+      "result": {
+        "max_error": 2.384185791015625e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.53,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 0.106193"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 1.23,
+      "result": {
+        "modules_checked": 125
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.13,
+      "result": {
+        "state_kb": 24.0,
+        "batch_size": 1,
+        "dtype": "float32"
+      }
+    },
+    "causality": {
+      "status": "FAIL",
+      "max_prefix_logit_diff": 0.016640126705169678,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "loss": {
+    "mean_nll": 5.53365758061409,
+    "targets": 8192,
+    "unit": "byte",
+    "perplexity": 253.06783634008204,
+    "bits_per_byte": 7.983380349529567,
+    "mapped_ids_fraction": null,
+    "source": "shared_wikitext_test_sample",
+    "teacher_forcing": true,
+    "delete_gate": "disabled (phase 1, elimination 0)"
+  },
+  "benchmark": {
+    "forward_steps_per_second": 7.143064444796179,
+    "p50_ms": 135.04690000263508,
+    "p95_ms": 166.9024000002537,
+    "jitter_cv": 0.11469699809601201,
+    "warmup_steps": 10,
+    "measured_steps": 100,
+    "context_steps": 1,
+    "backend": "PyTorch FP32; quantization simulated for ternary modules; no C++ kernels",
+    "meaning": "one input patch/token forward, zero local decoder targets; excludes autoregressive local sampling; Transformer has no persistent context"
+  },
+  "generation": [
+    {
+      "prompt": "The history of artificial intelligence",
+      "seed": 42,
+      "hex": "362faf756de86c115521e5800f676e2574431be2119103f326adff9237257dd6f9d47463e8c3112adf8566e8c83ca89dace71057ff029709f9035e77df8ed58f1ca39333382a1cb2ba85f75bdf8529c3a1e379916f6679070f7772cdf961e3acf1eecb93736498ea36fd413930da4eb837d9d595ac1e100155983d3130b33dc6",
+      "text_replacement_decode": "6/�um�l\u0011U!�\u000fgn%tC\u001b�\u0011�\u0003�&���7%}���tc��\u0011*߅f��<����\u0010W�\u0002�\t�\u0003^wߎՏ\u001c��38*\u001c����[߅)á�y�ofy\u0007\u000fwr��a���˓sd��6�A90�N�7�Օ�\u001e\u0010\u0001U�=10�=�",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.390625,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 5.345480199997837,
+      "generated_bytes_per_second": 23.945463309367753
+    },
+    {
+      "prompt": "Once upon a time",
+      "seed": 43,
+      "hex": "0138e579912be85209d78749acc9e36b556f6cbb387afacd374d5be5fff8d3f1c9ba847d125312a0983aa08ad871619257c3835355b5cde31762697198564c02f9f68d71737c10e7c9df9a1f38558113c69bbf94ac6680fd98d44c85115ae2d86de8c375de0250e4983cf1dfff60f8efdc46a8a4178f6071ac7a381aba83c9aa",
+      "text_replacement_decode": "\u00018�y�+�R\tׇI���kUol�8z��7M[�����ɺ�}\u0012S\u0012��:���qa�WÃSU���\u0017biq�VL\u0002���qs|\u0010��ߚ\u001f8U�\u0013ƛ���f����L�\u0011Z��m��u�\u0002P�<���`���F��\u0017�`q�z8\u001a��ɪ",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.359375,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 5.719411299993226,
+      "generated_bytes_per_second": 22.3799257102128
+    },
+    {
+      "prompt": "The purpose of science is",
+      "seed": 44,
+      "hex": "ea91cc35a7869a8e5272106136f4382dc9413655308622d0c6a9ac48f9812fc138a99bef1547c3b4b4fac3c34825b3a055710407520ea1c0379ff6afba8d717d49cd1729aee5a444d3ff05c1f9f551b4a1320f36ae7a4c8f4950ffbd6232b4a762d33d87f1db606dd3838c1ca7e0e16a1c09a8efd347e8301c79a68aa1cc272f",
+      "text_replacement_decode": "��5����Rr\u0010a6�8-�A6U0�\"�Ʃ�H��/�8���\u0015Gô����H%��Uq\u0004\u0007R\u000e��7�����q}I�\u0017)��D��\u0005���Q��2\u000f6�zL�IP��b2��b�=���`mӃ�\u001c���j\u001c\t���G�0\u001cy����'/",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.3671875,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 5.227192400001513,
+      "generated_bytes_per_second": 24.487332817510783
+    }
+  ],
+  "process_rss_bytes": 1092292608,
+  "total_seconds": 54.50163139999495,
+  "evaluation_complete": true
+}

@@ -1,0 +1,210 @@
+{
+  "run": "run_05",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_05/model.pt",
+  "sha256": "38009430f02aa997948340acb7e9ea80956fc777c0fcb61ab878dd7bd346ced2",
+  "file_bytes": 156057958,
+  "date_utc": "2026-10-06T22:23:31.376238+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 512,
+    "n_layers": 12,
+    "d_ff": 1376,
+    "fp_rank": 4,
+    "n_heads": 8,
+    "head_dim": 64,
+    "window_size": 512,
+    "pfnet_hidden": 0,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 50,
+    "total_steps": 649,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "ce_only",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "HuggingFaceFW/fineweb",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints",
+    "save_every_steps": 32,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 500,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 2,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": true,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": false,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": true,
+    "use_boundary_predictor": false,
+    "use_delete_gate": false,
+    "use_embedding_alignment": false,
+    "name": "mlgru_byte_ternary_fpres",
+    "token_mixer": "mlgru",
+    "tokenization": "byte",
+    "quantization": "ternary",
+    "fp_residual": true,
+    "description": "+FPResidual — low-rank FP16 correction alongside ternary weights. CPU-1 core architecture.",
+    "cites": [
+      "Slender-Mamba (Yu et al., 2025)",
+      "BitNet b1.58"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 649,
+  "stored_training_metrics": {
+    "run_name": "mlgru_byte_ternary_fpres",
+    "perplexity": 257.65401201355445,
+    "tokens_per_sec_cpu": 10.266378626809718,
+    "ram_mb": 155.975684,
+    "val_loss": 5.5516176462173465,
+    "n_params_M": 38.993921
+  },
+  "parameters": 38993921,
+  "parameter_bytes": 155975684,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 4.38,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.59,
+      "result": {
+        "max_error": 2.384185791015625e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.69,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 0.104971"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 2.27,
+      "result": {
+        "modules_checked": 101
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.19,
+      "result": {
+        "state_kb": 24.0,
+        "batch_size": 1,
+        "dtype": "float32"
+      }
+    },
+    "causality": {
+      "status": "PASS",
+      "max_prefix_logit_diff": 0.0,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "loss": {
+    "mean_nll": 5.548507809638977,
+    "targets": 8192,
+    "unit": "byte",
+    "perplexity": 256.8539947486606,
+    "bits_per_byte": 8.004804701299838,
+    "mapped_ids_fraction": null,
+    "source": "shared_wikitext_test_sample",
+    "teacher_forcing": true,
+    "delete_gate": "disabled (phase 1, elimination 0)"
+  },
+  "benchmark": {
+    "forward_steps_per_second": 6.105868456405801,
+    "p50_ms": 156.2332499997865,
+    "p95_ms": 224.46140000101877,
+    "jitter_cv": 0.2136362302695608,
+    "warmup_steps": 10,
+    "measured_steps": 100,
+    "context_steps": 1,
+    "backend": "PyTorch FP32; quantization simulated for ternary modules; no C++ kernels",
+    "meaning": "one input patch/token forward, zero local decoder targets; excludes autoregressive local sampling; Transformer has no persistent context"
+  },
+  "generation": [
+    {
+      "prompt": "The history of artificial intelligence",
+      "seed": 42,
+      "hex": "6da833d3949e36eb06bcd0819d6d73cb865d1a486876770f94f7824275c3d6d48dcb65c70d84ea7760d0e66873ef3279688a98ceb54d5756bf99025ab54c68004670bb7289654b3519a127c64e9c6e8adc65d8febbf259b004ffa7378ae9af891142772576c258ebe174aad6e126546075620af8d7298ff1d0a2599468ced3a4",
+      "text_replacement_decode": "m�3Ӕ�6�\u0006�Ё�msˆ]\u001aHhvw\u000f���Bu��ԍ�e�\r��w`��hs�2yh��εMWV��\u0002Z�Lh\u0000Fp�r�eK5\u0019�'�N�n��e����Y�\u0004��7�鯉\u0011Bw%v�X��t���&T`ub\n��)��ТY�h�Ӥ",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.421875,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 6.52301720000105,
+      "generated_bytes_per_second": 19.622821169317078
+    },
+    {
+      "prompt": "Once upon a time",
+      "seed": 43,
+      "hex": "076a7083eeeaabcdb112ca83d0e614169d144f3689a46ad375ec81f52836ab9568196f914e1be2132d8f2039b73be72716c7ce07118c5970b551b4c789ad9dd18db7cfb976a59d8e6007e018d0ca034de7c5593f19b6aae68a3a6473190a1e67c7a5d91dd7bc24720dda77119d54b31ddc66411fb5ee111a5b9d99c81925e4bb",
+      "text_replacement_decode": "\u0007jp���ͱ\u0012ʃ��\u0014\u0016�\u0014O6��j�u��(6��h\u0019o�N\u001b�\u0013-� 9�;�'\u0016��\u0007\u0011�Yp�Q�ǉ��э�Ϲv���`\u0007�\u0018��\u0003M��Y?\u0019���:ds\u0019\n\u001egǥ�\u001d׼$r\r�w\u0011�T�\u001d�fA\u001f��\u0011\u001a[���\u0019%�",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.296875,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 7.636591199996474,
+      "generated_bytes_per_second": 16.761405272035397
+    },
+    {
+      "prompt": "The purpose of science is",
+      "seed": 44,
+      "hex": "6d8831f5196a0c78b787ab598d08ed2960bb26f0b504340d11a78d7ddc90ee33686ae4f3b539d85b5b4b3fcaf3d466adc792a65a8353358d75309d7a166171d40d43e51ee2258a329dd163118d148b00afd9d0e0acf9a6cec74432afb30a0b1fe1cb21d911d1377ab189d6637f4da85f064e1c736a0a4c9deea268cae11cd252",
+      "text_replacement_decode": "m�1�\u0019j\fx���Y�\b�)`�&�\u00044\r\u0011��}ܐ�3hj��9�[[K?���f�ǒ�Z�S5�u0�z\u0016aq�\rC�\u001e�%�2��c\u0011�\u0014�\u0000��������D2��\n\u000b\u001f��!�\u0011�7z���cM�_\u0006N\u001csj\nL��h��\u001c�R",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.3828125,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 7.942104800000379,
+      "generated_bytes_per_second": 16.11663447200972
+    }
+  ],
+  "process_rss_bytes": 1044160512,
+  "total_seconds": 74.16187000000355,
+  "evaluation_complete": true
+}

@@ -1,0 +1,208 @@
+{
+  "run": "run_05b_kernel_strict_v3",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_05b_kernel_strict_v3/model.pt",
+  "sha256": "7330a3759f2bcbe03952132b56e11110a2d754c0ccbca896deef7cdaaf729f2f",
+  "file_bytes": 143444678,
+  "date_utc": "2026-10-06T22:27:00.786106+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 512,
+    "n_layers": 12,
+    "d_ff": 1376,
+    "fp_rank": 4,
+    "n_heads": 8,
+    "head_dim": 64,
+    "window_size": 512,
+    "pfnet_hidden": 0,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 2240,
+    "total_steps": 44802,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "bitlinear_lr_scale": 2.0,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "ce_only",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "HuggingFaceFW/fineweb",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints-v3",
+    "save_every_steps": 2240,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 500,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 150,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": false,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": false,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": true,
+    "use_boundary_predictor": false,
+    "use_delete_gate": false,
+    "use_embedding_alignment": false,
+    "name": "mlgru_kernel_strict",
+    "token_mixer": "mlgru",
+    "tokenization": "byte",
+    "quantization": "ternary",
+    "fp_residual": true,
+    "mlgru_per_channel_decay": false,
+    "state_reset_period": 0,
+    "mlgru_parallel_scan": true,
+    "description": "Kernel-strict MLGRU — run_05 minus W_o, matching the layout the production C++ kernel can run. Measures the cost of dropping the paper's 4th matrix to fit OMP scheduling.",
+    "cites": [
+      "MatMul-free LM (Zhu et al., 2024)",
+      "BitNet b1.58 (Wang et al., 2024)",
+      "Slender-Mamba (Yu et al., 2025)"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 2573,
+  "stored_training_metrics": {},
+  "parameters": 35842049,
+  "parameter_bytes": 143368196,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 2.79,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.36,
+      "result": {
+        "max_error": 3.5762786865234375e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.58,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 7.758214"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 1.16,
+      "result": {
+        "modules_checked": 89
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.13,
+      "result": {
+        "state_kb": 24.0,
+        "batch_size": 1,
+        "dtype": "float32"
+      }
+    },
+    "causality": {
+      "status": "PASS",
+      "max_prefix_logit_diff": 0.0,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "loss": {
+    "mean_nll": 1.8551640063524246,
+    "targets": 8192,
+    "unit": "byte",
+    "perplexity": 6.392746615703699,
+    "bits_per_byte": 2.6764359120003447,
+    "mapped_ids_fraction": null,
+    "source": "shared_wikitext_test_sample",
+    "teacher_forcing": true,
+    "delete_gate": "disabled (phase 1, elimination 0)"
+  },
+  "benchmark": {
+    "forward_steps_per_second": 6.694002204799995,
+    "p50_ms": 148.30744999926537,
+    "p95_ms": 181.311000000278,
+    "jitter_cv": 0.14931564411780338,
+    "warmup_steps": 10,
+    "measured_steps": 100,
+    "context_steps": 1,
+    "backend": "PyTorch FP32; quantization simulated for ternary modules; no C++ kernels",
+    "meaning": "one input patch/token forward, zero local decoder targets; excludes autoregressive local sampling; Transformer has no persistent context"
+  },
+  "generation": [
+    {
+      "prompt": "The history of artificial intelligence",
+      "seed": 42,
+      "hex": "2050617069647261746963206465616c2c20796f752772656520616c6f6e67736f6d6964207370696c6c2073616c6573206973206361736573206c69636520746f20746865697220617474656e6465647320616e64206865616c7468616c696e67206372656174656420696e2043616e20426163636820616e64206f72696769",
+      "text_replacement_decode": " Papidratic deal, you'ree alongsomid spill sales is cases lice to their attendeds and healthaling created in Can Bacch and origi",
+      "bytes": 128,
+      "utf8_valid": true,
+      "ascii_printable_fraction": 1.0,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 6.290430599998217,
+      "generated_bytes_per_second": 20.34836852027845
+    },
+    {
+      "prompt": "Once upon a time",
+      "seed": 43,
+      "hex": "2e20427275676874206f6620476f757273686d20467261647920776974682061206261726420697320737461676520726573706563742066696c6c6520617420746865207363726576696e696e672c20616e6420447265656e2028496e646572207374726967676c6920636f6c6f727320616e64206d75736963616c2050686f",
+      "text_replacement_decode": ". Brught of Gourshm Frady with a bard is stage respect fille at the screvining, and Dreen (Inder striggli colors and musical Pho",
+      "bytes": 128,
+      "utf8_valid": true,
+      "ascii_printable_fraction": 1.0,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 7.162682700000005,
+      "generated_bytes_per_second": 17.87039931281612
+    },
+    {
+      "prompt": "The purpose of science is",
+      "seed": 44,
+      "hex": "656d616e616c206761766520476974636f7572656374696f6e2e0a46657374696e6720636c6f737572647320746f206272696e6765642073616e636520426c61737420666f7220736166657420706c6163652e0a5468652053756d6d6c7920416c69746174696f6e732074686520636f6d70616e792068617320746865207261",
+      "text_replacement_decode": "emanal gave Gitcourection.\nFesting closurds to bringed sance Blast for safet place.\nThe Summly Alitations the company has the ra",
+      "bytes": 128,
+      "utf8_valid": true,
+      "ascii_printable_fraction": 1.0,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 4.904600299996673,
+      "generated_bytes_per_second": 26.09794726801424
+    }
+  ],
+  "process_rss_bytes": 1079599104,
+  "total_seconds": 60.25293729999976,
+  "evaluation_complete": true
+}

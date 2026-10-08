@@ -1,0 +1,20 @@
+{
+  "python": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
+  "packages": {
+    "torch": "2.6.0+cu124",
+    "transformers": "5.3.0",
+    "tokenizers": "0.22.2",
+    "huggingface_hub": "1.19.0",
+    "datasets": "4.8.3",
+    "numpy": "2.3.5",
+    "pyarrow": "23.0.1",
+    "psutil": "7.2.2"
+  },
+  "hardware": "Intel Core i7-8750H, 6 cores/12 logical processors",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "threads": 1,
+  "source_commit": "18826ec2827a09950797463633c1f5187af29a5b",
+  "source_changes": "audit evaluator and correctness/quality fixes in this checkout",
+  "audit_script_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "qwen_tokenizer_resolved_revision": null
+}

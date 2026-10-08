@@ -1,0 +1,17 @@
+{
+  "seed": 19,
+  "shape": [
+    1,
+    32,
+    8
+  ],
+  "torch": "2.6.0+cu124",
+  "dtype": "float32",
+  "reference": "h[t] = f[t] * h[t-1] + (1-f[t]) * c[t]",
+  "serial_max_diff": 19.100505828857422,
+  "chunks_max_diff": 11.471269607543945,
+  "tolerance": 0.0001,
+  "status": "FAIL",
+  "utilities_sha256": "f061f9308b7b6b438199b9847d1f851cd615685c7971b4ff93db33dea3fd4516",
+  "script_sha256": "a5ebf25bc89f3b64caf9cb0ed238d19a56463e0a23f7e709862f9fad1d75c704"
+}

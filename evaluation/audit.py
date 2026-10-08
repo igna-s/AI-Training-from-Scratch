@@ -24,7 +24,6 @@ FINAL = 'Cukinator/cpu1-ablations-final'
 ARCHIVE = 'Cukinator/cpu1-ablation-checkpoints'
 FINAL_REV = '65951289352c1a036b12ba6d888af037e7c90b13'
 ARCHIVE_REV = 'fb402d025e843ed00fb990966bf2430c32eb958c'
-EVIDENCE_REV = 'd38678e7c5d18577f36edade64495237c72a44b5'
 DATA = 'Salesforce/wikitext'
 DATA_REV = 'b08601e04326c79dfdd32d625aee71d232d685c3'
 DATA_FILE = 'wikitext-2-raw-v1/test-00000-of-00001.parquet'
@@ -55,19 +54,17 @@ def sha(path):
 
 
 def restore_evidence(storage):
-    """Restore published reports only; never download model weights."""
+    """Copy committed GitHub evidence locally without downloading models."""
     import shutil
-    from huggingface_hub import snapshot_download
-    folder = Path(snapshot_download(
-        FINAL, revision=EVIDENCE_REV,
-        allow_patterns=['evaluation/*.json', 'evaluation/CORPUS_LICENSE.txt'],
-        local_dir=str(storage/'evidence'), cache_dir=str(storage/'hf'/'hub'),
-    ))/'evaluation'
+    from evaluation.publication import AUDIT_PATH
+    folder = ROOT/AUDIT_PATH
+    if not folder.is_dir():
+        raise FileNotFoundError('The checkout is missing committed audit evidence')
     OUT.mkdir(parents=True, exist_ok=True)
     for source in sorted(folder.glob('*')):
         if source.suffix == '.json' or source.name == 'CORPUS_LICENSE.txt':
             shutil.copyfile(source, OUT/source.name)
-    print(f'Restored published evidence to {OUT}; no model weights downloaded.', flush=True)
+    print(f'Restored GitHub evidence to {OUT}; no model weights downloaded.', flush=True)
 
 
 def prepare(storage):
@@ -269,7 +266,7 @@ def main():
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--cards', action='store_true')
     parser.add_argument('--upload', action='store_true')
-    parser.add_argument('--restore-evidence', action='store_true', help='Download only the published audit JSONs and corpus license')
+    parser.add_argument('--restore-evidence', action='store_true', help='Copy the committed audit JSONs and corpus license to local outputs')
     args = parser.parse_args()
     if args.storage.resolve().drive.upper() != 'D:':
         raise ValueError('This audit requires storage on D:')

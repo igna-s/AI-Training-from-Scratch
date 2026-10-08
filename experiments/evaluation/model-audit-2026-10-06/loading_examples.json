@@ -1,0 +1,70 @@
+{
+  "examples": [
+    {
+      "repo": "Cukinator/cpu1-ablation-checkpoints",
+      "revision": "fb402d025e843ed00fb990966bf2430c32eb958c",
+      "file": "run_04/checkpoint_run_04_final.pt",
+      "format": "compact_2bit",
+      "sha256": "1b953c3bfcf43ba2ce0634f0b1adca53de7af46a2f037b7d1a2ac95fdd4dfa31",
+      "state_sha256": "cb55c3b0a15da2b9e1ae1a8d2adbcd00a4541777397579487a666a875806f03c",
+      "strict_load": true,
+      "finite_logits": true,
+      "shapes": [
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ]
+      ]
+    },
+    {
+      "repo": "Cukinator/cpu1-ablations-final",
+      "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+      "file": "run_04/model.pt",
+      "format": "fp32",
+      "sha256": "3af6570f55ecdf604adacce6f67a319aaa7823b7177a4023143401d7fe145f5e",
+      "state_sha256": "cb55c3b0a15da2b9e1ae1a8d2adbcd00a4541777397579487a666a875806f03c",
+      "strict_load": true,
+      "finite_logits": true,
+      "shapes": [
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ]
+      ]
+    }
+  ],
+  "run_04_state_dicts_identical": true,
+  "scope": "only the run_04 pair; does not establish parity across other models or intermediate steps"
+}

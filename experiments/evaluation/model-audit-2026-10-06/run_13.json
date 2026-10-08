@@ -1,0 +1,178 @@
+{
+  "run": "run_13",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_13/model.pt",
+  "sha256": "21d30529f1f7ce72670c8d9b470165b662a8a41702842a23d8d90de0aa37a1c4",
+  "file_bytes": 50238466,
+  "date_utc": "2026-10-06T22:34:49.759257+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 320,
+    "n_layers": 8,
+    "d_ff": 853,
+    "fp_rank": 4,
+    "n_heads": 8,
+    "head_dim": 40,
+    "window_size": 256,
+    "pfnet_hidden": 0,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 50,
+    "total_steps": 600,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "distillation",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "Cukinator/cpu1-ablation-dataset",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints",
+    "save_every_steps": 30,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 50,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 2,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": true,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": true,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": true,
+    "use_boundary_predictor": false,
+    "use_delete_gate": true,
+    "use_embedding_alignment": false,
+    "name": "small_cpu1_bpe",
+    "token_mixer": "mlgru",
+    "tokenization": "bpe",
+    "quantization": "ternary",
+    "fp_residual": true,
+    "bpe_vocab_size": 4096,
+    "description": "CPU-1 COMPLETE @ 10M, compact BPE (4K vocab) from scratch. Does BPE tokenization outperform byte-level at 10M?",
+    "cites": [
+      "MatMul-free LM",
+      "Slender-Mamba",
+      "MrT5"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 600,
+  "stored_training_metrics": {
+    "run_name": "small_cpu1_bpe",
+    "perplexity": 485165195.4097903,
+    "tokens_per_sec_cpu": 25.93237466016154,
+    "ram_mb": 50.19114,
+    "val_loss": 30.537545550953258,
+    "n_params_M": 12.547785
+  },
+  "parameters": 12547785,
+  "parameter_bytes": 50191140,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 0.83,
+      "result": {
+        "configs_tested": 6,
+        "heads": 1
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.11,
+      "result": {
+        "max_error": 3.337860107421875e-06
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.2,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 6.279047"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 0.34,
+      "result": {
+        "modules_checked": 57
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.04,
+      "result": {
+        "state_kb": 10.0,
+        "batch_size": 1,
+        "dtype": "float32"
+      }
+    },
+    "causality": {
+      "status": "PASS",
+      "max_prefix_logit_diff": 0.0,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "loss": {
+    "mean_nll": 6.342904695041517,
+    "targets": 1910,
+    "unit": "mapped_qwen_token",
+    "perplexity": 568.4450752356587,
+    "bits_per_byte": null,
+    "mapped_ids_fraction": 0.3177136972193615,
+    "source": "shared_wikitext_test_sample",
+    "teacher_forcing": true,
+    "delete_gate": "disabled (phase 1, elimination 0)"
+  },
+  "benchmark": {
+    "forward_steps_per_second": 23.65742291518526,
+    "p50_ms": 41.464299996732734,
+    "p95_ms": 47.40740000124788,
+    "jitter_cv": 0.073770243286646,
+    "warmup_steps": 10,
+    "measured_steps": 100,
+    "context_steps": 1,
+    "backend": "PyTorch FP32; quantization simulated for ternary modules; no C++ kernels",
+    "meaning": "one input patch/token forward, zero local decoder targets; excludes autoregressive local sampling; Transformer has no persistent context"
+  },
+  "generation": {
+    "status": "N/A",
+    "reason": "truncated Qwen vocabulary; token mapping is lossy, no comparable byte generation test"
+  },
+  "process_rss_bytes": 1111138304,
+  "total_seconds": 16.740716799999063,
+  "evaluation_complete": true
+}

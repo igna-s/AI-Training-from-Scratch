@@ -1,0 +1,211 @@
+{
+  "run": "run_03",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_03/model.pt",
+  "sha256": "9ceb9c3aa2d98d45cf102f1a7f39c596dd4c5fcba698eb581fdf5a890fb72498",
+  "file_bytes": 155380898,
+  "date_utc": "2026-10-06T22:19:25.886844+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 512,
+    "n_layers": 12,
+    "d_ff": 1376,
+    "fp_rank": 0,
+    "n_heads": 8,
+    "head_dim": 64,
+    "window_size": 512,
+    "pfnet_hidden": 0,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 50,
+    "total_steps": 647,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "ce_only",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "HuggingFaceFW/fineweb",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints",
+    "save_every_steps": 32,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 500,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 2,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": true,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": false,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": false,
+    "use_boundary_predictor": false,
+    "use_delete_gate": false,
+    "use_embedding_alignment": false,
+    "name": "mlgru_byte_fp16",
+    "token_mixer": "mlgru",
+    "tokenization": "byte",
+    "quantization": "fp16",
+    "fp_residual": false,
+    "description": "MLGRU + byte patches, FP16. Combined mixer+tokenization.",
+    "cites": [
+      "MatMul-free LM",
+      "MegaByte (Yu et al., 2023)"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 647,
+  "stored_training_metrics": {
+    "run_name": "mlgru_byte_fp16",
+    "perplexity": 6.486142795409505,
+    "tokens_per_sec_cpu": 43.82163519967315,
+    "ram_mb": 155.318276,
+    "val_loss": 1.8696680235862733,
+    "n_params_M": 38.829569
+  },
+  "parameters": 38829569,
+  "parameter_bytes": 155318276,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 2.18,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.26,
+      "result": {
+        "max_error": 4.76837158203125e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.37,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 13.313538"
+    },
+    "ternary_weights": {
+      "status": "N/A",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo FP16 (sin BitLinear)"
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.02,
+      "result": {
+        "state_kb": 24.0,
+        "batch_size": 1,
+        "dtype": "float32"
+      }
+    },
+    "causality": {
+      "status": "PASS",
+      "max_prefix_logit_diff": 0.0,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "loss": {
+    "mean_nll": 2.162172853946686,
+    "targets": 8192,
+    "unit": "byte",
+    "perplexity": 8.689999258476988,
+    "bits_per_byte": 3.1193560539336205,
+    "mapped_ids_fraction": null,
+    "source": "shared_wikitext_test_sample",
+    "teacher_forcing": true,
+    "delete_gate": "disabled (phase 1, elimination 0)"
+  },
+  "benchmark": {
+    "forward_steps_per_second": 52.42490067342912,
+    "p50_ms": 17.67774999825633,
+    "p95_ms": 30.450500002189074,
+    "jitter_cv": 0.2135459848136035,
+    "warmup_steps": 10,
+    "measured_steps": 100,
+    "context_steps": 1,
+    "backend": "PyTorch FP32; quantization simulated for ternary modules; no C++ kernels",
+    "meaning": "one input patch/token forward, zero local decoder targets; excludes autoregressive local sampling; Transformer has no persistent context"
+  },
+  "generation": [
+    {
+      "prompt": "The history of artificial intelligence",
+      "seed": 42,
+      "hex": "617920656e61626f656e2053656e73706973746f74616c206f6e205065726173206f756e206d6167617420696e20776974682072656361726520686f6c617465727920746f206c65737320746f2074686f726b20696e207468652077616e6b656374207769746820746f207465617220746f2062616e6420726f6f6d20492074",
+      "text_replacement_decode": "ay enaboen Senspistotal on Peras oun magat in with recare holatery to less to thork in the wankect with to tear to band room I t",
+      "bytes": 128,
+      "utf8_valid": true,
+      "ascii_printable_fraction": 1.0,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 0.7251586999991559,
+      "generated_bytes_per_second": 176.51308603226988
+    },
+    {
+      "prompt": "Once upon a time",
+      "seed": 43,
+      "hex": "207465636b696e6e20776963686f706964617479207365742e2050726c792068616d62796573730a61742063656d70657273656e2062656e7320616e206120746f20686f72652061707072616964696f6e206d6174792e20496e207468616b20617265204d7920626f736f756c65206f75722068696768204d696c6c65732072",
+      "text_replacement_decode": " teckinn wichopidaty set. Prly hambyess\nat cempersen bens an a to hore appraidion maty. In thak are My bosoule our high Milles r",
+      "bytes": 128,
+      "utf8_valid": true,
+      "ascii_printable_fraction": 1.0,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 0.8815219000025536,
+      "generated_bytes_per_second": 145.20342602904046
+    },
+    {
+      "prompt": "The purpose of science is",
+      "seed": 44,
+      "hex": "65616c732e0a4f7320285468495468742d73636b2068616e20736865656420796f75722069732073696e656c6963656e7320696e20736967696c617920496d70686f72636820617265776e616e697465206c6f77656c2c206f6e206576696e672073656420707265736f6e6f6e2c20616e642074686520666972672042696674",
+      "text_replacement_decode": "eals.\nOs (ThITht-sck han sheed your is sinelicens in sigilay Imphorch arewnanite lowel, on eving sed presonon, and the firg Bift",
+      "bytes": 128,
+      "utf8_valid": true,
+      "ascii_printable_fraction": 1.0,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 0.8720823000039672,
+      "generated_bytes_per_second": 146.77513807976348
+    }
+  ],
+  "process_rss_bytes": 931266560,
+  "total_seconds": 20.091274799997336,
+  "evaluation_complete": true
+}

@@ -13,7 +13,7 @@ tags:
 
 1,346 checkpoint files across 34 run folders, totaling **215.178 GB** (200.400 GiB). The inventory includes **21 `_final.pt` files** and **1325 step files**. Counts and sizes are derived from the pinned Hub inventory, not estimates from nominal architecture sizes.
 
-For evaluated FP32 exports, see [Cukinator/cpu1-ablations-final](https://huggingface.co/Cukinator/cpu1-ablations-final). Source code: [igna-s/New-1.58](https://github.com/igna-s/New-1.58).
+For evaluated FP32 exports, see [Cukinator/cpu1-ablations-final](https://huggingface.co/Cukinator/cpu1-ablations-final). Source code: [igna-s/New-1.58](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08).
 
 ## What the audit found
 
@@ -78,7 +78,7 @@ Sizes use decimal MB and GB. Step counts include phase-2 step files. Highest ste
 
 ## Load one checkpoint
 
-Clone the [source repository](https://github.com/igna-s/New-1.58) and run this from its root. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.
+Clone the [source repository](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08) and run this from its root. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.
 
 ```python
 import os
@@ -105,7 +105,7 @@ This forward uses zero target bytes in the local decoder; it is a shape smoke te
 
 ## Experiment provenance
 
-The source repository preserves the historical Kaggle, Lightning and AMD code. The 34 exported configurations, checkpoint hashes and saved steps are indexed in `evaluation/source/experiments/published/manifest.json`. See the [provenance review](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Current presets differ from some published configurations; use `--config` to select a recorded experiment. The source commit of each training job and a complete training dependency lock were not recorded.
+The source repository preserves the historical Kaggle, Lightning and AMD code. The 34 exported configurations, checkpoint hashes and saved steps are indexed in `experiments/published/manifest.json` in the GitHub source repository. See the [provenance review](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/docs/provenance). Current presets differ from some published configurations; use `--config` to select a recorded experiment. The source commit of each training job and a complete training dependency lock were not recorded.
 
 ## Resume training
 
@@ -123,11 +123,11 @@ The results below were measured on the 34 published exports in [Cukinator/cpu1-a
 
 ## Evaluation protocol
 
-This card was rebuilt from a fresh CPU audit on **2026-10-06**. All 34 published FP32 exports were attempted; 34 loaded with zero missing or unexpected state keys. Numerical and loading errors remain visible. Raw JSON, the exact text sample, and the repository inventories are included in [`evaluation/`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/tree/main/evaluation). Previous `resultados/ablation_*.json` reports are historical and were not mixed into these tables.
+This card was rebuilt from a fresh CPU audit on **2026-10-06**. All 34 published FP32 exports were attempted; 34 loaded with zero missing or unexpected state keys. Numerical and loading errors remain visible. Raw JSON, the exact text sample, and the repository inventories are preserved in [the GitHub audit evidence](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06). Previous `resultados/ablation_*.json` reports are historical and were not mixed into these tables.
 
 - Hardware: Intel Core i7-8750H (6 cores / 12 logical processors), Windows 11; CPU execution with **1 PyTorch thread**, batch size 1, FP32 parameters. PyTorch 2.6.0+cu124. No custom C/C++ kernels were used.
 - Test text: [`Salesforce/wikitext`, `wikitext-2-raw-v1`, test split](https://huggingface.co/datasets/Salesforce/wikitext). First 32 non-heading paragraphs with at least 260 UTF-8 bytes, each truncated to 260 bytes without an incomplete trailing character. This is a small diagnostic sample, not the complete benchmark. No exhaustive training-overlap audit was performed.
-- Corpus attribution: WikiText by its dataset authors, based on English Wikipedia contributions. The dataset metadata lists CC-BY-SA-3.0 and GFDL; the included corpus excerpt retains those upstream terms, separately from the model repository license. See `evaluation/CORPUS_LICENSE.txt`.
+- Corpus attribution: WikiText by its dataset authors, based on English Wikipedia contributions. The dataset metadata lists CC-BY-SA-3.0 and GFDL; the included corpus excerpt retains those upstream terms, separately from the model repository license. See [CORPUS_LICENSE.txt](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/CORPUS_LICENSE.txt).
 - Dataset revision: `b08601e04326c79dfdd32d625aee71d232d685c3`; exact file: `wikitext-2-raw-v1/test-00000-of-00001.parquet`; parquet SHA-256: `5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91`.
 - Shared sample JSON SHA-256: `11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798`.
 - Byte targets are the next patch; incomplete final patches are discarded. The first patch is context only. LocalByteDecoder receives ground-truth target bytes and shifts them internally for causal teacher forcing within a patch. Cross-entropy is summed over all targets and divided by their total count.
@@ -143,9 +143,11 @@ Export repository revision audited: `65951289352c1a036b12ba6d888af037e7c90b13`. 
 
 ### Reproduce
 
-From the source checkout, install PyTorch plus `huggingface_hub`, `transformers`, `tokenizers`, `pyarrow`, `psutil`, `numpy`, and `datasets`. Pin the versions from `evaluation/environment.json` when reproducing this run.
+Code: [pinned GitHub checkout](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). Evidence: [original audit records](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06). Exact historical evaluator: [audit_readmes.py](https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/audit_readmes.py) (its SHA-256 matches the recorded suite hash).
 
-The audit additions are bundled in `evaluation/source/`. Copy those Python files into the checkout’s `evaluation/` directory when using a source revision that predates this audit. The base Git commit is recorded in `evaluation/environment.json`.
+From the source checkout, install PyTorch plus `huggingface_hub`, `transformers`, `tokenizers`, `pyarrow`, `psutil`, `numpy`, and `datasets`. Pin the versions from [environment.json](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/environment.json) when reproducing this run.
+
+Code and evidence are maintained in the [pinned GitHub checkout](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). Original source/environment metadata remains in the audit records.
 
 ```powershell
 python -m evaluation.audit --storage D:/cpu1-readme-audit --threads 1
@@ -162,45 +164,45 @@ Model downloads, tokenizer files, Hugging Face caches, and temporary files go to
 
 | Run | Params M | Saved step | File MB | NLL | BPB | PPL | Causal | State chunks |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| [`run_02`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_02.json) | 38.830 | 647 | 155.35 | 1.9702 | 2.8424 | 7.172 | PASS | N/A |
-| [`run_02_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_02_v3.json) | 38.830 | 10963 | 155.35 | ERROR | — | — | ERROR | N/A |
-| [`run_02a_byte_only_heads`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_02a_byte_only_heads.json) | 38.501 | 641 | 154.04 | 2.4755 | 3.5714 | 11.888 | PASS | N/A |
-| [`run_02a_byte_only_heads_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_02a_byte_only_heads_v3.json) | 38.501 | 16327 | 154.03 | ERROR | — | — | ERROR | N/A |
-| [`run_03`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_03.json) | 38.830 | 647 | 155.38 | 2.1622 | 3.1194 | 8.690 | PASS | FAIL |
-| [`run_03_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_03_v3.json) | 38.830 | 6187 | 155.38 | 1.7640 | 2.5449 | 5.836 | PASS | FAIL |
-| [`run_04`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_04.json) | 38.854 | 647 | 155.49 | 5.5551 | 8.0144 | 258.565 | PASS | FAIL |
-| [`run_04_r2`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_04_r2.json) | 38.854 | 4840 | 155.49 | 5.5676 | 8.0323 | 261.803 | PASS | FAIL |
-| [`run_04_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_04_v3.json) | 38.854 | 6074 | 155.49 | 1.5515 | 2.2384 | 4.719 | PASS | FAIL |
-| [`run_05`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_05.json) | 38.994 | 649 | 156.06 | 5.5485 | 8.0048 | 256.854 | PASS | FAIL |
-| [`run_05_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_05_v3.json) | 38.994 | 4390 | 156.06 | 1.5921 | 2.2969 | 4.914 | PASS | FAIL |
-| [`run_05b_kernel_strict`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_05b_kernel_strict.json) | 35.842 | 600 | 143.44 | 5.5789 | 8.0486 | 264.778 | PASS | FAIL |
-| [`run_05b_kernel_strict_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_05b_kernel_strict_v3.json) | 35.842 | 2573 | 143.44 | 1.8552 | 2.6764 | 6.393 | PASS | FAIL |
-| [`run_06`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_06.json) | 38.994 | 649 | 156.06 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
-| [`run_06_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_06_v3.json) | 38.994 | 4237 | 156.06 | 1.0572 | 1.5253 | 2.878 | FAIL | FAIL |
-| [`run_07`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_07.json) | 39.029 | 650 | 156.20 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
-| [`run_07_r2`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_07_r2.json) | 39.029 | 4860 | 156.20 | 5.5569 | 8.0169 | 259.010 | FAIL | FAIL |
-| [`run_08`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_08.json) | 38.854 | 647 | 155.46 | 5.5535 | 8.0121 | 258.150 | PASS | N/A |
-| [`run_08_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_08_v3.json) | 38.854 | 3858 | 155.46 | ERROR | — | — | ERROR | N/A |
-| [`run_09`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_09.json) | 39.428 | 657 | 157.81 | 5.5334 | 7.9830 | 253.007 | FAIL | FAIL |
-| [`run_10`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_10.json) | 39.434 | 657 | 157.83 | 5.5337 | 7.9834 | 253.068 | FAIL | FAIL |
-| [`run_14`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_14.json) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_14_r2`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_14_r2.json) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_14_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_14_v3.json) | 10.691 | 9775 | 42.82 | 0.8811 | 1.2712 | 2.414 | FAIL | FAIL |
-| [`run_15`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_15.json) | 10.732 | 600 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_15_r2`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_15_r2.json) | 10.732 | 1341 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_15_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_15_v3.json) | 10.732 | 2350 | 42.99 | 1.3248 | 1.9113 | 3.761 | FAIL | FAIL |
-| [`run_16`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_16.json) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
-| [`run_16_r2`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_16_r2.json) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_02`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02.json) | 38.830 | 647 | 155.35 | 1.9702 | 2.8424 | 7.172 | PASS | N/A |
+| [`run_02_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02_v3.json) | 38.830 | 10963 | 155.35 | ERROR | — | — | ERROR | N/A |
+| [`run_02a_byte_only_heads`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02a_byte_only_heads.json) | 38.501 | 641 | 154.04 | 2.4755 | 3.5714 | 11.888 | PASS | N/A |
+| [`run_02a_byte_only_heads_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02a_byte_only_heads_v3.json) | 38.501 | 16327 | 154.03 | ERROR | — | — | ERROR | N/A |
+| [`run_03`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_03.json) | 38.830 | 647 | 155.38 | 2.1622 | 3.1194 | 8.690 | PASS | FAIL |
+| [`run_03_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_03_v3.json) | 38.830 | 6187 | 155.38 | 1.7640 | 2.5449 | 5.836 | PASS | FAIL |
+| [`run_04`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04.json) | 38.854 | 647 | 155.49 | 5.5551 | 8.0144 | 258.565 | PASS | FAIL |
+| [`run_04_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04_r2.json) | 38.854 | 4840 | 155.49 | 5.5676 | 8.0323 | 261.803 | PASS | FAIL |
+| [`run_04_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04_v3.json) | 38.854 | 6074 | 155.49 | 1.5515 | 2.2384 | 4.719 | PASS | FAIL |
+| [`run_05`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05.json) | 38.994 | 649 | 156.06 | 5.5485 | 8.0048 | 256.854 | PASS | FAIL |
+| [`run_05_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05_v3.json) | 38.994 | 4390 | 156.06 | 1.5921 | 2.2969 | 4.914 | PASS | FAIL |
+| [`run_05b_kernel_strict`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05b_kernel_strict.json) | 35.842 | 600 | 143.44 | 5.5789 | 8.0486 | 264.778 | PASS | FAIL |
+| [`run_05b_kernel_strict_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05b_kernel_strict_v3.json) | 35.842 | 2573 | 143.44 | 1.8552 | 2.6764 | 6.393 | PASS | FAIL |
+| [`run_06`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_06.json) | 38.994 | 649 | 156.06 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
+| [`run_06_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_06_v3.json) | 38.994 | 4237 | 156.06 | 1.0572 | 1.5253 | 2.878 | FAIL | FAIL |
+| [`run_07`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_07.json) | 39.029 | 650 | 156.20 | 5.5535 | 8.0120 | 258.144 | FAIL | FAIL |
+| [`run_07_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_07_r2.json) | 39.029 | 4860 | 156.20 | 5.5569 | 8.0169 | 259.010 | FAIL | FAIL |
+| [`run_08`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_08.json) | 38.854 | 647 | 155.46 | 5.5535 | 8.0121 | 258.150 | PASS | N/A |
+| [`run_08_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_08_v3.json) | 38.854 | 3858 | 155.46 | ERROR | — | — | ERROR | N/A |
+| [`run_09`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_09.json) | 39.428 | 657 | 157.81 | 5.5334 | 7.9830 | 253.007 | FAIL | FAIL |
+| [`run_10`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_10.json) | 39.434 | 657 | 157.83 | 5.5337 | 7.9834 | 253.068 | FAIL | FAIL |
+| [`run_14`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14.json) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_14_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14_r2.json) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_14_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14_v3.json) | 10.691 | 9775 | 42.82 | 0.8811 | 1.2712 | 2.414 | FAIL | FAIL |
+| [`run_15`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15.json) | 10.732 | 600 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_15_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15_r2.json) | 10.732 | 1341 | 42.99 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_15_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15_v3.json) | 10.732 | 2350 | 42.99 | 1.3248 | 1.9113 | 3.761 | FAIL | FAIL |
+| [`run_16`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_16.json) | 10.691 | 600 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
+| [`run_16_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_16_r2.json) | 10.691 | 1336 | 42.82 | 5.5700 | 8.0358 | 262.432 | FAIL | FAIL |
 
 ### BPE models (mapped Qwen token stream)
 
 | Run | Params M | Saved step | File MB | NLL | BPB | PPL | Causal | State chunks |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| [`run_01`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_01.json) | 54.735 | 912 | 218.97 | 5.3742 | — | 215.773 | PASS | N/A |
-| [`run_01_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_01_v3.json) | 54.735 | 12173 | 218.97 | ERROR | — | — | ERROR | N/A |
-| [`run_13`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_13.json) | 12.548 | 600 | 50.24 | 6.3429 | — | 568.445 | PASS | FAIL |
-| [`run_13_r2`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_13_r2.json) | 12.548 | 1568 | 50.24 | 6.4205 | — | 614.313 | PASS | FAIL |
-| [`run_13_v3`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/run_13_v3.json) | 12.548 | 9290 | 50.24 | 6.7925 | — | 891.155 | PASS | FAIL |
+| [`run_01`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_01.json) | 54.735 | 912 | 218.97 | 5.3742 | — | 215.773 | PASS | N/A |
+| [`run_01_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_01_v3.json) | 54.735 | 12173 | 218.97 | ERROR | — | — | ERROR | N/A |
+| [`run_13`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13.json) | 12.548 | 600 | 50.24 | 6.3429 | — | 568.445 | PASS | FAIL |
+| [`run_13_r2`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13_r2.json) | 12.548 | 1568 | 50.24 | 6.4205 | — | 614.313 | PASS | FAIL |
+| [`run_13_v3`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13_v3.json) | 12.548 | 9290 | 50.24 | 6.7925 | — | 891.155 | PASS | FAIL |
 
 | BPE run | IDs mapped to 0 | Vocabulary cap |
 |---|---:|---:|
@@ -314,7 +316,7 @@ These configurations did not reproduce a full-sequence forward when carrying sta
 
 ### Recurrent implementation diagnostic
 
-The source’s `AblationMLGRU._parallel_scan` was tested independently against its defining serial recurrence with random candidate/forget tensors, seed 19, shape `[1,32,8]`, FP32. The maximum difference was **19.100506**; splitting the same scan into two 16-step chunks differed by **11.471270** (tolerance `1e-4`). See [`implementation_diagnostics.json`](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints/blob/main/evaluation/implementation_diagnostics.json) and the bundled `evaluation/diagnostics.py`.
+The source’s `AblationMLGRU._parallel_scan` was tested independently against its defining serial recurrence with random candidate/forget tensors, seed 19, shape `[1,32,8]`, FP32. The maximum difference was **19.100506**; splitting the same scan into two 16-step chunks differed by **11.471270** (tolerance `1e-4`). See [`implementation_diagnostics.json`](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/implementation_diagnostics.json) and [evaluation/diagnostics.py](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/evaluation/diagnostics.py).
 
 The implementation replaces log-cumulative-sum-exp with a cumulative-maximum normalization followed by a cumulative sum; accumulated terms are not rescaled when that maximum changes. The observed outputs therefore do not satisfy the intended recurrence. This is a source implementation defect; disabling or repairing the scan would create a different inference protocol and was not silently applied to these results. The trained-checkpoint audit uses the source as supplied.
 
@@ -331,7 +333,7 @@ Scores and speed are unavailable when model loading or numerical evaluation fail
 
 ## Source and dataset provenance
 
-Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are included in `evaluation/source/`. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.
+Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are maintained in the source repository on GitHub. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.
 
 The [dataset review](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) documents short/empty teacher arrays, an observed dense-signal reader alignment defect, and UTF-8 conversion limitations. These observations do not isolate their effect on a training run. No weights, stored datasets or numerical model implementation were repaired in this documentation update.
 

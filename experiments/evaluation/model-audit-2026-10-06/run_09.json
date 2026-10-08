@@ -1,0 +1,214 @@
+{
+  "run": "run_09",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_09/model.pt",
+  "sha256": "857bb84ec29709140ebae70dcb1779591d730f1183ae2526e1379e634b6ad106",
+  "file_bytes": 157805734,
+  "date_utc": "2026-10-06T22:32:54.824282+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 512,
+    "n_layers": 12,
+    "d_ff": 1376,
+    "fp_rank": 4,
+    "n_heads": 8,
+    "head_dim": 64,
+    "window_size": 512,
+    "pfnet_hidden": 32,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 50,
+    "total_steps": 657,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "ce_only",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "HuggingFaceFW/fineweb",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints",
+    "save_every_steps": 32,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 500,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 2,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": true,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": true,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": true,
+    "use_boundary_predictor": false,
+    "use_delete_gate": true,
+    "use_embedding_alignment": false,
+    "name": "cpu1_pfnet",
+    "token_mixer": "mlgru",
+    "tokenization": "byte_dynamic",
+    "quantization": "ternary",
+    "fp_residual": true,
+    "use_bolmo_gating": true,
+    "description": "run_07 + PFNet (pfnet_hidden=32). Cache-resident nonlinear residual added per block — quality gain at zero RAM overhead.",
+    "cites": [
+      "MatMul-free LM (Zhu et al., 2024)",
+      "BitNet b1.58 (Wang et al., 2024)",
+      "BLT (Pagnoni et al., 2024)",
+      "MrT5 (Pagliardini et al., 2024)",
+      "Slender-Mamba (Yu et al., 2025)"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 657,
+  "stored_training_metrics": {
+    "run_name": "cpu1_pfnet",
+    "perplexity": 252.90615927280325,
+    "tokens_per_sec_cpu": 10.663296620203951,
+    "ram_mb": 157.711756,
+    "val_loss": 5.5330185079574585,
+    "n_params_M": 39.427939
+  },
+  "parameters": 39427939,
+  "parameter_bytes": 157711756,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "PASS",
+      "time_s": 2.65,
+      "result": {
+        "configs_tested": 6,
+        "heads": 4
+      }
+    },
+    "probs": {
+      "status": "PASS",
+      "time_s": 0.35,
+      "result": {
+        "max_error": 2.384185791015625e-07
+      }
+    },
+    "determinism": {
+      "status": "PASS",
+      "time_s": 0.51,
+      "result": {
+        "deterministic": true
+      }
+    },
+    "state_prop": {
+      "status": "FAIL",
+      "error": "State propagation error: 0.124531"
+    },
+    "ternary_weights": {
+      "status": "PASS",
+      "time_s": 1.36,
+      "result": {
+        "modules_checked": 125
+      }
+    },
+    "state_size": {
+      "status": "PASS",
+      "time_s": 0.14,
+      "result": {
+        "state_kb": 24.0,
+        "batch_size": 1,
+        "dtype": "float32"
+      }
+    },
+    "causality": {
+      "status": "FAIL",
+      "max_prefix_logit_diff": 0.018719995394349098,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "loss": {
+    "mean_nll": 5.53341905772686,
+    "targets": 8192,
+    "unit": "byte",
+    "perplexity": 253.00748106743626,
+    "bits_per_byte": 7.983036233743022,
+    "mapped_ids_fraction": null,
+    "source": "shared_wikitext_test_sample",
+    "teacher_forcing": true,
+    "delete_gate": "disabled (phase 1, elimination 0)"
+  },
+  "benchmark": {
+    "forward_steps_per_second": 6.389359722566276,
+    "p50_ms": 144.30350000111503,
+    "p95_ms": 208.92580000509042,
+    "jitter_cv": 0.23521073909008022,
+    "warmup_steps": 10,
+    "measured_steps": 100,
+    "context_steps": 1,
+    "backend": "PyTorch FP32; quantization simulated for ternary modules; no C++ kernels",
+    "meaning": "one input patch/token forward, zero local decoder targets; excludes autoregressive local sampling; Transformer has no persistent context"
+  },
+  "generation": [
+    {
+      "prompt": "The history of artificial intelligence",
+      "seed": 42,
+      "hex": "0f3408a3b4ffee97a16d33c2baee33c9f97faddda72d1e0157a54b2815a6efcde0e027f5de32a40f26f558842cf3c05ddc73955b12b955cd7457e25dc90be073e1912250aef02fb6381ba9f7ff60144c62cf233023ce1544a169a6c1af0a7b3c36ebdb21737cd8dfbaa6ebdfbad54a1ad89f6cbbff059daa1c7dd6a1df63a07b",
+      "text_replacement_decode": "\u000f4\b���m3º�3���ݧ-\u001e\u0001W�K(\u0015�����'��2�\u000f&�X�,��]�s�[\u0012�U�tW�]�\u000b�s�\"P��/�8\u001b���`\u0014Lb�#0#�\u0015D�i���\n{<6��!s|�ߺ��ߺ�J\u001a؟l��\u0005��\u001c}֡�c�{",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.3515625,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 7.012746899999911,
+      "generated_bytes_per_second": 18.25247678623645
+    },
+    {
+      "prompt": "Once upon a time",
+      "seed": 43,
+      "hex": "12967ab5d3962efffeca4c0adf989bd2dc01f19a55b5cc9737cc6f32573d3895e92c19c5d37d0f36a8fa1f052649e018152d7cd811263aa052e39398ff83f7f4e00ca8c637ad72535262362f12c1463ae9813c5c175f04f109a1717dc908bdd5ae2f0c9eae87c8956fa291a66f3d707c17f8958d578cea116d4dda3730f4f0ac",
+      "text_replacement_decode": "\u0012�z�Ӗ.���L\nߘ���\u0001�U�̗7�o2W=8��,\u0019��}\u000f6��\u001f\u0005&I�\u0018\u0015-|�\u0011&:�R㓘�����\f��7�rSRb6/\u0012�F:�<\\\u0017_\u0004�\t�q}�\b�ծ/\f���ȕo���o=p|\u0017���W��\u0011mM�70��",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.3671875,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 4.878184000001056,
+      "generated_bytes_per_second": 26.239272647356536
+    },
+    {
+      "prompt": "The purpose of science is",
+      "seed": 44,
+      "hex": "847e813ce8c30aa7c905878c3604acc8150ebec1983d6c5c0f86bbfa2648259a1c8749063752f8c11ceb5d8bde767d29de138a6f5285d4ded84dd75612ae37c85222a70c91bd3585d3a8fb421c5ba454910517e2308e392ac91f94cbdfc7ccf3556b8d3591987b07a7cd0d3be1cc71dc837a84c94917116ddc2930b16ff548cf",
+      "text_replacement_decode": "�~�<��\n��\u0005��6\u0004��\u0015\u000e���=l\\\u000f���&H%�\u001c�I\u00067R��\u001c�]��v})�\u0013�oR����M�V\u0012�7�R\"�\f��5�Ө�B\u001c[�T�\u0005\u0017�0�9*�\u001f������Uk�5��{\u0007��\r;��q܃z��I\u0017\u0011m�)0�o�H�",
+      "bytes": 128,
+      "utf8_valid": false,
+      "ascii_printable_fraction": 0.3515625,
+      "repeated_8byte_fraction": 0.0,
+      "seconds": 7.569811299996218,
+      "generated_bytes_per_second": 16.909272229819514
+    }
+  ],
+  "process_rss_bytes": 1092087808,
+  "total_seconds": 59.06993589999911,
+  "evaluation_complete": true
+}
