@@ -1,0 +1,2 @@
+# Keep published JSON checksums identical on Windows and Linux.
+*.json text eol=lf

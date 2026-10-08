@@ -1254,9 +1254,11 @@ def train_run(run_name: str, dry_run: bool = False,
               phase: int = 1,
               phase1_ckpt: str | None = None,
               use_hf_mount: bool = False,
-              resume_ckpt: str | None = None) -> dict:
+              resume_ckpt: str | None = None,
+              config_path: str | Path | None = None) -> dict:
     """Train one ablation run end-to-end. Returns final validation metrics."""
-    config = get_run_config(run_name)
+    from training.configuration import load_config
+    config = load_config(config_path) if config_path is not None else get_run_config(run_name)
     config['_current_phase'] = phase
 
     if total_steps_override is not None:
@@ -1415,8 +1417,8 @@ def train_run(run_name: str, dry_run: bool = False,
     mount_path = None
     if use_hf_mount and not dry_run:
         try:
-            from hf_mount import mount_bucket
-            mount_path = mount_bucket(config['dataset_repo'])
+            from cpu1.hub_storage import mount_repo
+            mount_path = mount_repo('datasets/' + config['dataset_repo'])
         except Exception as e:
             print(f"[hf-mount] Mount failed, falling back to download: {e}")
 
@@ -1810,7 +1812,7 @@ def train_run(run_name: str, dry_run: bool = False,
     print(f"\n[Done] Metrics saved to {metrics_path}")
 
     if mount_path is not None:
-        from hf_mount import unmount
+        from cpu1.hub_storage import unmount
         unmount(mount_path)
 
     return val_metrics
@@ -2414,13 +2416,14 @@ def parse_args() -> argparse.Namespace:
 
     # Single-run mode
     p.add_argument('--run', default=None,
-                   choices=list(ALL_RUN_CONFIGS.keys()),
-                   help="Train this single run (single-process mode).")
+                   help="Preset name, or experiment name when using --config.")
+    p.add_argument('--config', type=Path, default=None,
+                   help="Use this recorded JSON configuration without merging current presets.")
     p.add_argument('--dry_run', action='store_true',
                    help="Use random data on CPU (smoke test)")
     p.add_argument('--total_steps', type=int, default=None,
                    help="Override total training steps")
-    p.add_argument('--phase', type=int, default=1, choices=[1, 2],
+    p.add_argument('--phase', type=int, default=None, choices=[1, 2],
                    help="Training phase (1=distillation, 2=delete gate)")
     p.add_argument('--phase1_ckpt', type=str, default=None,
                    help="Path to Phase 1 checkpoint (required for --phase 2)")
@@ -2445,7 +2448,24 @@ def parse_args() -> argparse.Namespace:
                    help="Cap concurrent runs (default: # GPUs)")
     p.add_argument('--log-dir', type=str, default='run_logs')
 
-    return p.parse_args()
+    args = p.parse_args()
+    if args.config is not None:
+        from training.configuration import load_config
+        import re
+        if args.orchestrate or args.run is None:
+            p.error("--config requires a single --run")
+        if not re.fullmatch(r"[A-Za-z0-9_]+", args.run):
+            p.error("Invalid experiment run name")
+        config = load_config(args.config)
+        if args.phase is None:
+            args.phase = int(config.get("_current_phase", 1))
+        if args.phase not in (1, 2):
+            p.error("Invalid recorded training phase")
+    elif args.run is not None and args.run not in ALL_RUN_CONFIGS:
+        p.error("Unknown preset; use --config for a recorded published experiment")
+    if args.phase is None:
+        args.phase = 1
+    return args
 
 
 if __name__ == "__main__":
@@ -2496,7 +2516,7 @@ if __name__ == "__main__":
     # single CLI invocation trains the full pipeline. The orchestrator path
     # already handles this for multi-GPU; this mirrors the behaviour for
     # single-GPU resumable training.
-    is_two_phase = args.run in TWO_PHASE_RUNS and not args.dry_run
+    is_two_phase = args.config is None and args.run in TWO_PHASE_RUNS and not args.dry_run
     explicit_phase = args.phase == 2 or args.phase1_ckpt is not None
 
     if args.phase == 2 and not args.phase1_ckpt:
@@ -2544,7 +2564,7 @@ if __name__ == "__main__":
                       total_steps_override=args.total_steps,
                       phase=1, phase1_ckpt=None,
                       use_hf_mount=args.hf_mount,
-                      resume_ckpt=args.resume_ckpt)
+                      resume_ckpt=args.resume_ckpt, config_path=args.config)
         else:
             print(f"[Auto-chain] Phase 1 already done; "
                   f"jumping to Phase 2 (phase2_step ckpts: {len(phase2_steps)}).")
@@ -2555,13 +2575,13 @@ if __name__ == "__main__":
                             phase=2,
                             phase1_ckpt=str(final_path),
                             use_hf_mount=args.hf_mount,
-                            resume_ckpt=None)
+                            resume_ckpt=None, config_path=args.config)
     else:
         metrics = train_run(args.run, dry_run=args.dry_run,
                             total_steps_override=args.total_steps,
                             phase=args.phase,
                             phase1_ckpt=args.phase1_ckpt,
                             use_hf_mount=args.hf_mount,
-                            resume_ckpt=args.resume_ckpt)
+                            resume_ckpt=args.resume_ckpt, config_path=args.config)
     print(f"\nFinished: {args.run}")
     print(json.dumps(metrics, indent=2))

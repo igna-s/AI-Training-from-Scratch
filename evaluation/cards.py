@@ -139,7 +139,10 @@ def tables(records):
 
 
 def architecture(records):
-    lines = ['## Architecture recorded in each checkpoint', '',
+    lines = ['## Source and dataset provenance', '',
+             'Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are included in `evaluation/source/`. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.', '',
+             'The [dataset review](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) documents short/empty teacher arrays, an observed dense-signal reader alignment defect, and UTF-8 conversion limitations. These observations do not isolate their effect on a training run. No weights, stored datasets or numerical model implementation were repaired in this documentation update.', '',
+             '## Architecture recorded in each checkpoint', '',
              'Run names identify experiments; dimensions and features below come from the saved configuration. FP16 is the training quantization label, while this audit executes the loaded tensors in FP32. “50M” and “10M” in older cards were design families, not exact model sizes.', '',
              '| Run | Mixer | Tokens | Quant. label | Width / layers / FFN | Local decoder | FP residual | Bolmo | DeleteGate | PFNet hidden | Channel decay |',
              '|---|---|---|---|---|---|---|---|---|---:|---|']
@@ -192,8 +195,10 @@ def build_cards(inventory, corpus):
         '## Archive inventory', '', *manifest_rows(inventory), '',
         'Sizes use decimal MB and GB. Step counts include phase-2 step files. Highest step is parsed from filenames and does not merge training phases into a continuous training counter.', '',
         *quickstart(ARCHIVE, inventory[ARCHIVE]['sha'], compact=True),
+        '## Experiment provenance', '',
+        'The source repository preserves the historical Kaggle, Lightning and AMD code. The 34 exported configurations, checkpoint hashes and saved steps are indexed in `evaluation/source/experiments/published/manifest.json`. See the [provenance review](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Current presets differ from some published configurations; use `--config` to select a recorded experiment. The source commit of each training job and a complete training dependency lock were not recorded.', '',
         '## Resume training', '', 'Use an intermediate checkpoint, not an inference-only packed final. The current source CLI names the argument `--resume_ckpt`:', '',
-        '```powershell', 'python -m training.ablation --run run_04 --resume_ckpt D:/cpu1/active/run_04/checkpoint_run_04_step640.pt', '```', '',
+        '```powershell', 'python -m training.ablation --run run_04 --config experiments/published/configs/run_04.json --resume_ckpt D:/cpu1/active/run_04/checkpoint_run_04_step640.pt --skip-install', '```', '',
         'Download the exact step file from its run folder first. Resume requires matching source/configuration, dependencies, and suitable training hardware. This audit did not run a training-resume experiment.', '',
         '## Scope of the measured results', '',
         f'The results below were measured on the {len(records)} published exports in [{FINAL}](https://huggingface.co/{FINAL}), **not by evaluating every intermediate archive checkpoint**. Matching run names do not prove tensor identity between a packed final, an intermediate step, and an export. No packed/FP32 numerical-parity claim is made by this card.', '',
@@ -212,35 +217,19 @@ def build_cards(inventory, corpus):
 
 
 def dataset_card():
-    """Update the local companion template; publication scope is the two model repos."""
+    """Preserve the reviewed canonical dataset card; reject inventory drift."""
     path = OUT/'dataset_inventory.json'
     if not path.exists():
         return
-    v = json.loads(path.read_text(encoding='utf-8'))
-    lines = ['---', 'license: mit', 'task_categories:', '- text-generation', 'language:', '- en', 'configs:', '- config_name: byte_marginalized', '  data_files:', '  - split: train', '    path: byte_marginalized/shard_*.parquet', '- config_name: bpe_tokenized', '  data_files:', '  - split: train', '    path: bpe_tokenized/shard_*.parquet', '---', '',
-        '# CPU-1 ablation training dataset', '',
-        'Companion dataset for the CPU-1 distillation experiments. The extraction source config uses Qwen/Qwen2.5-3B as teacher over FineWeb text. The byte and BPE subsets have different schemas and different shard counts; they must not be assumed to be aligned row by row.', '',
-        '## Verified Hub inventory: 2026-10-06', '', f'Revision: `{v["sha"]}`. The following counts and compressed sizes are from the Hub file listing, not from a full scan of the dataset rows.', '', '| Subset | Parquet files | Compressed GB | Shard range | Missing IDs within range |', '|---|---:|---:|---|---|']
-    for subset in ('byte_marginalized','bpe_tokenized'):
-        fs = [f for f in v['siblings'] if f['rfilename'].startswith(subset+'/') and f['rfilename'].endswith('.parquet')]
-        ids = sorted(int(re.search(r'shard_(\d+)\.parquet$',f['rfilename']).group(1)) for f in fs)
-        missing = sorted(set(range(min(ids),max(ids)+1))-set(ids))
-        lines.append(f'| `{subset}` | {len(fs)} | {sum(f["size"] for f in fs)/1e9:.3f} | {min(ids):04d}–{max(ids):04d} | '+', '.join(f'{n:04d}' for n in missing)+' |')
-    lines += ['', 'Sizes use decimal GB. Auxiliary `stream_checkpoint.json` and `stream_carry.pkl` files are extraction bookkeeping, not dataset examples. The file listing does not establish document totals, row totals, teacher coverage, split independence, or whether extraction has finished. Older shard and token totals must not be treated as current.', '',
-        '## Schema expected by the source adapters', '',
-        '| Subset | Fields | Interpretation |', '|---|---|---|',
-        '| Byte | `patches`, `targets`, `teacher_probs`, `teacher_mask`; optional `teacher_hidden`, `teacher_dim` | Flattened byte patches and next-patch targets; teacher signal and mask. Hidden arrays may be compacted to teacher-covered positions; follow the adapter. |',
-        '| BPE | `input_ids`, `labels`, `teacher_probs_bpe`, `teacher_ids_bpe`, `teacher_mask_bpe` | Qwen token IDs and shifted labels; flattened teacher top-k values and their original IDs. |', '',
-        'This table describes `data_pipeline/prepare.py` and the readers in `cpu1/components.py`; the October audit did not validate every row or measure teacher-signal quality. Check actual row lengths, optional fields and `teacher_dim` rather than assuming a fixed hidden width or identical schemas in all shards.', '',
-        'The extraction source currently configures four-byte patches, 5,000-step sequences, and top-128 BPE teacher entries. Those are writer settings, not a claim that every stored row matches them. Byte teacher signals are first-byte marginalizations of BPE candidates at mapped boundaries; they are not full autoregressive distributions for all four positions. Training uses the coverage masks.', '',
-        'The BPE adapter maps IDs outside the configured student vocabulary to ID 0, and filters teacher IDs accordingly. This is a lossy representation. Its token perplexity cannot be compared directly with byte perplexity or with an untruncated Qwen language model.', '',
-        '## Stream one subset', '', '```python', 'import os', 'os.environ["HF_HOME"] = "D:/cpu1/hf"', 'os.environ["HF_DATASETS_CACHE"] = "D:/cpu1/datasets"', 'from datasets import load_dataset', 'dataset = load_dataset(', '    "Cukinator/cpu1-ablation-dataset",', '    "byte_marginalized",', f'    revision="{v["sha"]}",', '    split="train", streaming=True,', '    cache_dir="D:/cpu1/datasets",', ')', 'row = next(iter(dataset))', 'print(row.keys())', '```', '',
-        'Only a training split is declared by the Hub card. If you need held-out evaluation, create and document a deterministic independent split or use a separate test corpus. Never silently substitute the training split for validation. Do not zip the byte and BPE streams by shard index or row index.', '',
-        '## Model evaluation', '',
-        'The new model-card audit uses a separate 32-passage WikiText test sample and loads no teacher model. Its corpus, procedure and raw results are in the [FP32 model repository](https://huggingface.co/Cukinator/cpu1-ablations-final). That diagnostic does not evaluate this dataset’s teacher coverage, entropy, hidden-state alignment, or full training distribution.', '',
-        '## Related artifacts', '', '- [Source and adapters](https://github.com/igna-s/New-1.58)', '- [FP32 exports and common evaluation](https://huggingface.co/Cukinator/cpu1-ablations-final)', '- [Packed finals and intermediate checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints)', '',
-        '## License', '', 'The dataset Hub metadata declares MIT. FineWeb source data and Qwen tokenizer/teacher assets retain their own upstream licenses. The repository label does not replace those upstream terms.', '']
-    (ROOT/'docs'/'model_cards'/'cpu1-ablation-dataset.md').write_text('\n'.join(lines), encoding='utf-8')
+    inventory = json.loads(path.read_text(encoding='utf-8'))
+    card = (ROOT/'docs/model_cards/cpu1-ablation-dataset.md').read_text(encoding='utf-8')
+    if inventory['sha'] not in card:
+        raise ValueError('Dataset card revision differs from the restored evidence')
+    for subset in ('byte_marginalized', 'bpe_tokenized'):
+        count = sum(f['rfilename'].startswith(subset+'/') and
+                    f['rfilename'].endswith('.parquet') for f in inventory['siblings'])
+        if f'| `{subset}` | {count} |' not in card:
+            raise ValueError('Review the dataset card before publishing changed shard counts')
 
 
 def save_environment(records):
@@ -283,12 +272,14 @@ def upload_cards(inventory):
         files = [('README.md', ROOT/'docs'/'model_cards'/f'{stem}.md')]
         files += [(f'evaluation/{p.name}', p) for p in sorted(OUT.glob('*.json'))]
         files += [('evaluation/CORPUS_LICENSE.txt', OUT/'CORPUS_LICENSE.txt')]
-        source_dirs = ('cpu1', 'training', 'evaluation', 'tests')
-        files += [(f'evaluation/source/{p.relative_to(ROOT).as_posix()}', p)
-                  for directory in source_dirs for p in sorted((ROOT/directory).glob('*.py'))]
-        files += [(f'evaluation/source/requirements/{p.name}', p)
-                  for p in sorted((ROOT/'requirements').glob('*.txt'))]
-        commit = api.create_commit(repo_id=repo, repo_type='model', parent_commit=parent, commit_message='Rebuild model card from reproducible CPU audit; include evidence and limitations', operations=[CommitOperationAdd(path_in_repo=name,path_or_fileobj=str(path)) for name,path in files])
+        # Bundle only tracked public files, never ignored binaries/caches/secrets.
+        import subprocess
+        public_paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode('utf-8').split('\0')
+        files += [(f'evaluation/source/{name}', ROOT/name) for name in public_paths if name]
+        publication = ROOT/'outputs/provenance/source-publication.json'
+        if publication.exists():
+            files += [('evaluation/source-publication.json', publication)]
+        commit = api.create_commit(repo_id=repo, repo_type='model', parent_commit=parent, commit_message='Document recovered experiment sources, saved configurations and dataset limitations', operations=[CommitOperationAdd(path_in_repo=name,path_or_fileobj=str(path)) for name,path in files])
         commits[repo] = {'oid': commit.oid, 'url': commit.commit_url}
         # Verify the actual published README bytes against the local card.
         from huggingface_hub import hf_hub_download

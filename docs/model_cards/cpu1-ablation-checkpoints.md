@@ -103,12 +103,16 @@ print([tuple(head.shape) for head in logits])
 
 This forward uses zero target bytes in the local decoder; it is a shape smoke test. For scored likelihood, pass `byte_targets` as shown in the audit. For byte generation with retained Transformer context and one recurrent prefill, use `generation()` in `evaluation/audit.py`. Generation remains experimental; inspect the saved examples before choosing a checkpoint.
 
+## Experiment provenance
+
+The source repository preserves the historical Kaggle, Lightning and AMD code. The 34 exported configurations, checkpoint hashes and saved steps are indexed in `evaluation/source/experiments/published/manifest.json`. See the [provenance review](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Current presets differ from some published configurations; use `--config` to select a recorded experiment. The source commit of each training job and a complete training dependency lock were not recorded.
+
 ## Resume training
 
 Use an intermediate checkpoint, not an inference-only packed final. The current source CLI names the argument `--resume_ckpt`:
 
 ```powershell
-python -m training.ablation --run run_04 --resume_ckpt D:/cpu1/active/run_04/checkpoint_run_04_step640.pt
+python -m training.ablation --run run_04 --config experiments/published/configs/run_04.json --resume_ckpt D:/cpu1/active/run_04/checkpoint_run_04_step640.pt --skip-install
 ```
 
 Download the exact step file from its run folder first. Resume requires matching source/configuration, dependencies, and suitable training hardware. This audit did not run a training-resume experiment.
@@ -324,6 +328,12 @@ Scores and speed are unavailable when model loading or numerical evaluation fail
 | `run_02_v3` | ValueError: nonfinite loss |
 | `run_02a_byte_only_heads_v3` | ValueError: nonfinite loss |
 | `run_08_v3` | ValueError: nonfinite loss |
+
+## Source and dataset provenance
+
+Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are included in `evaluation/source/`. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.
+
+The [dataset review](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) documents short/empty teacher arrays, an observed dense-signal reader alignment defect, and UTF-8 conversion limitations. These observations do not isolate their effect on a training run. No weights, stored datasets or numerical model implementation were repaired in this documentation update.
 
 ## Architecture recorded in each checkpoint
 
