@@ -98,8 +98,8 @@ def parquet_inventory(info):
 
 
 def publish_card(report_path, storage):
-    """Publish documentation/evidence only after checking every parquet hash."""
-    from huggingface_hub import HfApi, CommitOperationAdd, hf_hub_download
+    """Publish only the reviewed card after checking every parquet hash."""
+    from huggingface_hub import HfApi, hf_hub_download
     token = os.environ.get("HF_TOKEN")
     if not token:
         raise RuntimeError("Set HF_TOKEN in the environment before publishing")
@@ -111,15 +111,11 @@ def publish_card(report_path, storage):
     if parquet_inventory(expected) != parquet_inventory(current):
         raise ValueError("Dataset files changed; review changed data before publishing")
     card = ROOT/"docs/model_cards/cpu1-ablation-dataset.md"
-    files = [("README.md", card), ("provenance/dataset-review.json", report_path)]
-    for name in ("source-publication.json", "history-verification.json"):
-        path = ROOT/"outputs/provenance"/name
-        if path.exists():
-            files.append(("provenance/"+name, path))
+    from evaluation.publication import card_operations
+    operations = card_operations(card, current.siblings, 'dataset')
     commit = api.create_commit(repo_id=REPO, repo_type="dataset", parent_commit=current.sha,
-        commit_message="Document extraction history, reproducible sample checks and reader limitations",
-        operations=[CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path))
-                    for name,path in files])
+        commit_message="Keep training data on Hub; link code and review evidence on GitHub",
+        operations=operations)
     published = hf_hub_download(REPO, "README.md", repo_type="dataset",
         revision=commit.oid, cache_dir=storage/"hf/hub", token=token)
     if Path(published).read_bytes() != card.read_bytes():
@@ -138,7 +134,7 @@ def main():
     parser.add_argument("--offline", action="store_true", help="Inspect previously downloaded files")
     parser.add_argument("--output", type=Path, default=ROOT/"outputs/provenance/dataset-review.json")
     parser.add_argument("--tokenizer", action="store_true", help="Also inspect a pinned tokenizer on synthetic UTF-8 text")
-    parser.add_argument("--publish-card", action="store_true", help="Publish the reviewed card/report with HF_TOKEN; parquet inventory must match")
+    parser.add_argument("--publish-card", action="store_true", help="Publish the reviewed card with HF_TOKEN; code and reports remain on GitHub")
     args = parser.parse_args()
     storage = args.storage.resolve()
     if sys.platform == "win32" and storage.drive.upper() != "D:":

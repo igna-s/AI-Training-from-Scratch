@@ -1,0 +1,7 @@
+The text excerpts in corpus.json originate from WikiText (Salesforce/wikitext), based on English Wikipedia.
+Dataset authors and contributors: see https://huggingface.co/datasets/Salesforce/wikitext .
+Upstream dataset metadata declares CC-BY-SA-3.0 and GFDL.
+CC-BY-SA-3.0: https://creativecommons.org/licenses/by-sa/3.0/
+GFDL: https://www.gnu.org/licenses/fdl-1.3.html
+Changes: selection of 32 test paragraphs and truncation to 260 UTF-8 bytes.
+The corpus remains under its upstream terms; the model repository Apache-2.0 metadata does not relicense these excerpts.

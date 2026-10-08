@@ -1,0 +1,137 @@
+{
+  "run": "run_02_v3",
+  "revision": "65951289352c1a036b12ba6d888af037e7c90b13",
+  "file": "run_02_v3/model.pt",
+  "sha256": "bc635a9fe2730240543705bda2f0bfbc6dd5d9d2759f7d1369ecb464e021c46a",
+  "file_bytes": 155353298,
+  "date_utc": "2026-10-06T22:18:50.217215+00:00",
+  "threads": 1,
+  "torch": "2.6.0+cu124",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+  "corpus_sha256": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+  "suite_sha256": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+  "seed": 42,
+  "config": {
+    "d_model": 512,
+    "n_layers": 12,
+    "d_ff": 1376,
+    "fp_rank": 0,
+    "n_heads": 8,
+    "head_dim": 64,
+    "window_size": 512,
+    "pfnet_hidden": 0,
+    "batch_per_gpu": 8,
+    "gradient_accumulation_steps": 3,
+    "lr": 0.0003,
+    "min_lr": 3e-05,
+    "warmup_steps": 2426,
+    "total_steps": 48536,
+    "weight_decay_bitlinear": 0.1,
+    "weight_decay_fpresidual": 0.0,
+    "weight_decay_heads": 0.01,
+    "bitlinear_lr_scale": 2.0,
+    "grad_clip": 1.0,
+    "seed": 42,
+    "training_signal": "ce_only",
+    "temperature": 4.0,
+    "alpha_kl": 0.9,
+    "alpha_ce": 0.1,
+    "dataset_repo": "HuggingFaceFW/fineweb",
+    "seq_len": 5000,
+    "patch_size": 4,
+    "use_local_decoder": true,
+    "local_decoder_dim": 128,
+    "local_decoder_heads": 4,
+    "local_decoder_ff_ratio": 4.0,
+    "local_decoder_fp16": false,
+    "checkpoint_repo": "Cukinator/cpu1-ablation-checkpoints-v3",
+    "save_every_steps": 2426,
+    "checkpoint_fraction": 0.05,
+    "log_every_steps": 500,
+    "chinchilla": true,
+    "chinchilla_tokens_per_param": 150,
+    "warmup_ratio": 0.05,
+    "target_elimination": 0.4,
+    "mlgru_use_wo": true,
+    "mlgru_state_expansion": 1,
+    "delete_gate_hard": true,
+    "delete_gate_gumbel": true,
+    "delete_gate_merge": true,
+    "delete_gate_bimodal_lambda": 0.05,
+    "bolmo_cross_attn_heads": 2,
+    "bolmo_cross_patch_window": 3,
+    "bolmo_causal_boundary": false,
+    "bolmo_causal_cross_patch": false,
+    "use_real_gather": false,
+    "phase2_budget_fraction": 0.5,
+    "use_ternary": false,
+    "use_boundary_predictor": false,
+    "use_delete_gate": false,
+    "use_embedding_alignment": false,
+    "name": "transformer_byte_fp16",
+    "token_mixer": "transformer",
+    "tokenization": "byte",
+    "quantization": "fp16",
+    "fp_residual": false,
+    "description": "+Byte patches + LocalByteDecoder — adds MegaByte intra-patch autoregression on top of run_02a.",
+    "cites": [
+      "MegaByte (Yu et al., 2023)"
+    ],
+    "_current_phase": 1,
+    "use_gradient_checkpointing": false
+  },
+  "step": 10963,
+  "stored_training_metrics": {},
+  "parameters": 38829569,
+  "parameter_bytes": 155318276,
+  "format": "fp32",
+  "strict_load": true,
+  "correctness": {
+    "forward_shapes": {
+      "status": "FAIL",
+      "error": "NaN en logits batch=1 seq=1 head=0\nNaN en logits batch=1 seq=1 head=1\nNaN en logits batch=1 seq=1 head=2\nNaN en logits batch=1 seq=1 head=3\nNaN en logits batch=1 seq=64 head=0\nNaN en logits batch=1 seq=64 head=1\nNaN en logits batch=1 seq=64 head=2\nNaN en logits batch=1 seq=64 head=3\nNaN en logits batch=1 seq=256 head=0\nNaN en logits batch=1 seq=256 head=1\nNaN en logits batch=1 seq=256 head=2\nNaN en logits batch=1 seq=256 head=3\nNaN en logits batch=2 seq=1 head=0\nNaN en logits batch=2 seq=1 head=1\nNaN en logits batch=2 seq=1 head=2\nNaN en logits batch=2 seq=1 head=3\nNaN en logits batch=2 seq=64 head=0\nNaN en logits batch=2 seq=64 head=1\nNaN en logits batch=2 seq=64 head=2\nNaN en logits batch=2 seq=64 head=3\nNaN en logits batch=2 seq=256 head=0\nNaN en logits batch=2 seq=256 head=1\nNaN en logits batch=2 seq=256 head=2\nNaN en logits batch=2 seq=256 head=3"
+    },
+    "probs": {
+      "status": "FAIL",
+      "error": "Head 0: suma de probs error=nan"
+    },
+    "determinism": {
+      "status": "FAIL",
+      "error": "Head 0: output no deterministico, diff=nan"
+    },
+    "state_prop": {
+      "status": "N/A",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    },
+    "ternary_weights": {
+      "status": "N/A",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo FP16 (sin BitLinear)"
+      }
+    },
+    "state_size": {
+      "status": "N/A",
+      "time_s": 0.0,
+      "result": {
+        "skipped": true,
+        "reason": "modelo no recurrente (Transformer)"
+      }
+    },
+    "causality": {
+      "status": "ERROR",
+      "max_prefix_logit_diff": null,
+      "tolerance": 1e-05,
+      "protocol": "32 input steps; change steps 16:32; compare all heads at steps 0:16 with identical zero local targets"
+    }
+  },
+  "error": "ValueError: nonfinite loss",
+  "total_seconds": 10.691299699996307,
+  "evaluation_complete": true
+}

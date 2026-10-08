@@ -10,7 +10,7 @@
       "checkpoint_file": "run_01/model.pt",
       "checkpoint_sha256": "afd881decfab7c40f06e675f727561f9ad81ec3c82fd39eaaf33bf2cbf09fb28",
       "saved_step": 912,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_01.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_01.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 54735360
     },
@@ -23,7 +23,7 @@
       "checkpoint_file": "run_01_v3/model.pt",
       "checkpoint_sha256": "dc8f256255308d36217f51d6c91c0f99a569315efc040bb4a8a6fcdb51049e36",
       "saved_step": 12173,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_01_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_01_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 54735360
     },
@@ -36,7 +36,7 @@
       "checkpoint_file": "run_02/model.pt",
       "checkpoint_sha256": "9da358889c0d72fa04b155b720dc726b3dca050574e9e5a40564a24d38d3eb5e",
       "saved_step": 647,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_02.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38829569
     },
@@ -49,7 +49,7 @@
       "checkpoint_file": "run_02_v3/model.pt",
       "checkpoint_sha256": "bc635a9fe2730240543705bda2f0bfbc6dd5d9d2759f7d1369ecb464e021c46a",
       "saved_step": 10963,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_02_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38829569
     },
@@ -62,7 +62,7 @@
       "checkpoint_file": "run_02a_byte_only_heads/model.pt",
       "checkpoint_sha256": "a97ca68d1d8882da2f288309aee1d10c9b623ef84694d3d4ed0e0988c6cf242a",
       "saved_step": 641,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_02a_byte_only_heads.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02a_byte_only_heads.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38500868
     },
@@ -75,7 +75,7 @@
       "checkpoint_file": "run_02a_byte_only_heads_v3/model.pt",
       "checkpoint_sha256": "77e31f9ff202162d745b020eb9cfe8d5a748dd614ba114f712acca2c1507d5e3",
       "saved_step": 16327,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_02a_byte_only_heads_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_02a_byte_only_heads_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38500868
     },
@@ -88,7 +88,7 @@
       "checkpoint_file": "run_03/model.pt",
       "checkpoint_sha256": "9ceb9c3aa2d98d45cf102f1a7f39c596dd4c5fcba698eb581fdf5a890fb72498",
       "saved_step": 647,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_03.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_03.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38829569
     },
@@ -101,7 +101,7 @@
       "checkpoint_file": "run_03_v3/model.pt",
       "checkpoint_sha256": "ea871efa66b8a301883e743f045ed8dc4e52949ed35c37809d41d7461626c044",
       "saved_step": 6187,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_03_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_03_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38829569
     },
@@ -114,7 +114,7 @@
       "checkpoint_file": "run_04/model.pt",
       "checkpoint_sha256": "3af6570f55ecdf604adacce6f67a319aaa7823b7177a4023143401d7fe145f5e",
       "saved_step": 647,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_04.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38854145
     },
@@ -127,7 +127,7 @@
       "checkpoint_file": "run_04_r2/model.pt",
       "checkpoint_sha256": "6e8f1fff076f0482c4970f01c7aa944315d06bae748dad9552345ea36285bf26",
       "saved_step": 4840,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_04_r2.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04_r2.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38854145
     },
@@ -140,7 +140,7 @@
       "checkpoint_file": "run_04_v3/model.pt",
       "checkpoint_sha256": "32c79b76fa76eca39c8d733c08c6e8acd16d23fefe9dd6f0684a53a018042c09",
       "saved_step": 6074,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_04_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_04_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38854145
     },
@@ -153,7 +153,7 @@
       "checkpoint_file": "run_05/model.pt",
       "checkpoint_sha256": "38009430f02aa997948340acb7e9ea80956fc777c0fcb61ab878dd7bd346ced2",
       "saved_step": 649,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_05.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38993921
     },
@@ -166,7 +166,7 @@
       "checkpoint_file": "run_05_v3/model.pt",
       "checkpoint_sha256": "bca43e31e0822c8ae008d5b930113b5cb9346a4623e896093375c4c0b5113296",
       "saved_step": 4390,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_05_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38993921
     },
@@ -179,7 +179,7 @@
       "checkpoint_file": "run_05b_kernel_strict/model.pt",
       "checkpoint_sha256": "68619093de4f4a914c7ddc50ca4aaf0774b82ec21b98dae892491489b0bddaf0",
       "saved_step": 600,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_05b_kernel_strict.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05b_kernel_strict.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 35842049
     },
@@ -192,7 +192,7 @@
       "checkpoint_file": "run_05b_kernel_strict_v3/model.pt",
       "checkpoint_sha256": "7330a3759f2bcbe03952132b56e11110a2d754c0ccbca896deef7cdaaf729f2f",
       "saved_step": 2573,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_05b_kernel_strict_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_05b_kernel_strict_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 35842049
     },
@@ -205,7 +205,7 @@
       "checkpoint_file": "run_06/model.pt",
       "checkpoint_sha256": "08359c613616f9a6aad28c3c192d362902e7a6b9f966cad78da3c029315c6e27",
       "saved_step": 649,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_06.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_06.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38994146
     },
@@ -218,7 +218,7 @@
       "checkpoint_file": "run_06_v3/model.pt",
       "checkpoint_sha256": "d2c08a75f3f35e64ac89975e2124d2de2917bc11f599f2965558e869cd376fe8",
       "saved_step": 4237,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_06_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_06_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38994146
     },
@@ -231,7 +231,7 @@
       "checkpoint_file": "run_07/model.pt",
       "checkpoint_sha256": "769a775926b401bef367195e9060afb0d1fe04e93cb3d347fb35c50f2bbafba7",
       "saved_step": 650,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_07.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_07.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 39028579
     },
@@ -244,7 +244,7 @@
       "checkpoint_file": "run_07_r2/model.pt",
       "checkpoint_sha256": "1117741fa49dda11a3157950dfbd4a802354f055fb70436de2146c3cc6c278d8",
       "saved_step": 4860,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_07_r2.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_07_r2.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 39028579
     },
@@ -257,7 +257,7 @@
       "checkpoint_file": "run_08/model.pt",
       "checkpoint_sha256": "c847ce660f4556040787baf247b5390cc66b5758236e7b64bb687145e2b660e9",
       "saved_step": 647,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_08.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_08.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38854145
     },
@@ -270,7 +270,7 @@
       "checkpoint_file": "run_08_v3/model.pt",
       "checkpoint_sha256": "d9b67685ec976e175b9481eef24258e3dff2ef53674c598e3b3a3fa5e0026471",
       "saved_step": 3858,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_08_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_08_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 38854145
     },
@@ -283,7 +283,7 @@
       "checkpoint_file": "run_09/model.pt",
       "checkpoint_sha256": "857bb84ec29709140ebae70dcb1779591d730f1183ae2526e1379e634b6ad106",
       "saved_step": 657,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_09.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_09.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 39427939
     },
@@ -296,7 +296,7 @@
       "checkpoint_file": "run_10/model.pt",
       "checkpoint_sha256": "0419cfbeda000493465f3d275352a76a59511232d553275bfcbe0aa45cd84d16",
       "saved_step": 657,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_10.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_10.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 39434083
     },
@@ -309,7 +309,7 @@
       "checkpoint_file": "run_13/model.pt",
       "checkpoint_sha256": "21d30529f1f7ce72670c8d9b470165b662a8a41702842a23d8d90de0aa37a1c4",
       "saved_step": 600,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_13.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 12547785
     },
@@ -322,7 +322,7 @@
       "checkpoint_file": "run_13_r2/model.pt",
       "checkpoint_sha256": "ad0aa7ce787677f5bbf8b11962720a203b3880218d4a1f1a0eaa178258162a4c",
       "saved_step": 1568,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_13_r2.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13_r2.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 12547785
     },
@@ -335,7 +335,7 @@
       "checkpoint_file": "run_13_v3/model.pt",
       "checkpoint_sha256": "0b53b891bfd8017d2027a266fdaca617ec11a2049b3987204bc0d67038db4453",
       "saved_step": 9290,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_13_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_13_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 12547785
     },
@@ -348,7 +348,7 @@
       "checkpoint_file": "run_14/model.pt",
       "checkpoint_sha256": "21cb3c94a5742d587934710f662bb4104a77634025fc0de43b517a88088af6e1",
       "saved_step": 600,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_14.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10691371
     },
@@ -361,7 +361,7 @@
       "checkpoint_file": "run_14_r2/model.pt",
       "checkpoint_sha256": "9acfcd5c043fe11f0997fee0919fa93ee80eed55816557638706661680c0666e",
       "saved_step": 1336,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_14_r2.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14_r2.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10691371
     },
@@ -374,7 +374,7 @@
       "checkpoint_file": "run_14_v3/model.pt",
       "checkpoint_sha256": "553f07ea4e4857e6099b224cf7ba099135450e78a94f6adb9ad894b199d1c3c4",
       "saved_step": 9775,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_14_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_14_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10691371
     },
@@ -387,7 +387,7 @@
       "checkpoint_file": "run_15/model.pt",
       "checkpoint_sha256": "9a78524371ab688b9801f2b754afa9a44cbd2db06a0f5cf5e9bb366a80497158",
       "saved_step": 600,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_15.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10732331
     },
@@ -400,7 +400,7 @@
       "checkpoint_file": "run_15_r2/model.pt",
       "checkpoint_sha256": "5acf8861484fe31c49b59b50d816f0e7fee896da030773d8fab4428e06c19d7d",
       "saved_step": 1341,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_15_r2.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15_r2.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10732331
     },
@@ -413,7 +413,7 @@
       "checkpoint_file": "run_15_v3/model.pt",
       "checkpoint_sha256": "4d192808ecde2c4d097448869e40641044477f7661bacc500971af8e4008682c",
       "saved_step": 2350,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_15_v3.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_15_v3.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10732331
     },
@@ -426,7 +426,7 @@
       "checkpoint_file": "run_16/model.pt",
       "checkpoint_sha256": "b5d819e4f8a8f311b4f828461ab3d3f4888e6083ef8e41ddba775136a1217462",
       "saved_step": 600,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_16.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_16.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10691371
     },
@@ -439,7 +439,7 @@
       "checkpoint_file": "run_16_r2/model.pt",
       "checkpoint_sha256": "de69bc54a1eba051f8714a3fbfb792643da7f96c6c53626857f6b9043dd8c5df",
       "saved_step": 1336,
-      "audit_result_url": "https://huggingface.co/Cukinator/cpu1-ablations-final/blob/d38678e7c5d18577f36edade64495237c72a44b5/evaluation/run_16_r2.json",
+      "audit_result_url": "https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/model-audit-2026-10-06/run_16_r2.json",
       "configuration_source": "configuration recorded in the pinned audit; use_gradient_checkpointing was disabled by the evaluation loader",
       "parameters": 10691371
     }

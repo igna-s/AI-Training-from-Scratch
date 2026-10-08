@@ -7,6 +7,7 @@ import re
 import sys
 
 from evaluation.audit import ROOT, OUT, FINAL, ARCHIVE, DATA, DATA_REV, DATA_FILE, PROMPTS, sha
+from evaluation.publication import SOURCE_TREE, SOURCE_BLOB, AUDIT_TREE, AUDIT_BLOB, HISTORICAL_AUDIT, card_operations
 
 
 def link(repo, filename, revision='main'):
@@ -46,7 +47,7 @@ def audit_summary(records):
 def protocol(inventory, corpus, records):
     return [
         '## Evaluation protocol', '',
-        f'This card was rebuilt from a fresh CPU audit on **2026-10-06**. All {len(records)} published FP32 exports were attempted; {sum(r.get("strict_load",False) for r in records)} loaded with zero missing or unexpected state keys. Numerical and loading errors remain visible. Raw JSON, the exact text sample, and the repository inventories are included in [`evaluation/`](evaluation/). Previous `resultados/ablation_*.json` reports are historical and were not mixed into these tables.', '',
+        f'This card was rebuilt from a fresh CPU audit on **2026-10-06**. All {len(records)} published FP32 exports were attempted; {sum(r.get("strict_load",False) for r in records)} loaded with zero missing or unexpected state keys. Numerical and loading errors remain visible. Raw JSON, the exact text sample, and the repository inventories are preserved in [the GitHub audit evidence](evaluation/). Previous `resultados/ablation_*.json` reports are historical and were not mixed into these tables.', '',
         '- Hardware: Intel Core i7-8750H (6 cores / 12 logical processors), Windows 11; CPU execution with **1 PyTorch thread**, batch size 1, FP32 parameters. PyTorch ' + records[0]['torch'] + '. No custom C/C++ kernels were used.',
         '- Test text: [`Salesforce/wikitext`, `wikitext-2-raw-v1`, test split](https://huggingface.co/datasets/Salesforce/wikitext). First 32 non-heading paragraphs with at least 260 UTF-8 bytes, each truncated to 260 bytes without an incomplete trailing character. This is a small diagnostic sample, not the complete benchmark. No exhaustive training-overlap audit was performed.',
         '- Corpus attribution: WikiText by its dataset authors, based on English Wikipedia contributions. The dataset metadata lists CC-BY-SA-3.0 and GFDL; the included corpus excerpt retains those upstream terms, separately from the model repository license. See `evaluation/CORPUS_LICENSE.txt`.',
@@ -62,8 +63,9 @@ def protocol(inventory, corpus, records):
         '- Printable ASCII fraction, UTF-8 validity, and repetition are diagnostics; they do not measure factual accuracy, instruction following, or useful language quality. RAM columns report parameter storage, not a measured peak process footprint. Ternary models still hold FP32 parameters and simulate quantization in PyTorch.', '',
         f'Export repository revision audited: `{inventory[FINAL]["sha"]}`. Archive inventory revision: `{inventory[ARCHIVE]["sha"]}`. Each result records its checkpoint SHA-256, actual parameter count, saved step, configuration, thread count, time, sample hash, and evaluator hash.', '',
         '### Reproduce', '',
+        f'Code: [pinned GitHub checkout]({SOURCE_TREE}). Evidence: [original audit records]({AUDIT_TREE}). Exact historical evaluator: [audit_readmes.py]({HISTORICAL_AUDIT}) (its SHA-256 matches the recorded suite hash).', '',
         'From the source checkout, install PyTorch plus `huggingface_hub`, `transformers`, `tokenizers`, `pyarrow`, `psutil`, `numpy`, and `datasets`. Pin the versions from `evaluation/environment.json` when reproducing this run.', '',
-        'The audit additions are bundled in `evaluation/source/`. Copy those Python files into the checkout’s `evaluation/` directory when using a source revision that predates this audit. The base Git commit is recorded in `evaluation/environment.json`.', '',
+        f'Code and evidence are maintained in the [pinned GitHub checkout]({SOURCE_TREE}). Original source/environment metadata remains in the audit records.', '',
         '```powershell',
         'python -m evaluation.audit --storage D:/cpu1-readme-audit --threads 1',
         'python -m evaluation.audit --storage D:/cpu1-readme-audit --cards',
@@ -140,7 +142,7 @@ def tables(records):
 
 def architecture(records):
     lines = ['## Source and dataset provenance', '',
-             'Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are included in `evaluation/source/`. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.', '',
+             'Historical extraction and training code is retained in the [GitHub history](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Kaggle and Lightning recipes, AMD training, and 34 configuration records are maintained in the source repository on GitHub. The configuration records preserve published budgets, including the 150 tokens/parameter v3 setting; they do not prove the exact training source commit or achieved exposure.', '',
              'The [dataset review](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) documents short/empty teacher arrays, an observed dense-signal reader alignment defect, and UTF-8 conversion limitations. These observations do not isolate their effect on a training run. No weights, stored datasets or numerical model implementation were repaired in this documentation update.', '',
              '## Architecture recorded in each checkpoint', '',
              'Run names identify experiments; dimensions and features below come from the saved configuration. FP16 is the training quantization label, while this audit executes the loaded tensors in FP32. “50M” and “10M” in older cards were design families, not exact model sizes.', '',
@@ -196,7 +198,7 @@ def build_cards(inventory, corpus):
         'Sizes use decimal MB and GB. Step counts include phase-2 step files. Highest step is parsed from filenames and does not merge training phases into a continuous training counter.', '',
         *quickstart(ARCHIVE, inventory[ARCHIVE]['sha'], compact=True),
         '## Experiment provenance', '',
-        'The source repository preserves the historical Kaggle, Lightning and AMD code. The 34 exported configurations, checkpoint hashes and saved steps are indexed in `evaluation/source/experiments/published/manifest.json`. See the [provenance review](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Current presets differ from some published configurations; use `--config` to select a recorded experiment. The source commit of each training job and a complete training dependency lock were not recorded.', '',
+        'The source repository preserves the historical Kaggle, Lightning and AMD code. The 34 exported configurations, checkpoint hashes and saved steps are indexed in `experiments/published/manifest.json` in the GitHub source repository. See the [provenance review](https://github.com/igna-s/New-1.58/tree/main/docs/provenance). Current presets differ from some published configurations; use `--config` to select a recorded experiment. The source commit of each training job and a complete training dependency lock were not recorded.', '',
         '## Resume training', '', 'Use an intermediate checkpoint, not an inference-only packed final. The current source CLI names the argument `--resume_ckpt`:', '',
         '```powershell', 'python -m training.ablation --run run_04 --config experiments/published/configs/run_04.json --resume_ckpt D:/cpu1/active/run_04/checkpoint_run_04_step640.pt --skip-install', '```', '',
         'Download the exact step file from its run folder first. Resume requires matching source/configuration, dependencies, and suitable training hardware. This audit did not run a training-resume experiment.', '',
@@ -206,9 +208,13 @@ def build_cards(inventory, corpus):
     directory = ROOT / 'docs' / 'model_cards'
     for stem, card in [('cpu1-ablations-final', final_card), ('cpu1-ablation-checkpoints', archive_card)]:
         content = '\n'.join(card)
-        repo = FINAL if stem == 'cpu1-ablations-final' else ARCHIVE
-        content = content.replace('](evaluation/)', f'](https://huggingface.co/{repo}/tree/main/evaluation)')
-        content = content.replace('](evaluation/', f'](https://huggingface.co/{repo}/blob/main/evaluation/')
+        content = content.replace('and the bundled `evaluation/diagnostics.py`', f'and [evaluation/diagnostics.py]({SOURCE_BLOB}/evaluation/diagnostics.py)')
+        content = content.replace('`evaluation/environment.json`', f'[environment.json]({AUDIT_BLOB}/environment.json)')
+        content = content.replace('`evaluation/CORPUS_LICENSE.txt`', f'[CORPUS_LICENSE.txt]({AUDIT_BLOB}/CORPUS_LICENSE.txt)')
+        content = content.replace('](evaluation/)', f']({AUDIT_TREE})')
+        content = content.replace('](evaluation/', f']({AUDIT_BLOB}/')
+        content = content.replace('](https://github.com/igna-s/New-1.58/tree/main/docs/provenance)', f']({SOURCE_TREE}/docs/provenance)')
+        content = content.replace('](https://github.com/igna-s/New-1.58)', f']({SOURCE_TREE})')
         (directory/(stem+'.md')).write_text(content, encoding='utf-8')
     save_environment(records)
     (OUT/'CORPUS_LICENSE.txt').write_text('The text excerpts in corpus.json originate from WikiText (Salesforce/wikitext), based on English Wikipedia.\nDataset authors and contributors: see https://huggingface.co/datasets/Salesforce/wikitext .\nUpstream dataset metadata declares CC-BY-SA-3.0 and GFDL.\nCC-BY-SA-3.0: https://creativecommons.org/licenses/by-sa/3.0/\nGFDL: https://www.gnu.org/licenses/fdl-1.3.html\nChanges: selection of 32 test paragraphs and truncation to 260 UTF-8 bytes.\nThe corpus remains under its upstream terms; the model repository Apache-2.0 metadata does not relicense these excerpts.\n',encoding='utf-8')
@@ -246,7 +252,7 @@ def save_environment(records):
 
 
 def upload_cards(inventory):
-    from huggingface_hub import HfApi, CommitOperationAdd
+    from huggingface_hub import HfApi
     from evaluation.audit import save
     import os
     token = os.environ.get('HF_TOKEN')
@@ -269,22 +275,16 @@ def upload_cards(inventory):
                   for f in current.siblings if f.rfilename.endswith('.pt')}
         if actual != expected:
             raise ValueError(f'{repo} model files changed since the audit; rerun evaluation before publishing')
-        files = [('README.md', ROOT/'docs'/'model_cards'/f'{stem}.md')]
-        files += [(f'evaluation/{p.name}', p) for p in sorted(OUT.glob('*.json'))]
-        files += [('evaluation/CORPUS_LICENSE.txt', OUT/'CORPUS_LICENSE.txt')]
-        # Bundle only tracked public files, never ignored binaries/caches/secrets.
-        import subprocess
-        public_paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode('utf-8').split('\0')
-        files += [(f'evaluation/source/{name}', ROOT/name) for name in public_paths if name]
-        publication = ROOT/'outputs/provenance/source-publication.json'
-        if publication.exists():
-            files += [('evaluation/source-publication.json', publication)]
-        commit = api.create_commit(repo_id=repo, repo_type='model', parent_commit=parent, commit_message='Document recovered experiment sources, saved configurations and dataset limitations', operations=[CommitOperationAdd(path_in_repo=name,path_or_fileobj=str(path)) for name,path in files])
+        card = ROOT/'docs/model_cards'/f'{stem}.md'
+        operations = card_operations(card, current.siblings, 'model')
+        commit = api.create_commit(repo_id=repo, repo_type='model', parent_commit=parent,
+            commit_message='Keep model artifacts on Hub; link code and evaluation evidence on GitHub',
+            operations=operations)
         commits[repo] = {'oid': commit.oid, 'url': commit.commit_url}
         # Verify the actual published README bytes against the local card.
         from huggingface_hub import hf_hub_download
         readme = hf_hub_download(repo, 'README.md', revision=commit.oid, cache_dir=os.environ['HF_HUB_CACHE'], token=token)
-        if Path(readme).read_bytes() != files[0][1].read_bytes():
+        if Path(readme).read_bytes() != card.read_bytes():
             raise RuntimeError('Published card verification failed')
         print(f'Published and verified {repo}: {commit.oid}', flush=True)
         save(OUT/'publication.json', commits)

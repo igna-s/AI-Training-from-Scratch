@@ -1,0 +1,973 @@
+{
+  "dataset": "Cukinator/cpu1-ablation-dataset",
+  "revision": "bd75d7b811ab730cc912aaa671f9eaaf49ba4bdf",
+  "inventory": {
+    "byte_marginalized": {
+      "files": 480,
+      "bytes": 686841331,
+      "min_shard": 0,
+      "max_shard": 481,
+      "missing_shards": [
+        60,
+        61
+      ]
+    },
+    "bpe_tokenized": {
+      "files": 437,
+      "bytes": 67332026716,
+      "min_shard": 0,
+      "max_shard": 438,
+      "missing_shards": [
+        60,
+        61
+      ]
+    }
+  },
+  "scope": "Three shard footers; all lengths/teacher masks in two byte shards; first BPE row. Not dataset-wide validation.",
+  "records": [
+    {
+      "file": "byte_marginalized/shard_0000.parquet",
+      "bytes": 1921771,
+      "sha256": "f68a6659ef7b3ddd7c0e7066766f6d1bfbfba639c640a3aa1265b485a2420dae",
+      "rows": 50,
+      "schema": "patches: list<element: uint8>\n  child 0, element: uint8\ntargets: list<element: uint8>\n  child 0, element: uint8\nteacher_probs: list<element: float>\n  child 0, element: float\nteacher_mask: list<element: bool>\n  child 0, element: bool\nteacher_hidden: list<element: float>\n  child 0, element: float\nteacher_dim: int32",
+      "first_row_lengths": {
+        "patches": 20000,
+        "targets": 20000,
+        "teacher_probs": 1280000,
+        "teacher_mask": 5000,
+        "teacher_hidden": 640000,
+        "teacher_dim": 128
+      },
+      "rows_with_any_teacher_mask": 10,
+      "all_row_lengths": [
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 1280000,
+          "teacher_mask": 5000,
+          "teacher_hidden": 640000,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 10752,
+          "teacher_mask": 42,
+          "teacher_hidden": 5376,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 15104,
+          "teacher_mask": 59,
+          "teacher_hidden": 7552,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 15872,
+          "teacher_mask": 62,
+          "teacher_hidden": 7936,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 16128,
+          "teacher_mask": 63,
+          "teacher_hidden": 8064,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 16640,
+          "teacher_mask": 65,
+          "teacher_hidden": 8320,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 16896,
+          "teacher_mask": 66,
+          "teacher_hidden": 8448,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 17408,
+          "teacher_mask": 68,
+          "teacher_hidden": 8704,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 17408,
+          "teacher_mask": 68,
+          "teacher_hidden": 8704,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 17408,
+          "teacher_mask": 68,
+          "teacher_hidden": 8704,
+          "teacher_dim": 128
+        }
+      ],
+      "mask_lengths": [
+        0,
+        42,
+        59,
+        62,
+        63,
+        65,
+        66,
+        68,
+        5000
+      ],
+      "global_shift_mismatches_first_row": 368,
+      "global_shift_positions_first_row": 19996,
+      "shift_note": "Comparison across the packed row; document separators/ends can differ. No targets were rewritten.",
+      "reader_dense_comparison": {
+        "stored_nonzero_positions": 1333,
+        "reader_nonzero_positions": 369,
+        "max_absolute_difference": 1.0,
+        "mask_true_positions": 1333
+      },
+      "short_boolean_masks": 9
+    },
+    {
+      "file": "byte_marginalized/shard_0481.parquet",
+      "bytes": 1318078,
+      "sha256": "a78f45e1510308b7d6be01fbc52c4043ccc7a9ad9a0b47634e16c508496e3dd9",
+      "rows": 50,
+      "schema": "patches: list<element: uint8>\n  child 0, element: uint8\ntargets: list<element: uint8>\n  child 0, element: uint8\nteacher_probs: list<element: float>\n  child 0, element: float\nteacher_mask: list<element: bool>\n  child 0, element: bool\nteacher_hidden: list<element: float>\n  child 0, element: float\nteacher_dim: int32",
+      "first_row_lengths": {
+        "patches": 20000,
+        "targets": 20000,
+        "teacher_probs": 0,
+        "teacher_mask": 0,
+        "teacher_hidden": 0,
+        "teacher_dim": 128
+      },
+      "rows_with_any_teacher_mask": 1,
+      "all_row_lengths": [
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 131328,
+          "teacher_mask": 513,
+          "teacher_hidden": 65664,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        },
+        {
+          "patches": 20000,
+          "targets": 20000,
+          "teacher_probs": 0,
+          "teacher_mask": 0,
+          "teacher_hidden": 0,
+          "teacher_dim": 128
+        }
+      ],
+      "mask_lengths": [
+        0,
+        513
+      ],
+      "global_shift_mismatches_first_row": 40,
+      "global_shift_positions_first_row": 19996,
+      "shift_note": "Comparison across the packed row; document separators/ends can differ. No targets were rewritten.",
+      "short_boolean_masks": 1
+    },
+    {
+      "file": "bpe_tokenized/shard_0000.parquet",
+      "bytes": 155227266,
+      "sha256": "684797be8d37a18ef3a31af7fc5964cf63d51b2dca1fab29894da267a1229e5b",
+      "rows": 50,
+      "schema": "input_ids: list<element: int32>\n  child 0, element: int32\nlabels: list<element: int32>\n  child 0, element: int32\nteacher_probs_bpe: list<element: float>\n  child 0, element: float\nteacher_ids_bpe: list<element: int32>\n  child 0, element: int32\nteacher_mask_bpe: list<element: bool>\n  child 0, element: bool",
+      "first_row_lengths": {
+        "input_ids": 5000,
+        "labels": 5000,
+        "teacher_probs_bpe": 640000,
+        "teacher_ids_bpe": 640000,
+        "teacher_mask_bpe": 5000
+      },
+      "global_shift_mismatches_first_row": 0,
+      "global_shift_positions_first_row": 4999
+    }
+  ],
+  "tokenizer_conversion": {
+    "model": "Qwen/Qwen2.5-3B",
+    "revision": "3aab1f1954e9cc14eb9509a215f9e5ca08227a9b",
+    "synthetic_text_codepoints": [
+      65,
+      129768,
+      66
+    ],
+    "ids": [
+      32,
+      9284,
+      104,
+      101,
+      33
+    ],
+    "character_offsets": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        3
+      ]
+    ],
+    "individually_decoded_codepoints": [
+      [
+        65
+      ],
+      [
+        65533
+      ],
+      [
+        65533
+      ],
+      [
+        65533
+      ],
+      [
+        66
+      ]
+    ],
+    "individually_decoded_first_bytes": [
+      65,
+      239,
+      239,
+      239,
+      66
+    ],
+    "original_emoji_first_byte": 240
+  }
+}

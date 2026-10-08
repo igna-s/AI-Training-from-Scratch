@@ -17,7 +17,7 @@ configs:
 
 # CPU-1 ablation dataset
 
-Precomputed training data for the CPU-1 knowledge-distillation and tokenization experiments. The dataset contains independently packed byte-patch and BPE-token subsets with stored teacher probabilities. The extraction pipeline is configured to use [Qwen/Qwen2.5-3B](https://huggingface.co/Qwen/Qwen2.5-3B) over English text from [FineWeb](https://huggingface.co/datasets/HuggingFaceFW/fineweb), `sample-10BT`. Teacher/source revisions and hidden-layer selection are not specified for every historical shard.
+Precomputed training data for the CPU-1 knowledge-distillation and tokenization experiments. The dataset contains independently packed byte-patch and BPE-token subsets with stored teacher probabilities. The [extraction pipeline](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/data_pipeline/prepare.py) is configured to use [Qwen/Qwen2.5-3B](https://huggingface.co/Qwen/Qwen2.5-3B) over English text from [FineWeb](https://huggingface.co/datasets/HuggingFaceFW/fineweb), `sample-10BT`. Teacher/source revisions and hidden-layer selection are not specified for every historical shard.
 
 **The byte subset contains incomplete teacher arrays, and the companion dataset reader has positional-alignment defects. Resolve these limitations before using the stored signals for distillation.**
 
@@ -36,7 +36,7 @@ The two streams pack text at different densities and maintain independent residu
 
 ## Stored fields
 
-Lists are physically flattened in parquet. The writer uses four-byte patches, 5,000 steps per packed sequence, top-128 BPE candidates and a 128-dimensional hidden projection. Teacher arrays in the byte subset can be shorter than the input sequence or empty.
+Lists are physically flattened in parquet. The writer configuration uses four-byte patches, 5,000 steps per packed sequence, top-128 BPE candidates and a 128-dimensional hidden projection. Teacher arrays in the byte subset can be shorter than the input sequence or empty.
 
 ### Byte subset: `byte_marginalized`
 
@@ -78,7 +78,7 @@ Byte teacher arrays do not consistently span all 5,000 patch positions. Examples
 
 Check array lengths before reshaping. A short boolean mask does not encode integer position indices, and its length alone does not identify the corresponding positions in the full sequence. Padding missing values does not recover their positional mapping.
 
-The companion [ByteLevelDataset reader](https://huggingface.co/Cukinator/cpu1-ablations-final/blob/702ac8b8616c25454dede9a13b057c4da0a8f97b/evaluation/source/cpu1/components.py) treats probability arrays as compact lists of supervised rows, even when the stored layout is already dense. It scatters the leading rows onto true-mask positions, moving or discarding teacher signals. For short masks, it casts boolean values to integer indices 0 and 1. Hidden arrays are scattered using the resulting mask and can also become misaligned.
+The companion [ByteLevelDataset reader](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/cpu1/components.py) treats probability arrays as compact lists of supervised rows, even when the stored layout is already dense. It scatters the leading rows onto true-mask positions, moving or discarding teacher signals. For short masks, it casts boolean values to integer indices 0 and 1. Hidden arrays are scattered using the resulting mask and can also become misaligned.
 
 A compatible reader must preserve dense positional layouts and handle short arrays only when their full-sequence positions are available. The linked reader requires changes before it can reliably consume these signals.
 
@@ -112,27 +112,17 @@ for name, value in row.items():
 
 This example loads a row and displays its field lengths. Training requires an adapter that handles the actual signal layout and missing values.
 
-The companion BPE reader maps IDs outside the configured student vocabulary to ID 0 and filters teacher IDs accordingly. This mapping is lossy. Loss on the mapped stream cannot be interpreted as likelihood under the full Qwen vocabulary or directly compared with per-byte loss. Establish document-level separation when creating training and evaluation splits.
+When `bpe_vocab_size < 152064`, the companion `BPEDataset` reader maps input and target IDs at or above that limit to ID 0. When teacher signals are enabled, it also zeroes retained teacher probabilities outside that limit and replaces their IDs with 0. This mapping loses information when such IDs are present; with `bpe_vocab_size >= 152064`, the reader leaves input, target and teacher IDs unchanged. Loss on a vocabulary-reduced stream cannot be interpreted as likelihood under the full Qwen vocabulary. Per-token and per-byte losses use different units and cannot be compared directly without a common metric. Establish document-level separation when creating training and evaluation splits.
 
-## Reproducible inspection and source history
+## Code and review evidence
 
-The [provenance review](https://github.com/igna-s/New-1.58/tree/main/docs/provenance) links the recovered historical extraction, training and platform code. Kaggle and Lightning launchers configure an 850,000-document target with chunks of 500 or 3,000 respectively. These are recipe settings, not verified document totals. Earlier teacher settings used 14B/7B; the exact extraction commit and teacher revision for each shard remain unestablished.
-
-```powershell
-python -m evaluation.dataset --storage D:/cpu1-readme-audit --tokenizer
-```
-
-The [sample report](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset/blob/main/provenance/dataset-review.json) contains pinned SHA-256 values, schemas and footers for two byte shards (`0000`, `0481`) and one BPE shard (`0000`), all row lengths/masks in the two byte shards, the first BPE row, the dense-reader comparison and the synthetic tokenizer case. The parquet samples total about 158.5 MB and are stored on D:. No teacher or student model is loaded. Append `--offline` to reuse downloaded files.
-
-The inspected dense byte row has 1,333 nonzero stored distributions; the linked reader returns 369 with a maximum absolute difference of 1.0. The first BPE row has zero next-token shift mismatches across 4,999 positions. A global shift comparison across the first packed byte rows observes 368 differences in `0000` and 40 in `0481`, across 19,996 positions each; document-local target construction and separators prevent interpreting that comparison alone as target corruption.
-
-Inventory totals come from the pinned Hub listing; row totals are dataset-service reports, not a scan of every parquet footer. This limited inspection does not validate all teacher distributions, hidden-state alignment, per-shard provenance, document deduplication or train/evaluation independence. The dataset and model weights were not altered.
+Extraction, dataset readers, training code and configuration records are maintained in the [pinned GitHub source](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). The [dataset inspection report](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/dataset-review-2026-10-08.json) contains the reviewed shard hashes, schemas, row lengths and tokenizer/reader diagnostics. It is a limited sample review, not dataset-wide validation.
 
 ## Related resources
 
-- [Source code](https://github.com/igna-s/New-1.58): extraction pipeline, dataset readers and training configurations.
-- [Packed and intermediate checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints).
-- [FP32 model exports](https://huggingface.co/Cukinator/cpu1-ablations-final).
+- [GitHub: igna-s/New-1.58](https://github.com/igna-s/New-1.58): extraction pipeline, dataset readers and training configurations.
+- [Hugging Face: Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints): packed and intermediate checkpoints.
+- [Hugging Face: Cukinator/cpu1-ablations-final](https://huggingface.co/Cukinator/cpu1-ablations-final): FP32 model exports.
 
 ## License
 

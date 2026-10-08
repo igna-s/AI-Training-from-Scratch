@@ -1,2 +1,5 @@
 # Keep published JSON checksums identical on Windows and Linux.
 *.json text eol=lf
+
+# Frozen audit evidence retains its original serialized bytes.
+experiments/evaluation/** -text whitespace=cr-at-eol
