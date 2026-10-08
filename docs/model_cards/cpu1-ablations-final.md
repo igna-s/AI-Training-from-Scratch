@@ -313,3 +313,9 @@ These experiments change parameter counts, representations, training signal, bud
 ## License
 
 The model repository declares Apache-2.0. Upstream datasets, corpus excerpts and tokenizer assets retain their own licenses.
+
+## Related resources
+
+- [GitHub: igna-s/New-1.58](https://github.com/igna-s/New-1.58): extraction pipeline, training and evaluation code.
+- [Hugging Face: Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints): packed and intermediate checkpoints.
+- [Hugging Face: Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset): byte and BPE training data.

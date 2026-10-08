@@ -158,6 +158,15 @@ def quickstart(repo, revision, compact=False):
     return ['## Load one checkpoint', '', 'Clone the [source repository](https://github.com/igna-s/New-1.58) and run this from its root. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.', '', '```python', 'import os', 'os.environ["HF_HOME"] = "D:/cpu1/hf"', 'os.environ["HF_HUB_DISABLE_XET"] = "1"', 'import torch', 'from huggingface_hub import hf_hub_download', 'torch.set_num_threads(1)', f'path = hf_hub_download("{repo}", "{filename}",', f'    revision="{revision}", local_dir="D:/cpu1/active", cache_dir="D:/cpu1/hf/hub")', *loader, 'config["use_gradient_checkpointing"] = False', 'model = build_ablation_model(config)', 'model.load_state_dict(state, strict=True)', 'model.eval()', 'x = torch.tensor(list(b"The history of AI.  ")).reshape(1, -1, 4)', 'with torch.inference_mode():', '    logits, states, extra = model(x, training_phase=1, target_elimination=0.0)', 'print([tuple(head.shape) for head in logits])', '```', '', 'This example supplies zero target bytes to the local decoder to demonstrate output shapes. For likelihood scoring with LocalByteDecoder, supply the ground-truth `byte_targets`; the decoder shifts them internally. Byte generation requires sampling within each patch and retaining the appropriate recurrent state or Transformer context. See the GitHub evaluation implementation and the recorded continuation examples.', '']
 
 
+def related_resources(repo):
+    other = ARCHIVE if repo == FINAL else FINAL
+    description = 'packed and intermediate checkpoints' if other == ARCHIVE else 'FP32 model exports'
+    return ['', '## Related resources', '',
+            '- [GitHub: igna-s/New-1.58](https://github.com/igna-s/New-1.58): extraction pipeline, training and evaluation code.',
+            f'- [Hugging Face: {other}](https://huggingface.co/{other}): {description}.',
+            '- [Hugging Face: Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset): byte and BPE training data.', '']
+
+
 def build_cards(inventory, corpus):
     names = sorted(f['rfilename'].split('/')[0] for f in inventory[FINAL]['siblings'] if f['rfilename'].endswith('/model.pt'))
     records = [json.loads((OUT/f'{r}.json').read_text(encoding='utf-8')) for r in names]
@@ -210,6 +219,8 @@ def build_cards(inventory, corpus):
     for stem, card in [('cpu1-ablations-final', final_card), ('cpu1-ablation-checkpoints', archive_card)]:
         content = '\n'.join(card)
         content = content.replace('](https://github.com/igna-s/New-1.58)', f']({SOURCE_TREE})')
+        repo = FINAL if stem == 'cpu1-ablations-final' else ARCHIVE
+        content += '\n'.join(related_resources(repo))
         if 'audit' in content.lower():
             raise ValueError('Model cards must use final documentation wording')
         (directory/(stem+'.md')).write_text(content, encoding='utf-8')
