@@ -36,7 +36,7 @@ Historical `metrics` may be empty or come from different training validation pro
 
 ## Load one checkpoint
 
-Clone the [source repository](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08) and run this from its root. The source repository is currently private and requires authorized GitHub access. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.
+Clone the [source repository](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08) and run this from its root. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.
 
 ```python
 import os

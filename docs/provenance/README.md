@@ -1,68 +1,54 @@
-# Experiment provenance review — 2026-10-08
+# Experiment provenance and platform recipes
 
-The initial cleanup excluded experimental source too broadly. The October 8 recovery restored **148 historical paths** while keeping the working tree organized. At that recovery snapshot, the 87 original commits and the subsequent security commit retained their authors, dates, messages and parent relationships after remapping. Commit IDs changed because their trees or ancestors changed.
+The published artifacts document a family of small language-model experiments with Transformer and MLGRU-inspired mixers, byte and BPE inputs, ternary weights, and optional Qwen teacher supervision. Experiments used Kaggle, Lightning, and AMD resources across the project. The available records do not identify the platform and exact source of every checkpoint's training job.
 
-The retained `cpu1-experiment-2026-10-08` tag anchors that snapshot. A subsequent commit-message rewrite changed six subjects and 28 commit IDs without changing their trees, authors, dates, or relationships. Three rewritten subjects belong to the 88 commits described by the recovery map. The map describes the recovery snapshot, rather than the later `main` history; it is not a claim that every current commit subject is unchanged.
+## Checkpoints and configurations
 
-[restored-files.json](restored-files.json) lists every restored path, its original and remapped source commit, blob, SHA-256 and direct source link. It also lists the 109 paths that remain excluded. [history-map.json](history-map.json) maps the original commits to the recovered history snapshot. The retained file modes and blobs were compared in every original commit; the cleanup tip's tree was unchanged by that recovery.
+The [experiment manifest](../../experiments/published/manifest.json) indexes **34 FP32 exports** at Hugging Face revision `65951289352c1a036b12ba6d888af037e7c90b13`. Each entry links its checkpoint SHA-256, saved step, parameter count, configuration, and evaluation result. The [model card](../model_cards/cpu1-ablations-final.md) reports their common CPU evaluation.
 
-## What belongs in the project
+Configuration records describe the loaded models. The evaluation loader disabled `use_gradient_checkpointing` before recording them, so they are not byte-for-byte copies of the checkpoint configuration payloads. GPU training enables gradient checkpointing. Saved steps come from checkpoint metadata; token budgets specify planned work and do not establish completed exposure or convergence.
 
-| Material | Treatment |
-|---|---|
-| Earlier architectures, ablation configuration/model/training modules, extraction and byte-marginalization code | Preserved in Git history with original contents |
-| Kaggle and Lightning launchers, SDK helpers, three notebooks and platform metadata | Preserved in history; current package-based recipes live in `runners/` |
-| Eighteen Python files formerly under `models/ablation_models/` | Preserved in history as experimental source, distinct from downloaded weights |
-| Historical evaluation and inference tools, including the earlier 26 checks | Preserved in history; current common evaluator remains in `evaluation/` |
-| 34 historical `resultados/ablation_run_*.json` files and their summary | Preserved in history; historical metrics are not substituted for the October CPU audit |
-| Model weights, downloaded tokenizer/config caches, parquet data, papers, compiled binaries and generated benchmark outputs | Excluded from Git; model/data artifacts are linked on Hugging Face |
-| Personal prompts, reference summaries, private backups, environments and credentials | Remain local and ignored; design proposals are not treated as experimental evidence |
+Run names are identifiers, not complete architecture specifications. Earlier source versions and current presets can assign different settings to the same name. Use an explicit recorded configuration when inspecting a published export.
 
-Historical code is an audit trail, not a claim that every old snapshot runs successfully. Six distinct historical `train_ablation.py` blobs have a syntax error. Earlier run numbers refer to different architectures; matching a name alone does not identify the same experiment. Use the current packages and an explicit recorded configuration.
+The [historical source index](source-versions.json) identifies 40 distinct versions of the dataset and ablation entry points by Git commit, path, and blob. Six historical `train_ablation.py` versions have a syntax error. This index documents source evolution; it does not assign a version to each training job. Current entry points live in [training/](../../training/) and [data_pipeline/](../../data_pipeline/).
 
-## Training platforms and recorded configurations
+## Recorded platform settings
 
-The author confirmed using **Kaggle, Lightning and AMD**, with the code committed. That statement identifies the platforms used across the project; it does not assign each checkpoint to a job.
+| Recipe | Recorded settings | Interpretation |
+|---|---|---|
+| Kaggle dataset extraction | 850,000 target documents, chunks of 500, initial shard offset 0, streaming upload | A configured target, not a verified processed total |
+| Lightning dataset extraction | 850,000 target documents, chunks of 3,000, initial shard offset 0, streaming upload | A configured target, not a verified processed total |
+| AMD ablation base | 150 configured tokens/parameter; historical `cpu1-ablation-checkpoints-v3` destination | Consistent with published `_v3` records, without proving their job platform or source |
 
-- Kaggle dataset launcher: target 850,000 documents, chunks of 500, initial shard offset 0, streaming upload.
-- Lightning dataset launcher: target 850,000 documents, chunks of 3,000, initial shard offset 0, streaming upload.
-- These are committed recipe settings, not verified document totals. Resume bookkeeping and changed extraction versions prevent deriving exposure from those settings alone.
-- The current AMD preset uses 150 configured tokens/parameter and the historical `cpu1-ablation-checkpoints-v3` upload destination. Published `_v3` configurations are consistent with those settings. This does not prove the exact job platform or source commit.
+Changed extraction versions and resume bookkeeping prevent reconstructing exact document exposure from these settings alone.
 
-[experiments/published/manifest.json](../../experiments/published/manifest.json) indexes the **34 published FP32 exports**, checkpoint SHA-256 values, pinned model revision, saved steps, parameter counts and configuration files. Configurations come from the pinned CPU audit records. The evaluation loader disabled `use_gradient_checkpointing` before recording them; they are not byte-for-byte original checkpoint config payloads. The trainer enables gradient checkpointing for actual GPU training.
+## Preview and run a recipe
 
-`--config` loads the record without merging current presets. Explicit configurations run their selected phase instead of silently chaining another phase. The records include historical upload destinations; copy a record and set your own destination when starting a new experiment. Saved steps are actual checkpoint metadata; configured token budgets are not measured completion.
-
-## Current platform recipes
-
-Run from a writable checkout, such as `/kaggle/working/AI-Training-from-Scratch` or a Lightning Studio project. Install the appropriate PyTorch build and `requirements/data.txt` or `requirements/training.txt` first. The recipes run inside the selected platform; they do not submit remote jobs through the platform SDK.
+Use a writable checkout inside the selected platform, such as `/kaggle/working/AI-Training-from-Scratch` or a Lightning Studio project. Install the appropriate PyTorch build and [data requirements](../../requirements/data.txt) or [training requirements](../../requirements/training.txt) first. These runners execute locally inside the platform; they do not provision or submit remote jobs.
 
 ```bash
-# Prints the committed dataset recipe without extracting or uploading.
+# Preview dataset extraction settings.
 python -m runners.kaggle dataset
 python -m runners.lightning dataset
 
-# Executes extraction and streaming upload; configure your own HF_TOKEN first.
-python -m runners.kaggle dataset --execute
-python -m runners.lightning dataset --execute
-
-# Preview a recorded training configuration.
+# Preview a recorded AMD training configuration.
 python -m runners.lightning ablation --backend amd --run run_04_v3 --config experiments/published/configs/run_04_v3.json
-# Append --execute to run, with a compatible ROCm installation and GPU.
 ```
 
-Kaggle execution can read `HF_TOKEN` from Kaggle Secrets; Lightning/AMD use the environment. Tokens are never printed by these recipes. Optional HF mounts use `cpu1/hub_storage.py`; install hf-mount separately on Linux/macOS. Training mounts a dataset repository for reading. The helper passes credentials in the child environment and does not run a remote installer.
+The commands print plans until `--execute` is supplied. Dataset execution extracts teacher signals and uploads shards. Kaggle can read `HF_TOKEN` from Kaggle Secrets; Lightning and AMD use the environment. For a new training experiment, copy the configuration, set `checkpoint_repo` to your own destination or `null`, and choose a fresh run name. With an explicit configuration, the selected phase runs without automatically chaining another phase. See the [usage guide](../usage.md#training-and-teacher-data) for resume behavior and hardware requirements.
 
-## Evidence and unresolved provenance
+## Dataset inspection
 
-The [dataset card](../model_cards/cpu1-ablation-dataset.md) documents the 917 parquet files, revision, sample scope, teacher formatting, observed reader alignment defect and UTF-8 limitations. The inspection is repeatable:
+The [dataset card](../model_cards/cpu1-ablation-dataset.md) records the 917-file inventory and observations from three fixed Parquet shards. It includes reader alignment, mask-format, and UTF-8 limitations. Repeat that sample inspection with:
 
 ```powershell
 python -m evaluation.dataset --storage D:/cpu1-readme-audit --tokenizer
-# Reuse the same three downloaded shards/tokenizer without network access:
+# Reuse cached shards and tokenizer files.
 python -m evaluation.dataset --storage D:/cpu1-readme-audit --tokenizer --offline
 ```
 
-The three parquet samples total about 158.5 MB; `--tokenizer` additionally downloads tokenizer/configuration files if they are not already cached. Teacher and student weights are not required. Results are written under ignored `outputs/provenance/`. Each sample is checked against its reviewed SHA-256. To publish the reviewed dataset card with owner authentication, append `--publish-card`; code and review evidence remain on GitHub under `experiments/evaluation/`; all parquet paths, sizes and LFS hashes must still match the reviewed data revision. All 34 recorded configurations were checked against their audited parameter counts using meta tensors; no model weights were downloaded for that check. The October 8 recovery review passed fourteen offline tests; the later [README validation](../../experiments/evaluation/readme-validation-2026-10-10.json) records eighteen.
+The three shards total approximately **158.5 MB**. An uncached `--tokenizer` also downloads tokenizer/configuration files. Teacher and student weights are not required. The inspector verifies the recorded shard SHA-256 values and writes results to `outputs/provenance/`. This inspection does not validate all dataset rows or reconstruct the original extraction jobs.
 
-The available artifacts do not bind each training job to its exact source commit, dependency lock, resolved teacher/tokenizer revision, extraction version, source documents or projection matrix. Restoring committed code makes its evolution inspectable; it does not fill those missing records. A deterministic end-to-end retraining or dataset reconstruction is therefore not established. The stored model/data artifacts and the known numerical implementations were left unchanged; existing audit results retain their original date and limitations.
+## Reproducibility limits
+
+The artifacts do not bind every training job to its exact source commit, dependency lock, resolved teacher/tokenizer revision, extraction version, source documents, or projection matrix. A historical source index and loadable checkpoint do not fill those gaps. Deterministic end-to-end retraining and dataset reconstruction remain unverified. The [research scope and reproducibility guide](../reproducibility.md) distinguishes measured inference outcomes from these open questions.

@@ -114,9 +114,9 @@ This example loads a row and displays its field lengths. Training requires an ad
 
 When `bpe_vocab_size < 152064`, the companion `BPEDataset` reader maps input and target IDs at or above that limit to ID 0. When teacher signals are enabled, it also zeroes retained teacher probabilities outside that limit and replaces their IDs with 0. This mapping loses information when such IDs are present; with `bpe_vocab_size >= 152064`, the reader leaves input, target and teacher IDs unchanged. Loss on a vocabulary-reduced stream cannot be interpreted as likelihood under the full Qwen vocabulary. Per-token and per-byte losses use different units and cannot be compared directly without a common metric. Establish document-level separation when creating training and evaluation splits.
 
-## Code and review evidence
+## Source and inspection records
 
-Extraction, dataset readers, training code and configuration records are maintained in the [pinned GitHub source](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08). The GitHub source repository is currently private and requires authorized access. The [dataset inspection report](https://github.com/igna-s/AI-Training-from-Scratch/blob/cpu1-experiment-2026-10-08/experiments/evaluation/dataset-review-2026-10-08.json) contains the reviewed shard hashes, schemas, row lengths and tokenizer/reader diagnostics. It is a limited sample review, not dataset-wide validation.
+Extraction, dataset readers, training code and configuration records are maintained in the [pinned GitHub source](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08). The [dataset inspection report](https://github.com/igna-s/AI-Training-from-Scratch/blob/cpu1-experiment-2026-10-08/experiments/evaluation/dataset-review-2026-10-08.json) contains the reviewed shard hashes, schemas, row lengths and tokenizer/reader diagnostics. It is a limited sample review, not dataset-wide validation.
 
 ## Related resources
 

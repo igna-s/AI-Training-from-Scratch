@@ -6,7 +6,7 @@ The loading and generation examples use the pinned `run_02` byte Transformer exp
 
 ## Install and inspect
 
-The source repository is currently **private** and requires GitHub access. The companion Hugging Face repositories are public. Examples below use PowerShell and keep caches on a writable D: drive; adjust paths for your machine. The full evaluator requires a `--storage` path on D:.
+Clone the source repository before running these examples. Model weights and datasets are hosted on Hugging Face. Examples below use PowerShell and keep caches on a writable D: drive; adjust paths for your machine. The full evaluator requires a `--storage` path on D:.
 
 The reviewed environment used **Python 3.12.10 and PyTorch 2.6.0**, running on CPU. Dependency versions are [recorded](../experiments/evaluation/model-audit-2026-10-06/environment.json); the project has no complete dependency lockfile.
 
@@ -31,11 +31,11 @@ python -m evaluation.architecture_review
 # Demonstrates the existing parallel-scan mismatch.
 python -m evaluation.diagnostics
 
-# Restores the frozen evidence into ignored local outputs.
+# Copies the published evaluation records for local analysis.
 python -m evaluation.audit --storage D:/cpu1-readme-audit --restore-evidence
 ```
 
-For GPU training, install the PyTorch build appropriate to your accelerator and operating system using the [official selector](https://pytorch.org/get-started/locally/), then install `requirements/training.txt`. `training.ablation_amd` provides the ROCm-oriented entry point. The architecture review checks its constructors on CPU/meta tensors; it does not validate a fresh CUDA or ROCm training job.
+For GPU training, install the PyTorch build appropriate to your accelerator and operating system using the [official selector](https://pytorch.org/get-started/locally/), then install `requirements/training.txt`. `training.ablation_amd` provides the ROCm-oriented entry point. The [architecture inventory](architecture-review.md) checks constructors on CPU/meta tensors; it does not validate a fresh CUDA or ROCm training job.
 
 ## Load and score one export
 

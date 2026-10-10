@@ -1,11 +1,11 @@
 {
-  "scope": "Unique source blobs of the reorganized dataset/CUDA/AMD entry points; not a per-job lineage assignment",
+  "scope": "Distinct historical dataset and ablation entry-point source blobs; not a per-job lineage assignment. Paths describe historical source, not current entry points.",
   "versions": [
     {
       "path": "train_ablation.py",
-      "original_commit": "f52f2dcae8ce0cd12e24f419a5545e15750b4f72",
+      "source_commit": "bc58efaa7ef00dc24f57ea7479415520fb92705f",
       "blob": "54189efff70651a015350f6af83cf65d1f00b594",
-      "restored_commit": "bc58efaa7ef00dc24f57ea7479415520fb92705f",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/train_ablation.py",
       "preset_names": [
         "run_01",
         "run_02a_byte_only_heads",
@@ -41,9 +41,9 @@
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "82522e014451843dc512cd4f7ce2933b6288dd4d",
+      "source_commit": "e183a1ea0fc27958c9da63a6a6ead4946d8ad196",
       "blob": "f96c0e44388b8232b6b61327791c06b614fa5188",
-      "restored_commit": "e183a1ea0fc27958c9da63a6a6ead4946d8ad196",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/e183a1ea0fc27958c9da63a6a6ead4946d8ad196/train_ablation.py",
       "preset_names": [
         "run_01",
         "run_02a_byte_only_heads",
@@ -65,9 +65,9 @@
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "a2f4a65655030c4df3a9a1fc2e83c9afa5216bb5",
+      "source_commit": "996ae7d0e2b4894107593c331e2d4abd6260c9d0",
       "blob": "3838e0288ace535ed5fa3849a1e19e2c58da14eb",
-      "restored_commit": "996ae7d0e2b4894107593c331e2d4abd6260c9d0",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/996ae7d0e2b4894107593c331e2d4abd6260c9d0/train_ablation.py",
       "preset_names": [
         "run_01",
         "run_02a_byte_only_heads",
@@ -89,51 +89,51 @@
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "34ce0b085ed182fc96b25c7a49e8170aae6f43a1",
+      "source_commit": "03dfef766f406b8e3f0fe23de9f995555c7a7f10",
       "blob": "5fc84ce9aaee0f71823eee8a07bd8f40aef62a59",
-      "parse_error": "'{' was never closed, line 258",
-      "restored_commit": "03dfef766f406b8e3f0fe23de9f995555c7a7f10"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/03dfef766f406b8e3f0fe23de9f995555c7a7f10/train_ablation.py",
+      "parse_error": "'{' was never closed, line 258"
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "a9e49cf28e8bb02d312caad62a2592fdb7f59ec4",
+      "source_commit": "6eeb2a3b2a5d2f87b41bd0a82b1f2d4bc03488f4",
       "blob": "bb7d6265d0bc5e41b26c0549d9b4ebc1e3ae17c5",
-      "parse_error": "'{' was never closed, line 258",
-      "restored_commit": "6eeb2a3b2a5d2f87b41bd0a82b1f2d4bc03488f4"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/6eeb2a3b2a5d2f87b41bd0a82b1f2d4bc03488f4/train_ablation.py",
+      "parse_error": "'{' was never closed, line 258"
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "c11022c98db2e42c8d44f582bf2cb655cdcec7d2",
+      "source_commit": "706f1282d7f6c4c087689affc31127b10d9eb64f",
       "blob": "38b9d4ac09519463a67bc6db09650108d240440d",
-      "parse_error": "'{' was never closed, line 258",
-      "restored_commit": "706f1282d7f6c4c087689affc31127b10d9eb64f"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/706f1282d7f6c4c087689affc31127b10d9eb64f/train_ablation.py",
+      "parse_error": "'{' was never closed, line 258"
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "a2b29b13f8667a1b97bc1881cb38641dfcfa3a38",
+      "source_commit": "a80f30ebd1769b565b41a559878ad98ac4a99d77",
       "blob": "de9494b008aeda9cd8d61cb375829aeecb6a792f",
-      "parse_error": "'{' was never closed, line 258",
-      "restored_commit": "a80f30ebd1769b565b41a559878ad98ac4a99d77"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a80f30ebd1769b565b41a559878ad98ac4a99d77/train_ablation.py",
+      "parse_error": "'{' was never closed, line 258"
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "1fd4aa6b68c808d2f6335c537e273be2b739a69a",
+      "source_commit": "c531f174df6deaa090968966f101fdbf7a6a155d",
       "blob": "d1b8b6da35eeae07892cac35a0a78b788e7ff1e4",
-      "parse_error": "'{' was never closed, line 258",
-      "restored_commit": "c531f174df6deaa090968966f101fdbf7a6a155d"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/c531f174df6deaa090968966f101fdbf7a6a155d/train_ablation.py",
+      "parse_error": "'{' was never closed, line 258"
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "5e6e34e5c9d8826afa56b5d55e8f5545175b69d1",
+      "source_commit": "1f348725012fbe731b72a4e09f4ddf0553e13a21",
       "blob": "7dcd015c2d44c7bcb45dc04412d61a5962f02755",
-      "parse_error": "'{' was never closed, line 258",
-      "restored_commit": "1f348725012fbe731b72a4e09f4ddf0553e13a21"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/1f348725012fbe731b72a4e09f4ddf0553e13a21/train_ablation.py",
+      "parse_error": "'{' was never closed, line 258"
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "46bd46dece5db8eba2275eb796e7ae710cf2d8d4",
+      "source_commit": "bac59ceca8af71777fbbb004c698befd7e3351e6",
       "blob": "2bebb1c7396a595c9f7942176e868fc4deb9d181",
-      "restored_commit": "bac59ceca8af71777fbbb004c698befd7e3351e6",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bac59ceca8af71777fbbb004c698befd7e3351e6/train_ablation.py",
       "preset_names": [
         "run_01",
         "run_02",
@@ -155,9 +155,9 @@
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "7df2203cb16054e129be03394c97c09a55249682",
+      "source_commit": "a5f3009cbc2022ad3e28bf8fafc4c96e7bcb74a6",
       "blob": "00652f1abde0ddd486641976d90d7e0942f9e8af",
-      "restored_commit": "a5f3009cbc2022ad3e28bf8fafc4c96e7bcb74a6",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a5f3009cbc2022ad3e28bf8fafc4c96e7bcb74a6/train_ablation.py",
       "preset_names": [
         "run_01",
         "run_02",
@@ -179,9 +179,9 @@
     },
     {
       "path": "train_ablation.py",
-      "original_commit": "bb21da80de485363d1b92ac43acf9ec23f9141b9",
+      "source_commit": "ab444d1f8912832c6ad1cffb46234d9b82f0b32e",
       "blob": "0ed8b88f86b93b9662fb11321aee49b393dfd9fa",
-      "restored_commit": "ab444d1f8912832c6ad1cffb46234d9b82f0b32e",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/ab444d1f8912832c6ad1cffb46234d9b82f0b32e/train_ablation.py",
       "preset_names": [
         "run_01",
         "run_02",
@@ -203,9 +203,9 @@
     },
     {
       "path": "train_ablation_amd.py",
-      "original_commit": "f52f2dcae8ce0cd12e24f419a5545e15750b4f72",
+      "source_commit": "bc58efaa7ef00dc24f57ea7479415520fb92705f",
       "blob": "eb751636bddceb594e5dc414424c1a84626926bd",
-      "restored_commit": "bc58efaa7ef00dc24f57ea7479415520fb92705f",
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/train_ablation_amd.py",
       "preset_names": [
         "run_01",
         "run_02a_byte_only_heads",
@@ -241,219 +241,165 @@
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "f52f2dcae8ce0cd12e24f419a5545e15750b4f72",
+      "source_commit": "bc58efaa7ef00dc24f57ea7479415520fb92705f",
       "blob": "dac231e80400a2585bd68d13054f4458fc4854b9",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "bc58efaa7ef00dc24f57ea7479415520fb92705f"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "bccdd9618bbbc446ac903c590c142e942e14eea8",
+      "source_commit": "a3d9b32391c64752ea2a6136ebe5e747d09caee3",
       "blob": "98b80adbdffeebbd694929454798e6aa4c523d56",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "a3d9b32391c64752ea2a6136ebe5e747d09caee3"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a3d9b32391c64752ea2a6136ebe5e747d09caee3/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "e93c10b113ca008dd46547e2bea0a165303c3a93",
+      "source_commit": "b42a447cbd377937784851cd81fc03ac7b117a25",
       "blob": "a58c07a2f8ecf93cc970b4edfac919dcfcfd62a8",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "b42a447cbd377937784851cd81fc03ac7b117a25"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/b42a447cbd377937784851cd81fc03ac7b117a25/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "3b82b905289bab7bafacf1cfb3b1cc90e195b525",
+      "source_commit": "bf4e16329c0ddbd770b83b41b671d62969f18311",
       "blob": "e89426ce05da23dcfa8976ef045571c8909838b0",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "bf4e16329c0ddbd770b83b41b671d62969f18311"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bf4e16329c0ddbd770b83b41b671d62969f18311/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "769da9b67f160bc93fa18baea508cd8c91f8488d",
+      "source_commit": "1a6a27c8b57c17d88a64f999b94d5597b6b7bdc3",
       "blob": "0b49b799f27c7eef97d71796f5bc6ea1f697a388",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "1a6a27c8b57c17d88a64f999b94d5597b6b7bdc3"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/1a6a27c8b57c17d88a64f999b94d5597b6b7bdc3/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "80c5042e3624d89af5d1bf953f29380b5fbdcd8c",
+      "source_commit": "9e6900dd528597c385021860c606833486194b4f",
       "blob": "9f57f81fd066116de0f44a9a22595b5d121118b0",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "9e6900dd528597c385021860c606833486194b4f"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/9e6900dd528597c385021860c606833486194b4f/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "7e047daa4b7f7e5cc5b89219fb71bbbcec0c158f",
+      "source_commit": "688651db885e9499f28f156abc4893cba7cd7dd0",
       "blob": "a9adcc363774ae41f59f0227c872b6ba23c92d6d",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "688651db885e9499f28f156abc4893cba7cd7dd0"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/688651db885e9499f28f156abc4893cba7cd7dd0/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "1b33dcaf0c50a9b79e0f8535144d5097d6e8d9b8",
+      "source_commit": "b641259f33a7ef44a02d060d8c090f5d8ed704fb",
       "blob": "6fdb9a0bed6e84ba005f0badd01fedddeba37c41",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "b641259f33a7ef44a02d060d8c090f5d8ed704fb"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/b641259f33a7ef44a02d060d8c090f5d8ed704fb/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "8bf278803e65141aa1f5bde0b01b2d1dcb37f815",
+      "source_commit": "a113f0e16ca2ec229d1ef14912e5a45a608aeba4",
       "blob": "4503a8867cc9f61ca9ce4ef4db3b70e759c5f7af",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "a113f0e16ca2ec229d1ef14912e5a45a608aeba4"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a113f0e16ca2ec229d1ef14912e5a45a608aeba4/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "e57c25df71237e74dbf3a453778bbf8f1308b1ac",
+      "source_commit": "e30b66897e569a47f70b4a41193ca15bdb886a9e",
       "blob": "23a947bfde71bf1a5744e55b1fa275bc67620e6f",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "e30b66897e569a47f70b4a41193ca15bdb886a9e"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/e30b66897e569a47f70b4a41193ca15bdb886a9e/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "5833a042dcdfe883dc3a1832c463a7ab1fa2d56c",
+      "source_commit": "edce5b9fa057c3e8afd4737254a9804780ae7a70",
       "blob": "5c1a50c1986f8a0a9a9b5adb82fe31e8e79b0700",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "edce5b9fa057c3e8afd4737254a9804780ae7a70"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/edce5b9fa057c3e8afd4737254a9804780ae7a70/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "8faf6d0486e91beab843068c0176ba7ac603db31",
+      "source_commit": "67005146fefe387c573e8e52c95b83260d116b3f",
       "blob": "0ac6d1f44c91e85137f2c13eb84dcd70d4f55cd2",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "67005146fefe387c573e8e52c95b83260d116b3f"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/67005146fefe387c573e8e52c95b83260d116b3f/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "de5a924176de54338af549222dd0a59a62ea790d",
+      "source_commit": "2dec8c72fc11c9bdf8c657c76d80cfedd182f5a9",
       "blob": "d4ca3e890176d2c72279e43cc48c4cca1f2dc663",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "2dec8c72fc11c9bdf8c657c76d80cfedd182f5a9"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2dec8c72fc11c9bdf8c657c76d80cfedd182f5a9/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "6f97ebd101644dddab57d201b8f303518baf2d09",
+      "source_commit": "dcafa9518e2097bd9eda756558e4085fd778c1cf",
       "blob": "30e2acbc9bde8a1d0ecd4ca166a482261038d1e4",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "dcafa9518e2097bd9eda756558e4085fd778c1cf"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/dcafa9518e2097bd9eda756558e4085fd778c1cf/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "1b3c2c94783688c0b4c5e3e4b6ef1c496f8c5491",
+      "source_commit": "59fe5a8dff043aa1e864c6f96bc7013ef7cc4631",
       "blob": "970c0ce9ea0102a24d3674b07e355d1fb771512e",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "59fe5a8dff043aa1e864c6f96bc7013ef7cc4631"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/59fe5a8dff043aa1e864c6f96bc7013ef7cc4631/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "5e6b1bcd685820cc3e4f00aae25565f904d9f17b",
+      "source_commit": "c21f2e41a90875be2736f7f54c58a28cf48db205",
       "blob": "c54c40384f31f3f8753e6d2f68d7b230fbf15831",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "c21f2e41a90875be2736f7f54c58a28cf48db205"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/c21f2e41a90875be2736f7f54c58a28cf48db205/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "2e36857efbbad631a60db5c80fbe41413b9e9ab8",
+      "source_commit": "968fe49961b1b6d350254140e97f92a5dedfb2b4",
       "blob": "96582e21c727f8fbec3c2cfd95fe87a5fc86989d",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "968fe49961b1b6d350254140e97f92a5dedfb2b4"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/968fe49961b1b6d350254140e97f92a5dedfb2b4/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "3a79d22c0b3b4e22cc350613bf81c1c52d38905b",
+      "source_commit": "cef209e226a34662ea8965917bdda82273947595",
       "blob": "a63ab84ac493b0ab69c7e37a8200fd7742fce160",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "cef209e226a34662ea8965917bdda82273947595"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/cef209e226a34662ea8965917bdda82273947595/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "f152fd68aa174b20a918453c81077dd3a202c977",
+      "source_commit": "acd823007b3396c62ac0f588d88756291a6b8bc7",
       "blob": "0b8def847c004ee71b32355bf64a3dd1cfb43df5",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "acd823007b3396c62ac0f588d88756291a6b8bc7"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/acd823007b3396c62ac0f588d88756291a6b8bc7/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "39be192084aa30a2af7f2efd7fa1910796e73d63",
+      "source_commit": "7ef585f0efb9a10957f4cc885e3c6f3cd8035c2d",
       "blob": "d45fccb24a825cd79098596abf841156fa284dfe",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "7ef585f0efb9a10957f4cc885e3c6f3cd8035c2d"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/7ef585f0efb9a10957f4cc885e3c6f3cd8035c2d/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "45f81b2917a3c7f72c10185baef137bb7dbde90e",
+      "source_commit": "470ac42a472de339067ec995d033f3a870dba4e3",
       "blob": "04f0f1db2d41be64ad990d28f30277a38da47dee",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "470ac42a472de339067ec995d033f3a870dba4e3"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/470ac42a472de339067ec995d033f3a870dba4e3/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "daa07e07bdad8d3627a4e16cac96ddcb7e694951",
+      "source_commit": "23741096fc497f92b1c81dbfd387bce5575a6eef",
       "blob": "0577268375fa7da0558077e98023e4cf89e10110",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-3B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "23741096fc497f92b1c81dbfd387bce5575a6eef"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/23741096fc497f92b1c81dbfd387bce5575a6eef/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "799e54bc87b23710a8ffce921d38f776030b997b",
+      "source_commit": "0c767db6aca778f9e2d5e87afa8c04698b7a0dcf",
       "blob": "e72d990ce923c83cd88ef264a8f7e71ff608298f",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-7B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "0c767db6aca778f9e2d5e87afa8c04698b7a0dcf"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "3bdd8255b7096612a1640cab831f89d12a8ca8ec",
+      "source_commit": "1258390a9bf353568a6e17510e1a6e66d3cb165e",
       "blob": "1e449a80d6b9f998483f1afbd93e72589e66b770",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-7B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "1258390a9bf353568a6e17510e1a6e66d3cb165e"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/1258390a9bf353568a6e17510e1a6e66d3cb165e/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "f6594dfe2bfc0bc0b4e70e9afe0e5751ccdfe955",
+      "source_commit": "27eb0e05196c3f38876548659314d069573e251b",
       "blob": "d4d2f34cded644c82cc9133827f0261a68384f8b",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-7B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "27eb0e05196c3f38876548659314d069573e251b"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/27eb0e05196c3f38876548659314d069573e251b/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "99da1e826f44e1cc02cbb7ae987146a06a15f45a",
+      "source_commit": "c027e8e1baaa0b25afe1378139c03f054921d892",
       "blob": "092127caa73b72e88141e80089100a727811389f",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-7B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "c027e8e1baaa0b25afe1378139c03f054921d892"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/c027e8e1baaa0b25afe1378139c03f054921d892/create_dataset.py"
     },
     {
       "path": "create_dataset.py",
-      "original_commit": "95c664dbb6fa9fc135ad816222435f98f2c69c1c",
+      "source_commit": "f05a50758f73bda0832a661a6908793cba066a99",
       "blob": "a80e1082852cec992411cf21aa092e603810fcb9",
-      "TEACHER_MODEL": "Qwen/Qwen2.5-14B",
-      "ALIGN_DIM": 128,
-      "restored_commit": "f05a50758f73bda0832a661a6908793cba066a99"
+      "source_url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/f05a50758f73bda0832a661a6908793cba066a99/create_dataset.py"
     }
   ]
 }

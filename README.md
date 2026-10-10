@@ -18,7 +18,7 @@ The main recorded experiment family is **CPU-1**. It combines custom Transformer
 | Low-bit weights | 26 exports simulate ternary weights in PyTorch; the evaluated files store FP32 tensors |
 | Additional components | Boundary-aware embeddings, low-rank residuals, state deletion, learned decay, and teacher-hidden alignment |
 
-These are local adaptations of ideas from BitNet, MatMul-free LM, MEGABYTE, Bolmo/BLT, MrT5, and HGRN2. The [architecture review](docs/architecture-review.md) explains what is actually implemented and checks all 34 published configurations plus the current presets. The separate 164.87M-parameter larger-model path remains development code; its results are not part of this evaluation.
+These are local adaptations of ideas from BitNet, MatMul-free LM, MEGABYTE, Bolmo/BLT, MrT5, and HGRN2. The [architecture guide](docs/architecture-review.md) describes the implemented components across all 34 published configurations and the current presets. The separate 164.87M-parameter larger-model path remains development code; its results are not part of this evaluation.
 
 ## Results
 
@@ -164,7 +164,7 @@ The outputs contain fragments resembling words, but remain weak and often incohe
 
 The four numerical failures are `run_01_v3`, `run_02_v3`, `run_02a_byte_only_heads_v3`, and `run_08_v3`. They loaded successfully but produced nonfinite loss; missing scores are shown as ERROR.
 
-The shared recurrent parallel scan disagrees with its serial recurrence and chunked execution. Boundary-aware embeddings in the published configurations can see future patches. The common audit uses phase 1 with deletion disabled, so it does not establish phase-2 compression gains or speedups. See the [architecture review](docs/architecture-review.md) for the implementation details and the [full model card](docs/model_cards/cpu1-ablations-final.md#correctness-checks) for individual correctness checks.
+The shared recurrent parallel scan disagrees with its serial recurrence and chunked execution. Boundary-aware embeddings in the published configurations can see future patches. The common evaluation uses phase 1 with deletion disabled, so it does not establish phase-2 compression gains or speedups. See the [architecture guide](docs/architecture-review.md) for implementation details and the [full model card](docs/model_cards/cpu1-ablations-final.md#correctness-checks) for individual correctness checks.
 
 ## Models and data
 
@@ -182,13 +182,11 @@ The [dataset review](docs/model_cards/cpu1-ablation-dataset.md) inspected three 
 
 ## Using the project
 
-The source repository is currently private and requires GitHub access; the Hugging Face companions are public. Start with the [setup and usage guide](docs/usage.md) for installation, loading one checkpoint, generating bytes, and training recipes. The root README focuses on the experiments and results.
+Start with the [setup and usage guide](docs/usage.md) for installation, loading one checkpoint, generating bytes, and training recipes. Hugging Face hosts the model and dataset artifacts; this repository contains their source and evaluation records.
 
 Code lives in [cpu1/](cpu1/), [training/](training/), [data_pipeline/](data_pipeline/), [evaluation/](evaluation/), and [runners/](runners/). Experimental native kernels live in [inference/](inference/); their synthetic benchmarks are not verified generation speed for a published checkpoint.
 
-The [evaluation evidence](experiments/evaluation/README.md) preserves the exact sample, environment, results, and validation records. The [provenance review](docs/provenance/README.md) documents recovered history and missing job/source bindings. Deterministic end-to-end retraining remains unverified. Local weights, caches, generated reports, and credentials are excluded from Git.
-
-The [documentation review](docs/documentation-review.md) records the checks and corrections across every current guide and model card, with the remaining verification limits.
+The [evaluation records](experiments/evaluation/README.md) include the exact sample, environment, results, and checkpoint checks. [Experiment provenance](docs/provenance/README.md) describes recorded configurations and platform recipes. The [research scope and reproducibility guide](docs/reproducibility.md) explains the evaluation protocol and the limits of the available evidence. Deterministic end-to-end retraining remains unverified.
 
 ## References and licensing
 

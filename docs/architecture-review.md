@@ -1,21 +1,21 @@
-# Architecture and README review — 2026-10-10
+# Model architectures and implementation limits
 
-This review checks what the repository implements, what its published artifacts demonstrate, and which architectural names need qualification. It covers every architecture family named in the root README, all 34 published configuration records, all 30 current presets in each ablation entry point, and the separate larger-model path.
+This guide describes the implemented architecture families, their published checkpoints, and known numerical limitations. It covers all 34 published configurations, all 30 current presets in each ablation entry point, and the separate larger-model path. Architectural names identify local adaptations; they do not establish reproduction of the cited papers.
 
-The reviewed training/component source is at commit `43902814b8d2f2e5459367b8f90a34d2f03bcbab`. The [machine-readable inventory](../experiments/evaluation/architecture-review-2026-10-10.json) includes source hashes, parameter counts, state-shape fingerprints, instantiated module counts, and effective feature flags. The documentation update does not change those model implementations or checkpoint files.
+The implementation analysis uses training/component source at commit `43902814b8d2f2e5459367b8f90a34d2f03bcbab`. The [October 10, 2026 inventory](../experiments/evaluation/architecture-review-2026-10-10.json) includes source hashes, parameter counts, state-shape fingerprints, instantiated module counts, and effective feature flags.
 
 The inventory's source-file hashes cover the raw bytes of the local Windows checkout, including CRLF line endings. GitHub stores those source files with LF endings, so their Git blob bytes have different SHA-256 values even though the source text is unchanged.
 
-## Method and boundaries
+## Analysis methods
 
-1. Read model constructors, forwards, dataset adapters, training/configuration routing, checkpoint serialization, and native drivers.
-2. Construct each of the 34 recorded models in **both** ablation backends with meta tensors: **68 constructions**. Verify recorded configuration hashes and parameter counts, then compare inventories and state-shape fingerprints across backends.
-3. Construct all **30 current presets per backend**: **60 constructions**. Record actual modules and flags instead of trusting descriptions or run names.
-4. Construct **five larger-model variants**: base/gated classes with local or legacy independent heads, plus the gated class with all optional gates. These constructions validate structure without allocating complete parameter tensors.
-5. Execute small synthetic CPU checks of all current presets in both backends, including phase 2 where a gate exists: **92 forward checks**. Also exercise three extra options and six larger-model forward cases. These use width 32, four layers, eight input steps, and random weights; they do not establish trained-model correctness, quality, GPU compatibility, or full-scale performance.
-6. Reuse the completed offline recheck of **all 34 actual FP32 exports**: SHA-256, sizes, strict loading, parameter counts, saved steps, configuration agreement, exact frozen-corpus losses, prefix causality, and recurrent chunk checks. Every result matched the original CPU audit within the stated loss tolerance. Full generation and timing were not rerun for all 34 models.
+1. Source analysis covers constructors, forwards, dataset adapters, training/configuration routing, checkpoint serialization, and native drivers.
+2. The 34 recorded models are constructed in **both** ablation backends with meta tensors: **68 constructions**. Recorded configuration hashes and parameter counts are checked, and module inventories and state-shape fingerprints are compared across backends.
+3. All **30 current presets per backend** are constructed: **60 constructions**, recording effective modules and flags.
+4. **Five larger-model variants** are constructed: base/gated classes with local or legacy independent heads, plus the gated class with all optional gates. Meta tensors validate structure without allocating complete parameter tensors.
+5. Small synthetic CPU tests cover all current presets in both backends, including phase 2 where a gate exists: **92 forward checks**. Three extra options and six larger-model forward cases are also exercised. These use width 32, four layers, eight input steps, and random weights; they do not establish trained-model correctness, quality, GPU compatibility, or full-scale performance.
+6. The offline recheck covers **all 34 actual FP32 exports**: SHA-256, sizes, strict loading, parameter counts, saved steps, configuration agreement, exact frozen-corpus losses, prefix causality, and recurrent chunk checks. Every result matched the original CPU evaluation within the stated loss tolerance. Full generation and timing were not rerun for all 34 models.
 
-No new model, teacher, or dataset weights were downloaded for these architecture checks. The source review and constructor tests are separate from the historical training jobs: exact job-to-source bindings and deterministic retraining remain unverified. The [validation record](../experiments/evaluation/readme-validation-2026-10-10.json) preserves the recheck results and synthetic-check scope.
+Meta-tensor construction checks structure without loading trained weights; the synthetic probes use small random initializations. These checks do not identify the source used by each historical training job or establish deterministic retraining. The [validation record](../experiments/evaluation/readme-validation-2026-10-10.json) contains the checkpoint recheck results and synthetic-check scope.
 
 Repeat the structural inventory from the repository root:
 
@@ -23,13 +23,13 @@ Repeat the structural inventory from the repository root:
 python -m evaluation.architecture_review --output outputs/architecture-review.json
 ```
 
-The AMD module's GPU availability selector is disabled during this CPU/meta inspection. The command neither tests nor installs ROCm/CUDA. Importing that existing module can load local `.env` settings, but the report contains architecture fields and hashes rather than environment credentials.
+The structural inventory uses CPU/meta tensors with GPU selection disabled. It does not validate CUDA or ROCm execution.
 
-## Architecture claims and verdicts
+## Implemented components
 
-| Name or claim | What the code actually does | Supported wording / limit |
+| Architecture or feature | Implementation | Scope and limitations |
 |---|---|---|
-| Training from scratch | Constructors initialize student tensors; training can subsequently resume or warm-start from sibling checkpoints | The project investigates student training from scratch. Do not claim that every saved artifact started fresh in the exact published source version |
+| Training from scratch | Constructors initialize student tensors; training can subsequently resume or warm-start from sibling checkpoints | Fresh initialization, resume, and transfer are supported; each artifact's original initialization and training source are not fully attributed |
 | Transformer | `AblationBlock` combines `SlidingWindowAttention` (causal PyTorch SDPA, Q/K/V/O projections, optional sliding mask) with RMSNorm and a separate SwiGLU FFN | Custom causal-attention baselines; full-model causality still depends on the input embedding and numerical validity |
 | MatMul-free / MLGRU | `AblationMLGRU` projects forget/candidate/output gates and updates a recurrent state; `MatMulFreeTokenMixer` is a separate serial implementation | MLGRU-inspired recurrent models. The PyTorch path still uses floating-point linear operations, and its local decoder uses attention |
 | BitNet / 1.58-bit | `BitLinear` and `BitEmbedding` simulate a scaled ternary alphabet with straight-through gradients; linear activations also simulate quantization | Ternary quantization experiments. Neither every tensor nor every operation is integer/ternary; FP32 exports are not 1.58-bit stored models |
@@ -44,7 +44,7 @@ The AMD module's GPU availability selector is disabled during this CPU/meta insp
 | Stuffed-Mamba / periodic reset | A serial MLGRU option clears state every configured number of steps | A periodic state reset; not a demonstrated Mamba/selective-SSM architecture. All recorded exports have reset period 0 |
 | Teacher distillation | CE/KL routes read Qwen teacher probabilities; optional cosine alignment uses projected teacher hidden states | Teacher-assisted student training. The teacher itself was pretrained elsewhere; full dataset-wide teacher correctness is not established |
 | T-MAC / native CPU inference | Custom AVX2/FMA/OpenMP ternary kernels and synthetic drivers | LUT-inspired kernel experiments. No verified published-checkpoint loader/parity or end-to-end trained-model speed claim |
-| Production model | `CPU1ModelV2` exists as a larger development path and is called “production” in source comments | Source comments are design intent. No matching evaluated large checkpoint, complete real-data training validation, or production deployment is established |
+| Larger-model development path | `CPU1ModelV2` implements a separate 164.87M-parameter default architecture | No matching evaluated large checkpoint, complete real-data training validation, or production deployment is established |
 | Budget / Chinchilla labels | A configured tokens-per-parameter calculation sets training steps | A planned budget, not measured unique training exposure or verified compute-optimality |
 
 Source anchors: [components](../cpu1/components.py), [CUDA-oriented ablations](../training/ablation.py), [ROCm-oriented ablations](../training/ablation_amd.py), [larger models](../training/final.py), [teacher pipeline](../data_pipeline/prepare.py), and [native kernels](../inference/kernels.cpp).
@@ -127,7 +127,7 @@ Transformer blocks do not implement a persistent KV cache in these wrappers. The
 
 ## Byte decoders and patching
 
-The published decoder configurations omit an explicit `local_decoder_layers` key; their ablation constructor's effective default is **two layers**. The component class and the larger-model constructor default to **one layer**. Describing every path as the same one-layer architecture would be wrong.
+The published decoder configurations omit an explicit `local_decoder_layers` key; their ablation constructor's effective default is **two layers**. The component class and the larger-model constructor default to **one layer**. Decoder depth differs between the ablation and larger-model paths.
 
 The byte decoder receives global patch context, learned position embeddings, and shifted preceding target bytes, then applies causal intra-patch attention. Global patch `i` predicts patch `i+1`; a missing `byte_targets` argument creates zero placeholders. Correct shape output alone is not a likelihood test. Independent-head baselines lack this within-target-patch autoregressive conditioning.
 
@@ -145,7 +145,7 @@ The learned-decay option also needs qualification: its layer-dependent initializ
 
 Current preset inventories were checked in both entry points. Their structures agree, while configured budgets can differ: the main CUDA-oriented base uses two tokens/parameter and the AMD-oriented base uses 150, before per-run overrides. The 34 published configuration records remain a separate source of truth.
 
-Names and descriptions require care:
+Configuration identifiers and effective modules:
 
 - `run_04_r2` says `byte_dynamic` but instantiates `AblationBytePatchEmbedding`, without a boundary scorer.
 - Current `run_14_r3` removes DeleteGate and trains CE on FineWeb; current `run_15_r3` has DeleteGate but no hidden aligner and also selects CE. They are not identical to the base KD/alignment runs.
@@ -169,11 +169,11 @@ Defaults are width 1,024, 14 layers, FFN width 2,730, FPResidual rank 8, and PFN
 
 The gated class **instantiates `BoundaryPredictor` but never calls it in `forward`**. Small forward-hook checks confirmed zero calls in both phases and with either head choice. Its deletion path uses the mask route, not the ablation gather route. Its default alignment teacher dimension is **3,584**, whereas the recorded ablation aligners use 128; compatible data requires an explicit matching dimension.
 
-The default real FineWeb training route builds an `IterableDataset` and passes `shuffle=true` to its DataLoader, causing a **ValueError before training** in the reviewed PyTorch environment. That failure was reproduced without downloading data. A tiny synthetic training-loop smoke succeeded during the README review; this does not validate full-size real-data training, memory limits, or throughput.
+The default real FineWeb training route builds an `IterableDataset` and passes `shuffle=true` to its DataLoader, causing a **ValueError before training** in the recorded PyTorch environment. A tiny synthetic training-loop check succeeds, but it does not validate full-size real-data training, memory limits, or throughput.
 
 ## Native kernels, storage, and reproducibility
 
-`inference/kernels.cpp` and `inference/benchmark.c` explore native ternary operations, local decoding, and execution modes. Their drivers create synthetic weights. No trained-checkpoint loading/parity check is established, and a compatible GCC/MinGW build was not executed in this environment. Do not label their rates as published-model generation performance.
+`inference/kernels.cpp` and `inference/benchmark.c` explore native ternary operations, local decoding, and execution modes. Their drivers create synthetic weights. No trained-checkpoint loading/parity check or compatible GCC/MinGW build is validated in the recorded environment. Their rates describe synthetic kernel work; published-model generation performance is not established.
 
 FP32 exports occupy four bytes per stored parameter plus serialization metadata. The compact codec stores ternary values using two bits, plus scales and floating-point residual/normalization tensors. `log2(3)` is alphabet capacity, not measured whole-model storage. The PyTorch inference path unpacks/simulates weights; it is not a packed integer backend.
 
@@ -181,9 +181,9 @@ The dataset check covers three pinned Parquet samples and synthetic reader/token
 
 The precomputed loader's metadata-based 5 GiB shard selection can fall back to an entire subset. Post-load cache cleanup is an attempted 10 GiB policy, not a hard internet/disk limit. Missing split metadata makes its fallback validation slice overlap training. Exact dataset exposure and an independent training-time validation split cannot be reconstructed from configured budgets alone.
 
-The checkpoint/configuration records do not identify every job's exact source, environment, resolved teacher/tokenizer revision, extraction version, document list, or random projection. Numerical reproduction of a small frozen inference audit is distinct from deterministic end-to-end retraining. The recovered-history map is dated, and later commit-subject changes need their own scope.
+The checkpoint/configuration records do not identify every job's exact source, environment, resolved teacher/tokenizer revision, extraction version, document list, or random projection. Numerical reproduction of a small frozen inference evaluation is distinct from deterministic end-to-end retraining. See [research scope and reproducibility](reproducibility.md) for the evaluation protocol and remaining gaps.
 
-## References used to qualify names
+## Architectural references
 
 Original papers document their own architectures and results; the local source and evidence above determine this project's claims.
 

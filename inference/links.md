@@ -2,7 +2,7 @@
 
 This folder contains custom AVX2/FMA/OpenMP kernels and a synthetic benchmark driver. The driver creates random weights and input vectors. It does not load the published checkpoints, and trained-model parity or end-to-end generation performance has not been established.
 
-The local-decoder benchmark computes logits but feeds back bytes from a fixed formula, `(byte_position * 17) % 256`, rather than selecting or sampling those logits. Its rates measure synthetic kernel work, not meaningful text generation. See the [architecture review](../docs/architecture-review.md#native-kernels-storage-and-reproducibility) and the separate [PyTorch model results](../README.md#results).
+The local-decoder benchmark computes logits but feeds back bytes from a fixed formula, `(byte_position * 17) % 256`, rather than selecting or sampling those logits. Its rates measure synthetic kernel work, not meaningful text generation. See the [architecture guide](../docs/architecture-review.md#native-kernels-storage-and-reproducibility) and the separate [PyTorch model results](../README.md#results).
 
 ## References
 
