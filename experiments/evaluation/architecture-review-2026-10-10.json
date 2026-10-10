@@ -1,0 +1,4497 @@
+{
+  "scope": "Offline meta constructors and module inventory; no checkpoint downloads, numerical inference, GPU runs, or retraining",
+  "source_commit": "43902814b8d2f2e5459367b8f90a34d2f03bcbab",
+  "torch_version": "2.6.0+cu124",
+  "source_sha256": {
+    "cpu1/components.py": "b15779c727a0554bc3dd9ca028e79bfa7bb27e7ff48dce80c1a4239b7a764bc8",
+    "training/ablation.py": "4125cafe4f5cfd927719876cdf64b74c986ad99593433769254e48dd6490f7c5",
+    "training/ablation_amd.py": "80eac0b0a6ccec30887542f5aa8818f00269d9618a4987cd553a411184434975",
+    "training/final.py": "80c82ee9d8d9de0c59d83a94bb5916779431bb398031718abc322e6582d76909",
+    "training/configuration.py": "91dac15233dd19584c6c7b6d5222f7779a44af8dab1c71508415a6a67697c5ce",
+    "inference/kernels.cpp": "685e06e9442fbd2562467ceabf3190394c6c6d602b0b2b6bbf140e7eb6489883",
+    "inference/benchmark.c": "ec138f47c04d404f9065838e2ad4ad697d085832f3e43c45a3f3750e1e16b922"
+  },
+  "manifest_sha256": "bfad82fb8d3683ba95f96cd22b2b301a401a6bd750c9b40e112228815da46420",
+  "reviewer_sha256": "f60b2798eba447531d952aa12c5d73f89ac8d5d1fbe9866ddc2eda4a3d2a4bcb",
+  "summary": {
+    "published_records": 34,
+    "published_backend_constructions": 68,
+    "preset_constructions": 60,
+    "development_constructions": 5,
+    "published_parameters_range": [
+      10691371,
+      54735360
+    ],
+    "published_embedding_counts": {
+      "Embedding": 2,
+      "AblationBytePatchEmbedding": 15,
+      "BolmoPatchEmbedding": 14,
+      "BitEmbedding": 3
+    },
+    "published_mixer_counts": {
+      "SlidingWindowAttention": 8,
+      "AblationMLGRU": 26
+    },
+    "published_local_decoder_layers": {
+      "0": 7,
+      "2": 27
+    },
+    "published_with_module": {
+      "BitLinear": 26,
+      "FPResidual": 21,
+      "PFNet": 2,
+      "DeleteGate": 15,
+      "BoundaryPredictor": 0,
+      "EmbeddingAligner": 3
+    },
+    "published_with_learned_decay": 1,
+    "all_published_records_match": true,
+    "all_published_cuda_amd_inventories_match": true,
+    "all_current_cuda_amd_preset_inventories_match": true
+  },
+  "published": [
+    {
+      "run": "run_01",
+      "config_sha256": "e2f98fd9fdc8cdfabd7e2f72f2b3b04d4268a2b870e0d4ba2e4c4e2098d6f629",
+      "checkpoint_sha256": "afd881decfab7c40f06e675f727561f9ad81ec3c82fd39eaaf33bf2cbf09fb28",
+      "saved_step": 912,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 54735360,
+      "state_shape_sha256": "2a11a1110bfc7477fe2acbe32e06e6e27c5a302f55677778afd52203ece4593d",
+      "tokenization_label": "bpe",
+      "quantization_label": "fp16",
+      "embedding": "Embedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_01_v3",
+      "config_sha256": "0f4c9db036b8b264c5ad5580c86afeeebe4a29e036206e60a433b0b5ab4dda0c",
+      "checkpoint_sha256": "dc8f256255308d36217f51d6c91c0f99a569315efc040bb4a8a6fcdb51049e36",
+      "saved_step": 12173,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 54735360,
+      "state_shape_sha256": "2a11a1110bfc7477fe2acbe32e06e6e27c5a302f55677778afd52203ece4593d",
+      "tokenization_label": "bpe",
+      "quantization_label": "fp16",
+      "embedding": "Embedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_02",
+      "config_sha256": "e908d470890f410d9dc15583946a9b51a3532b75f111c9a542dca11a3edbe0d6",
+      "checkpoint_sha256": "9da358889c0d72fa04b155b720dc726b3dca050574e9e5a40564a24d38d3eb5e",
+      "saved_step": 647,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38829569,
+      "state_shape_sha256": "221aebcd0af256a59ea34fa0639460a3d295ceb322484844ec56b6abc9d9937e",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_02_v3",
+      "config_sha256": "7c4954e3131a65f7e582c4a09b630fa9eaf1dc1c7885e2dadc05a47fa1313b14",
+      "checkpoint_sha256": "bc635a9fe2730240543705bda2f0bfbc6dd5d9d2759f7d1369ecb464e021c46a",
+      "saved_step": 10963,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38829569,
+      "state_shape_sha256": "221aebcd0af256a59ea34fa0639460a3d295ceb322484844ec56b6abc9d9937e",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_02a_byte_only_heads",
+      "config_sha256": "7d46728d4bc47eca5f4466cf629d5bacb3ba7439408fc925df54606f43c1ee04",
+      "checkpoint_sha256": "a97ca68d1d8882da2f288309aee1d10c9b623ef84694d3d4ed0e0988c6cf242a",
+      "saved_step": 641,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38500868,
+      "state_shape_sha256": "69e3ef5fe87c91309c3382a12fd1cc55903d32940f2fe4d78c8fc8cc0bc12fba",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_02a_byte_only_heads_v3",
+      "config_sha256": "3afc68d32cbde4be5bc7ee586d2f058a6c5c1137e53bfefc0617228c1b67d6b5",
+      "checkpoint_sha256": "77e31f9ff202162d745b020eb9cfe8d5a748dd614ba114f712acca2c1507d5e3",
+      "saved_step": 16327,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38500868,
+      "state_shape_sha256": "69e3ef5fe87c91309c3382a12fd1cc55903d32940f2fe4d78c8fc8cc0bc12fba",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_03",
+      "config_sha256": "9bc89e9a5bddad995155773ea045f70f72fc98ecabf89c821c0ef0b0ceba9ac1",
+      "checkpoint_sha256": "9ceb9c3aa2d98d45cf102f1a7f39c596dd4c5fcba698eb581fdf5a890fb72498",
+      "saved_step": 647,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38829569,
+      "state_shape_sha256": "0cfb42d411994dd05cfb93778e50318912a18db9f173bcd7c13ccecc99ca3960",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_03_v3",
+      "config_sha256": "6ab5bedcd96448e00f65e47cf809aa482c72cb8d713e34389bb844655d1170df",
+      "checkpoint_sha256": "ea871efa66b8a301883e743f045ed8dc4e52949ed35c37809d41d7461626c044",
+      "saved_step": 6187,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38829569,
+      "state_shape_sha256": "0cfb42d411994dd05cfb93778e50318912a18db9f173bcd7c13ccecc99ca3960",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_04",
+      "config_sha256": "6f25943422b4da024a608e0a0f577623d2e611686ac8357da7923514c4804b49",
+      "checkpoint_sha256": "3af6570f55ecdf604adacce6f67a319aaa7823b7177a4023143401d7fe145f5e",
+      "saved_step": 647,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_04_r2",
+      "config_sha256": "187928a4b35b4983653f13d2e3adfd0040f5c51736338cd93afb92e1b58eafe8",
+      "checkpoint_sha256": "6e8f1fff076f0482c4970f01c7aa944315d06bae748dad9552345ea36285bf26",
+      "saved_step": 4840,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_04_v3",
+      "config_sha256": "fbf755ddaf8bfb4123b1df6cbeaad0b65e4b14e0065a7b936ad2edbd6d06ea4a",
+      "checkpoint_sha256": "32c79b76fa76eca39c8d733c08c6e8acd16d23fefe9dd6f0684a53a018042c09",
+      "saved_step": 6074,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_05",
+      "config_sha256": "4e04b8cca73a9f299034a429a5bf711f3e419909b2ebd91c9d7865e318efae8b",
+      "checkpoint_sha256": "38009430f02aa997948340acb7e9ea80956fc777c0fcb61ab878dd7bd346ced2",
+      "saved_step": 649,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38993921,
+      "state_shape_sha256": "bcc0e2338eb4f16db11ec4c9ac6edaa4bdb9e82d1f93339fbee9e7aaef992cfc",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_05_v3",
+      "config_sha256": "36e28f0ccd488ac8c9b3a3b8695a3c9c854524b97bf7d25d0f05bdd5743a97e4",
+      "checkpoint_sha256": "bca43e31e0822c8ae008d5b930113b5cb9346a4623e896093375c4c0b5113296",
+      "saved_step": 4390,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38993921,
+      "state_shape_sha256": "bcc0e2338eb4f16db11ec4c9ac6edaa4bdb9e82d1f93339fbee9e7aaef992cfc",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_05b_kernel_strict",
+      "config_sha256": "3d43c99ac50d3a57a75139fa2ceccd5c3ed63b826d21a8fa8a8b932bbc5f5924",
+      "checkpoint_sha256": "68619093de4f4a914c7ddc50ca4aaf0774b82ec21b98dae892491489b0bddaf0",
+      "saved_step": 600,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 35842049,
+      "state_shape_sha256": "6389ba57670f461a42b1dc785173483ada50d97248d510c6e9fcf093e29e4e72",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 89,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_05b_kernel_strict_v3",
+      "config_sha256": "8d9d6d41140985130c78f9dec9bb84ddb5f031eebe3d89d1237755a8027481e7",
+      "checkpoint_sha256": "7330a3759f2bcbe03952132b56e11110a2d754c0ccbca896deef7cdaaf729f2f",
+      "saved_step": 2573,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 35842049,
+      "state_shape_sha256": "6389ba57670f461a42b1dc785173483ada50d97248d510c6e9fcf093e29e4e72",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 89,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_06",
+      "config_sha256": "d0698be1854b8a50f7d0b504d86719de59a88caa28be41e04bf57349bc8951b8",
+      "checkpoint_sha256": "08359c613616f9a6aad28c3c192d362902e7a6b9f966cad78da3c029315c6e27",
+      "saved_step": 649,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38994146,
+      "state_shape_sha256": "7467559fc71a36b183d36c91e102c537c7a10e3a0b915db922e5a3fb3611fa16",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_06_v3",
+      "config_sha256": "44c0f88735708a071d351f967746b909ef77b23f6724015ee43c84781b6d32b2",
+      "checkpoint_sha256": "d2c08a75f3f35e64ac89975e2124d2de2917bc11f599f2965558e869cd376fe8",
+      "saved_step": 4237,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38994146,
+      "state_shape_sha256": "7467559fc71a36b183d36c91e102c537c7a10e3a0b915db922e5a3fb3611fa16",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_07",
+      "config_sha256": "347a3f9ca8ca26decfcfcb720be554eac62251a793ce708d755ce0283b73cb9b",
+      "checkpoint_sha256": "769a775926b401bef367195e9060afb0d1fe04e93cb3d347fb35c50f2bbafba7",
+      "saved_step": 650,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_07_r2",
+      "config_sha256": "b92329e2e123104c8282afaf736cda831f5b08d2abfd9b843b8159e3f13194d3",
+      "checkpoint_sha256": "1117741fa49dda11a3157950dfbd4a802354f055fb70436de2146c3cc6c278d8",
+      "saved_step": 4860,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_08",
+      "config_sha256": "f93ed9c4057564dc019d3ace1f2d8010f1b56c79d3c89d581e55b2921f78474f",
+      "checkpoint_sha256": "c847ce660f4556040787baf247b5390cc66b5758236e7b64bb687145e2b660e9",
+      "saved_step": 647,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38854145,
+      "state_shape_sha256": "e94101327e5d8de0188dfe3c3bcc401c66bfd16d9da6af9968d9ae116f7f2c53",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_08_v3",
+      "config_sha256": "b3f464f363095fe8fce71b8c7f9d409563c675187ea5ba0b96d6fb46110877d3",
+      "checkpoint_sha256": "d9b67685ec976e175b9481eef24258e3dff2ef53674c598e3b3a3fa5e0026471",
+      "saved_step": 3858,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 38854145,
+      "state_shape_sha256": "e94101327e5d8de0188dfe3c3bcc401c66bfd16d9da6af9968d9ae116f7f2c53",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_09",
+      "config_sha256": "da8577c7a668e8bfce7553074a835ba5bc88683d228e5dcbfb1705c87428c0b5",
+      "checkpoint_sha256": "857bb84ec29709140ebae70dcb1779591d730f1183ae2526e1379e634b6ad106",
+      "saved_step": 657,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 39427939,
+      "state_shape_sha256": "cb6b4d2f82ba023d5352b6144afe5deabcf286f7b13fe8109297b329f7762233",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_10",
+      "config_sha256": "4b036ebc04ed65e2bc469e7a51c2daf2777c6b58875db280c240d9677c7c6571",
+      "checkpoint_sha256": "0419cfbeda000493465f3d275352a76a59511232d553275bfcbe0aa45cd84d16",
+      "saved_step": 657,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 39434083,
+      "state_shape_sha256": "5cfc3ef74e0abd3b1d8e36400f7a1824f3576a8027cded980fdda361f28d6b64",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 12,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_13",
+      "config_sha256": "dfaba6de44e6bb36d768b08dfdfe9e555eb6c53ea354f7c6391aa34d66710aff",
+      "checkpoint_sha256": "21d30529f1f7ce72670c8d9b470165b662a8a41702842a23d8d90de0aa37a1c4",
+      "saved_step": 600,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_13_r2",
+      "config_sha256": "cdd1de12b675d1cc65e519ea169f5fcb6cad34d6cb98c46425da01db3a358ac8",
+      "checkpoint_sha256": "ad0aa7ce787677f5bbf8b11962720a203b3880218d4a1f1a0eaa178258162a4c",
+      "saved_step": 1568,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_13_v3",
+      "config_sha256": "843976af95d0bb2dd2345e57d2cf3d12855367774ad8a25b6187a9dca4e5f39a",
+      "checkpoint_sha256": "0b53b891bfd8017d2027a266fdaca617ec11a2049b3987204bc0d67038db4453",
+      "saved_step": 9290,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "run": "run_14",
+      "config_sha256": "498592c3dcd1bcb5b078b6446c05f00e3713305577eb73735c60d09a385c2e8e",
+      "checkpoint_sha256": "21cb3c94a5742d587934710f662bb4104a77634025fc0de43b517a88088af6e1",
+      "saved_step": 600,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_14_r2",
+      "config_sha256": "6747d092b87090f9d34e29ce0d68be88d1c732961a89967acbcd45b5a96091fd",
+      "checkpoint_sha256": "9acfcd5c043fe11f0997fee0919fa93ee80eed55816557638706661680c0666e",
+      "saved_step": 1336,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_14_v3",
+      "config_sha256": "dcca5697cdb6901d2def389f5d3574828d9f09bd1ffe4c07c70e86860d54e905",
+      "checkpoint_sha256": "553f07ea4e4857e6099b224cf7ba099135450e78a94f6adb9ad894b199d1c3c4",
+      "saved_step": 9775,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_15",
+      "config_sha256": "c7592ef602f1443e1c3e1f72d29e149b3977b4fb49db0308dc3d8603317b5048",
+      "checkpoint_sha256": "9a78524371ab688b9801f2b754afa9a44cbd2db06a0f5cf5e9bb366a80497158",
+      "saved_step": 600,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_15_r2",
+      "config_sha256": "58b95f087f3c3659940cc5168fcbc7b65422bb8bdaecb478477fa97e45859eb7",
+      "checkpoint_sha256": "5acf8861484fe31c49b59b50d816f0e7fee896da030773d8fab4428e06c19d7d",
+      "saved_step": 1341,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_15_v3",
+      "config_sha256": "8e5ed148279277102b3d9b1646f69299d6dedfe5a84ebf101c046a9c3b5005e4",
+      "checkpoint_sha256": "4d192808ecde2c4d097448869e40641044477f7661bacc500971af8e4008682c",
+      "saved_step": 2350,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_16",
+      "config_sha256": "035e01bdf4b072c76178b66a139a0eb66d0903a62601677a61fd49b1becd43ba",
+      "checkpoint_sha256": "b5d819e4f8a8f311b4f828461ab3d3f4888e6083ef8e41ddba775136a1217462",
+      "saved_step": 600,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "run": "run_16_r2",
+      "config_sha256": "644b2e47deca224a25fd0ef6fab0d99d27caeb24277f9779616241c7b7dd4c4a",
+      "checkpoint_sha256": "de69bc54a1eba051f8714a3fbfb792643da7f96c6c53626857f6b9043dd8c5df",
+      "saved_step": 1336,
+      "record_matches": true,
+      "cuda_amd_inventory_matches": true,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": 1,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    }
+  ],
+  "presets": [
+    {
+      "backend": "training.ablation",
+      "run": "run_01",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 54735360,
+      "state_shape_sha256": "2a11a1110bfc7477fe2acbe32e06e6e27c5a302f55677778afd52203ece4593d",
+      "tokenization_label": "bpe",
+      "quantization_label": "fp16",
+      "embedding": "Embedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_02",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38829569,
+      "state_shape_sha256": "221aebcd0af256a59ea34fa0639460a3d295ceb322484844ec56b6abc9d9937e",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_02a_byte_only_heads",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38500868,
+      "state_shape_sha256": "69e3ef5fe87c91309c3382a12fd1cc55903d32940f2fe4d78c8fc8cc0bc12fba",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_03",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38829569,
+      "state_shape_sha256": "0cfb42d411994dd05cfb93778e50318912a18db9f173bcd7c13ccecc99ca3960",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_04",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_04_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_04_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_05",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38993921,
+      "state_shape_sha256": "bcc0e2338eb4f16db11ec4c9ac6edaa4bdb9e82d1f93339fbee9e7aaef992cfc",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_05_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 38993921,
+      "state_shape_sha256": "bcc0e2338eb4f16db11ec4c9ac6edaa4bdb9e82d1f93339fbee9e7aaef992cfc",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_05b_kernel_strict",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 35842049,
+      "state_shape_sha256": "6389ba57670f461a42b1dc785173483ada50d97248d510c6e9fcf093e29e4e72",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 89,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_06",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38994146,
+      "state_shape_sha256": "7467559fc71a36b183d36c91e102c537c7a10e3a0b915db922e5a3fb3611fa16",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_07",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_07_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_07_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_08",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 38854145,
+      "state_shape_sha256": "e94101327e5d8de0188dfe3c3bcc401c66bfd16d9da6af9968d9ae116f7f2c53",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_08_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 38854145,
+      "state_shape_sha256": "e94101327e5d8de0188dfe3c3bcc401c66bfd16d9da6af9968d9ae116f7f2c53",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_09",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 39427939,
+      "state_shape_sha256": "cb6b4d2f82ba023d5352b6144afe5deabcf286f7b13fe8109297b329f7762233",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_09_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 39427939,
+      "state_shape_sha256": "cb6b4d2f82ba023d5352b6144afe5deabcf286f7b13fe8109297b329f7762233",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_10",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 39434083,
+      "state_shape_sha256": "5cfc3ef74e0abd3b1d8e36400f7a1824f3576a8027cded980fdda361f28d6b64",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 12,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_10_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 39434083,
+      "state_shape_sha256": "5cfc3ef74e0abd3b1d8e36400f7a1824f3576a8027cded980fdda361f28d6b64",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 12,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_13",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_13_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_14",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_14_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_14_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 10669802,
+      "state_shape_sha256": "09bb80cdaf1eb00a8a67ffe3dbe0b90cfd0c165e2e546207521c976c1bc61d2f",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_15",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_15_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_15_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_16",
+      "configured_tokens_per_parameter": 2,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation",
+      "run": "run_16_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_01",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 54735360,
+      "state_shape_sha256": "2a11a1110bfc7477fe2acbe32e06e6e27c5a302f55677778afd52203ece4593d",
+      "tokenization_label": "bpe",
+      "quantization_label": "fp16",
+      "embedding": "Embedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_02",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38829569,
+      "state_shape_sha256": "221aebcd0af256a59ea34fa0639460a3d295ceb322484844ec56b6abc9d9937e",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_02a_byte_only_heads",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38500868,
+      "state_shape_sha256": "69e3ef5fe87c91309c3382a12fd1cc55903d32940f2fe4d78c8fc8cc0bc12fba",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_03",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38829569,
+      "state_shape_sha256": "0cfb42d411994dd05cfb93778e50318912a18db9f173bcd7c13ccecc99ca3960",
+      "tokenization_label": "byte",
+      "quantization_label": "fp16",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 0,
+        "BitEmbedding": 0,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_04",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_04_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_04_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 38854145,
+      "state_shape_sha256": "92f32830cf02f9544cdcf938ea1c99bea1512fdd172d4c17aeaaef68254c5c58",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_05",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38993921,
+      "state_shape_sha256": "bcc0e2338eb4f16db11ec4c9ac6edaa4bdb9e82d1f93339fbee9e7aaef992cfc",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_05_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 38993921,
+      "state_shape_sha256": "bcc0e2338eb4f16db11ec4c9ac6edaa4bdb9e82d1f93339fbee9e7aaef992cfc",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_05b_kernel_strict",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 35842049,
+      "state_shape_sha256": "6389ba57670f461a42b1dc785173483ada50d97248d510c6e9fcf093e29e4e72",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 89,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_06",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38994146,
+      "state_shape_sha256": "7467559fc71a36b183d36c91e102c537c7a10e3a0b915db922e5a3fb3611fa16",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_07",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_07_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_07_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 39028579,
+      "state_shape_sha256": "746faf533c34ea453abdaa341f33443da253c6902e5aa446ee2d64e2171d9771",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_08",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 38854145,
+      "state_shape_sha256": "e94101327e5d8de0188dfe3c3bcc401c66bfd16d9da6af9968d9ae116f7f2c53",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_08_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 38854145,
+      "state_shape_sha256": "e94101327e5d8de0188dfe3c3bcc401c66bfd16d9da6af9968d9ae116f7f2c53",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "AblationBytePatchEmbedding",
+      "mixers": {
+        "SlidingWindowAttention": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 101,
+        "BitEmbedding": 2,
+        "FPResidual": 0,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_09",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 39427939,
+      "state_shape_sha256": "cb6b4d2f82ba023d5352b6144afe5deabcf286f7b13fe8109297b329f7762233",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_09_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 39427939,
+      "state_shape_sha256": "cb6b4d2f82ba023d5352b6144afe5deabcf286f7b13fe8109297b329f7762233",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_10",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 39434083,
+      "state_shape_sha256": "5cfc3ef74e0abd3b1d8e36400f7a1824f3576a8027cded980fdda361f28d6b64",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 12,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_10_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 39434083,
+      "state_shape_sha256": "5cfc3ef74e0abd3b1d8e36400f7a1824f3576a8027cded980fdda361f28d6b64",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 12
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 125,
+        "BitEmbedding": 2,
+        "FPResidual": 24,
+        "PFNet": 12,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 12,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 12,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 12,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 512,
+        "n_layers": 12,
+        "d_ff": 1376,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_13",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_13_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 12547785,
+      "state_shape_sha256": "0ecf1b5f038e5c3f760c51d9ae6199181faa80cca5c96a192e319808973d5fc9",
+      "tokenization_label": "bpe",
+      "quantization_label": "ternary",
+      "embedding": "BitEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 57,
+        "BitEmbedding": 1,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_14",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_14_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_14_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 10669802,
+      "state_shape_sha256": "09bb80cdaf1eb00a8a67ffe3dbe0b90cfd0c165e2e546207521c976c1bc61d2f",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": false,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_15",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_15_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 10732331,
+      "state_shape_sha256": "209204d50049fe556f83a869f3dc5f63f759d2a8d2faaccb37af76d28ddafeb1",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "distillation",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_15_r3",
+      "configured_tokens_per_parameter": 50,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_16",
+      "configured_tokens_per_parameter": 150,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    },
+    {
+      "backend": "training.ablation_amd",
+      "run": "run_16_r2",
+      "configured_tokens_per_parameter": 15,
+      "parameters": 10691371,
+      "state_shape_sha256": "abeac51ff8f0f68803949dfcb9f9f397f1bc3ba96689b8d8602d8c7327a2bd9c",
+      "tokenization_label": "byte_dynamic",
+      "quantization_label": "ternary",
+      "embedding": "BolmoPatchEmbedding",
+      "mixers": {
+        "AblationMLGRU": 8
+      },
+      "local_decoder_layers": 2,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 73,
+        "BitEmbedding": 2,
+        "FPResidual": 16,
+        "PFNet": 0,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [
+        1
+      ],
+      "parallel_scan_layers": 8,
+      "reset_periods": [
+        0
+      ],
+      "wo_layers": 8,
+      "gather_configured": true,
+      "training_signal": "ce_only",
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 320,
+        "n_layers": 8,
+        "d_ff": 853,
+        "patch_size": 4
+      },
+      "boundary_attention": {
+        "fixed_patch_size": 4,
+        "cross_patch_window": 3,
+        "causal_boundary": false,
+        "causal_cross_patch": false
+      }
+    }
+  ],
+  "development": [
+    {
+      "class": "CPU1ModelV2",
+      "legacy_heads": false,
+      "parameters": 164869729,
+      "state_shape_sha256": "ae1319ec27ec62862d779420524d33a3f9f84e5cc2f9dd10aa2b72d544862e2b",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "BytePatchEmbeddingV2",
+      "mixers": {
+        "MatMulFreeTokenMixer": 14
+      },
+      "local_decoder_layers": 1,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 122,
+        "BitEmbedding": 2,
+        "FPResidual": 28,
+        "PFNet": 14,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": null,
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 1024,
+        "n_layers": 14,
+        "d_ff": 2730,
+        "patch_size": 4
+      }
+    },
+    {
+      "class": "CPU1ModelV2",
+      "legacy_heads": true,
+      "parameters": 165064548,
+      "state_shape_sha256": "213fee1b46b313b20b2fb81144c153ed81fd8d5dc07bc38e84a3725ad2105d81",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "BytePatchEmbeddingV2",
+      "mixers": {
+        "MatMulFreeTokenMixer": 14
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 117,
+        "BitEmbedding": 1,
+        "FPResidual": 28,
+        "PFNet": 14,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": null,
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 1024,
+        "n_layers": 14,
+        "d_ff": 2730,
+        "patch_size": 4
+      }
+    },
+    {
+      "class": "CPU1ModelV2WithGates",
+      "legacy_heads": false,
+      "parameters": 164869729,
+      "state_shape_sha256": "ae1319ec27ec62862d779420524d33a3f9f84e5cc2f9dd10aa2b72d544862e2b",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "BytePatchEmbeddingV2",
+      "mixers": {
+        "MatMulFreeTokenMixer": 14
+      },
+      "local_decoder_layers": 1,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 122,
+        "BitEmbedding": 2,
+        "FPResidual": 28,
+        "PFNet": 14,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": null,
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 1024,
+        "n_layers": 14,
+        "d_ff": 2730,
+        "patch_size": 4
+      }
+    },
+    {
+      "class": "CPU1ModelV2WithGates",
+      "legacy_heads": true,
+      "parameters": 165064548,
+      "state_shape_sha256": "213fee1b46b313b20b2fb81144c153ed81fd8d5dc07bc38e84a3725ad2105d81",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "BytePatchEmbeddingV2",
+      "mixers": {
+        "MatMulFreeTokenMixer": 14
+      },
+      "local_decoder_layers": 0,
+      "local_decoder_dim": null,
+      "module_counts": {
+        "BitLinear": 117,
+        "BitEmbedding": 1,
+        "FPResidual": 28,
+        "PFNet": 14,
+        "DeleteGate": 0,
+        "BoundaryPredictor": 0,
+        "EmbeddingAligner": 0
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": null,
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 1024,
+        "n_layers": 14,
+        "d_ff": 2730,
+        "patch_size": 4
+      }
+    },
+    {
+      "class": "CPU1ModelV2WithGates",
+      "all_optional_gates": true,
+      "parameters": 168611875,
+      "state_shape_sha256": "27f142e2467085d3eb72379ba47659768e2fe73b019e438db87ae3e10c855f17",
+      "tokenization_label": "byte",
+      "quantization_label": "ternary",
+      "embedding": "BytePatchEmbeddingV2",
+      "mixers": {
+        "MatMulFreeTokenMixer": 14
+      },
+      "local_decoder_layers": 1,
+      "local_decoder_dim": 128,
+      "module_counts": {
+        "BitLinear": 122,
+        "BitEmbedding": 2,
+        "FPResidual": 28,
+        "PFNet": 14,
+        "DeleteGate": 1,
+        "BoundaryPredictor": 1,
+        "EmbeddingAligner": 1
+      },
+      "learned_decay_layers": 0,
+      "state_expansion": [],
+      "parallel_scan_layers": 0,
+      "reset_periods": [],
+      "wo_layers": 0,
+      "gather_configured": false,
+      "training_signal": null,
+      "recorded_phase": null,
+      "dimensions": {
+        "d_model": 1024,
+        "n_layers": 14,
+        "d_ff": 2730,
+        "patch_size": 4
+      }
+    }
+  ]
+}

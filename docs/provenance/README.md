@@ -1,8 +1,10 @@
 # Experiment provenance review — 2026-10-08
 
-The initial cleanup excluded experimental source too broadly. This correction restores **148 historical paths** while keeping the working tree organized. The 87 original commits and the subsequent security commit retain their authors, dates, messages and parent relationships after remapping. Commit IDs change because their trees or ancestors change.
+The initial cleanup excluded experimental source too broadly. The October 8 recovery restored **148 historical paths** while keeping the working tree organized. At that recovery snapshot, the 87 original commits and the subsequent security commit retained their authors, dates, messages and parent relationships after remapping. Commit IDs changed because their trees or ancestors changed.
 
-[restored-files.json](restored-files.json) lists every restored path, its original and remapped source commit, blob, SHA-256 and direct source link. It also lists the 109 paths that remain excluded. [history-map.json](history-map.json) maps the original commits to the public history. The retained file modes and blobs were compared in every original commit; the cleanup tip's tree is unchanged.
+The retained `cpu1-experiment-2026-10-08` tag anchors that snapshot. A subsequent commit-message rewrite changed six subjects and 28 commit IDs without changing their trees, authors, dates, or relationships. Three rewritten subjects belong to the 88 commits described by the recovery map. The map describes the recovery snapshot, rather than the later `main` history; it is not a claim that every current commit subject is unchanged.
+
+[restored-files.json](restored-files.json) lists every restored path, its original and remapped source commit, blob, SHA-256 and direct source link. It also lists the 109 paths that remain excluded. [history-map.json](history-map.json) maps the original commits to the recovered history snapshot. The retained file modes and blobs were compared in every original commit; the cleanup tip's tree was unchanged by that recovery.
 
 ## What belongs in the project
 
