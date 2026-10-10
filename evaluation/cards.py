@@ -135,7 +135,7 @@ def tables(records):
 
 def architecture(records):
     lines = ['## Training and architecture', '',
-             f'Training, dataset preparation and Kaggle/Lightning recipes are maintained in the [GitHub source]({SOURCE_TREE}); AMD training is also supported by the source. The [saved configurations]({SOURCE_TREE}/experiments/published) record the 34 exported runs, checkpoint hashes, parameter counts and saved steps. Current presets can differ from the published runs; select a recorded configuration explicitly.', '',
+             f'Training, dataset preparation and Kaggle/Lightning recipes are maintained in the [GitHub source]({SOURCE_TREE}). The source provides an AMD/ROCm-oriented entry point; these CPU results do not validate a fresh GPU training job. The [saved configurations]({SOURCE_TREE}/experiments/published) record the 34 exported runs, checkpoint hashes, parameter counts and saved steps. Current presets can differ from the published runs; select a recorded configuration explicitly.', '',
              'Configured token budgets, including the v3 150 tokens/parameter setting, are not measurements of completed training exposure. The exact source commit and full dependency lock for each training job were not recorded.', '',
              'The [training dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset) contains teacher signals with documented short/empty arrays, dense-signal alignment limitations in the reader and UTF-8 conversion limitations. Their effect on each trained checkpoint has not been isolated.', '',
              '### Saved architecture settings', '',
@@ -155,14 +155,14 @@ def architecture(records):
 def quickstart(repo, revision, compact=False):
     filename = 'run_04/checkpoint_run_04_final.pt' if compact else 'run_04/model.pt'
     loader = ['from training.ablation import build_ablation_model, load_ablation_checkpoint', f'state, config = load_ablation_checkpoint(path)'] if compact else ['from training.ablation import build_ablation_model', 'payload = torch.load(path, map_location="cpu", weights_only=False)', 'config, state = payload["config"], payload["state_dict"]']
-    return ['## Load one checkpoint', '', 'Clone the [source repository](https://github.com/igna-s/New-1.58) and run this from its root. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.', '', '```python', 'import os', 'os.environ["HF_HOME"] = "D:/cpu1/hf"', 'os.environ["HF_HUB_DISABLE_XET"] = "1"', 'import torch', 'from huggingface_hub import hf_hub_download', 'torch.set_num_threads(1)', f'path = hf_hub_download("{repo}", "{filename}",', f'    revision="{revision}", local_dir="D:/cpu1/active", cache_dir="D:/cpu1/hf/hub")', *loader, 'config["use_gradient_checkpointing"] = False', 'model = build_ablation_model(config)', 'model.load_state_dict(state, strict=True)', 'model.eval()', 'x = torch.tensor(list(b"The history of AI.  ")).reshape(1, -1, 4)', 'with torch.inference_mode():', '    logits, states, extra = model(x, training_phase=1, target_elimination=0.0)', 'print([tuple(head.shape) for head in logits])', '```', '', 'This example supplies zero target bytes to the local decoder to demonstrate output shapes. For likelihood scoring with LocalByteDecoder, supply the ground-truth `byte_targets`; the decoder shifts them internally. Byte generation requires sampling within each patch and retaining the appropriate recurrent state or Transformer context. See the GitHub evaluation implementation and the recorded continuation examples.', '']
+    return ['## Load one checkpoint', '', 'Clone the [source repository](https://github.com/igna-s/AI-Training-from-Scratch) and run this from its root. The source repository is currently private and requires authorized GitHub access. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.', '', '```python', 'import os', 'os.environ["HF_HOME"] = "D:/cpu1/hf"', 'os.environ["HF_HUB_DISABLE_XET"] = "1"', 'import torch', 'from huggingface_hub import hf_hub_download', 'torch.set_num_threads(1)', f'path = hf_hub_download("{repo}", "{filename}",', f'    revision="{revision}", local_dir="D:/cpu1/active", cache_dir="D:/cpu1/hf/hub")', *loader, 'config["use_gradient_checkpointing"] = False', 'model = build_ablation_model(config)', 'model.load_state_dict(state, strict=True)', 'model.eval()', 'x = torch.tensor(list(b"The history of AI.  ")).reshape(1, -1, 4)', 'with torch.inference_mode():', '    logits, states, extra = model(x, training_phase=1, target_elimination=0.0)', 'print([tuple(head.shape) for head in logits])', '```', '', 'This example supplies zero target bytes to the local decoder to demonstrate output shapes. For likelihood scoring with LocalByteDecoder, supply the ground-truth `byte_targets`; the decoder shifts them internally. Byte generation requires sampling within each patch and retaining the appropriate recurrent state or Transformer context. See the GitHub evaluation implementation and the recorded continuation examples.', '']
 
 
 def related_resources(repo):
     other = ARCHIVE if repo == FINAL else FINAL
     description = 'packed and intermediate checkpoints' if other == ARCHIVE else 'FP32 model exports'
     return ['', '## Related resources', '',
-            '- [GitHub: igna-s/New-1.58](https://github.com/igna-s/New-1.58): extraction pipeline, training and evaluation code.',
+            '- [GitHub: igna-s/AI-Training-from-Scratch](https://github.com/igna-s/AI-Training-from-Scratch): extraction pipeline, training and evaluation code.',
             f'- [Hugging Face: {other}](https://huggingface.co/{other}): {description}.',
             '- [Hugging Face: Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset): byte and BPE training data.', '']
 
@@ -187,7 +187,7 @@ def build_cards(inventory, corpus):
     final_files = [f for f in inventory[FINAL]['siblings'] if f['rfilename'].endswith('/model.pt')]
     final_card = header + ['# CPU-1 ablations: FP32 checkpoint exports', '',
         f'{len(final_files)} custom PyTorch model exports, {sum(f["size"] for f in final_files)/1e9:.3f} GB of checkpoint files (decimal units). These checkpoints are intended for research on the CPU-1 ablation configurations. It includes Transformer and MLGRU variants with byte patches or truncated BPE vocabularies, and floating-point or simulated ternary projections.', '',
-        f'Source: [igna-s/New-1.58](https://github.com/igna-s/New-1.58). Training archive: [{ARCHIVE}](https://huggingface.co/{ARCHIVE}). Training dataset companion: [Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset).', '',
+        f'Source: [igna-s/AI-Training-from-Scratch](https://github.com/igna-s/AI-Training-from-Scratch). Training archive: [{ARCHIVE}](https://huggingface.co/{ARCHIVE}). Training dataset companion: [Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset).', '',
         *evaluation_summary(records),
         '## Payload format', '', '`<run>/model.pt` contains `format="fp32"`, `state_dict`, `config`, `step`, `run_name`, `metrics`, and source metadata. The exported parameters occupy four bytes each. “1.58-bit” describes the ternary value alphabet; these files are not stored as 1.58-bit tensors and this PyTorch path does not use packed-weight inference.', '',
         'Historical `metrics` may be empty or come from different training validation protocols. The evaluation tables below use the shared test sample; stored training metrics remain separate.', '',
@@ -197,7 +197,7 @@ def build_cards(inventory, corpus):
     finals = [f for f in archived if f['rfilename'].endswith('_final.pt')]
     archive_card = header + ['# CPU-1 ablations: training checkpoint archive', '',
         f'{len(archived):,} checkpoint files across {len({f["rfilename"].split("/")[0] for f in archived})} run folders, totaling **{sum(f["size"] for f in archived)/1e9:.3f} GB** ({sum(f["size"] for f in archived)/2**30:.3f} GiB). The inventory includes **{len(finals)} `_final.pt` files** and **{len(archived)-len(finals)} step files**. Counts and sizes are derived from the pinned Hub inventory, not estimates from nominal architecture sizes.', '',
-        f'For evaluated FP32 exports, see [{FINAL}](https://huggingface.co/{FINAL}). Source code: [igna-s/New-1.58](https://github.com/igna-s/New-1.58).', '',
+        f'For evaluated FP32 exports, see [{FINAL}](https://huggingface.co/{FINAL}). Source code: [igna-s/AI-Training-from-Scratch](https://github.com/igna-s/AI-Training-from-Scratch).', '',
         *evaluation_summary(records),
         '## What is stored', '',
         '- `checkpoint_<run>_final.pt`: inference-oriented final checkpoints. The source supports `compact_2bit` for ternary exports and floating-point storage for baselines; inspect the `format` field in the payload when loading a file.',
@@ -218,7 +218,7 @@ def build_cards(inventory, corpus):
     directory = ROOT / 'docs' / 'model_cards'
     for stem, card in [('cpu1-ablations-final', final_card), ('cpu1-ablation-checkpoints', archive_card)]:
         content = '\n'.join(card)
-        content = content.replace('](https://github.com/igna-s/New-1.58)', f']({SOURCE_TREE})')
+        content = content.replace('](https://github.com/igna-s/AI-Training-from-Scratch)', f']({SOURCE_TREE})')
         repo = FINAL if stem == 'cpu1-ablations-final' else ARCHIVE
         content += '\n'.join(related_resources(repo))
         if 'audit' in content.lower():

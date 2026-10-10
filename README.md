@@ -188,6 +188,8 @@ Code lives in [cpu1/](cpu1/), [training/](training/), [data_pipeline/](data_pipe
 
 The [evaluation evidence](experiments/evaluation/README.md) preserves the exact sample, environment, results, and validation records. The [provenance review](docs/provenance/README.md) documents recovered history and missing job/source bindings. Deterministic end-to-end retraining remains unverified. Local weights, caches, generated reports, and credentials are excluded from Git.
 
+The [documentation review](docs/documentation-review.md) records the checks and corrections across every current guide and model card, with the remaining verification limits.
+
 ## References and licensing
 
 Architectural inspirations: [BitNet b1.58](https://arxiv.org/abs/2402.17764), [Scalable MatMul-free Language Modeling](https://arxiv.org/abs/2406.02528), [MEGABYTE](https://arxiv.org/abs/2305.07185), [Bolmo](https://arxiv.org/abs/2512.15586), [BLT](https://arxiv.org/abs/2412.09871), [MrT5](https://arxiv.org/abs/2410.20771), [HGRN2](https://arxiv.org/abs/2404.07904), [T-MAC](https://arxiv.org/abs/2407.00088), and [Distilling Token-Trained Models into Byte-Level Models](https://arxiv.org/abs/2602.01007).

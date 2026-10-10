@@ -17,7 +17,7 @@ configs:
 
 # CPU-1 ablation dataset
 
-Precomputed training data for the CPU-1 knowledge-distillation and tokenization experiments. The dataset contains independently packed byte-patch and BPE-token subsets with stored teacher probabilities. The [extraction pipeline](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/data_pipeline/prepare.py) is configured to use [Qwen/Qwen2.5-3B](https://huggingface.co/Qwen/Qwen2.5-3B) over English text from [FineWeb](https://huggingface.co/datasets/HuggingFaceFW/fineweb), `sample-10BT`. Teacher/source revisions and hidden-layer selection are not specified for every historical shard.
+Precomputed training data for the CPU-1 knowledge-distillation and tokenization experiments. The dataset contains independently packed byte-patch and BPE-token subsets with stored teacher probabilities. The [extraction pipeline](https://github.com/igna-s/AI-Training-from-Scratch/blob/cpu1-experiment-2026-10-08/data_pipeline/prepare.py) is configured to use [Qwen/Qwen2.5-3B](https://huggingface.co/Qwen/Qwen2.5-3B) over English text from [FineWeb](https://huggingface.co/datasets/HuggingFaceFW/fineweb), `sample-10BT`. Teacher/source revisions and hidden-layer selection are not specified for every historical shard.
 
 **The byte subset contains incomplete teacher arrays, and the companion dataset reader has positional-alignment defects. Resolve these limitations before using the stored signals for distillation.**
 
@@ -30,7 +30,7 @@ Data revision: `bd75d7b811ab730cc912aaa671f9eaaf49ba4bdf`.
 | `byte_marginalized` | 480 | 0.686841331 | 0000–0481 | 0060, 0061 | 24,101 |
 | `bpe_tokenized` | 437 | 67.332026716 | 0000–0438 | 0060, 0061 | 21,928 |
 
-Total: 917 parquet files, approximately 68.02 GB, and 46,029 rows according to the HF dataset service. Compressed file size differs from source-text size and loaded-memory requirements. Only a `train` split is declared.
+Total: 917 parquet files, approximately 68.02 GB, and 46,029 rows according to the HF dataset service, checked on 2026-10-10. These row counts are service-reported totals, not a full independent scan of all shards. Compressed file size differs from source-text size and loaded-memory requirements. Only a `train` split is declared.
 
 The two streams pack text at different densities and maintain independent residual state and shard offsets. Matching shard IDs or row indices do not identify matching source spans. Load each subset independently; do not zip them by index. File globs skip the missing shard IDs.
 
@@ -78,7 +78,7 @@ Byte teacher arrays do not consistently span all 5,000 patch positions. Examples
 
 Check array lengths before reshaping. A short boolean mask does not encode integer position indices, and its length alone does not identify the corresponding positions in the full sequence. Padding missing values does not recover their positional mapping.
 
-The companion [ByteLevelDataset reader](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/cpu1/components.py) treats probability arrays as compact lists of supervised rows, even when the stored layout is already dense. It scatters the leading rows onto true-mask positions, moving or discarding teacher signals. For short masks, it casts boolean values to integer indices 0 and 1. Hidden arrays are scattered using the resulting mask and can also become misaligned.
+The companion [ByteLevelDataset reader](https://github.com/igna-s/AI-Training-from-Scratch/blob/cpu1-experiment-2026-10-08/cpu1/components.py) treats probability arrays as compact lists of supervised rows, even when the stored layout is already dense. It scatters the leading rows onto true-mask positions, moving or discarding teacher signals. For short masks, it casts boolean values to integer indices 0 and 1. Hidden arrays are scattered using the resulting mask and can also become misaligned.
 
 A compatible reader must preserve dense positional layouts and handle short arrays only when their full-sequence positions are available. The linked reader requires changes before it can reliably consume these signals.
 
@@ -116,11 +116,11 @@ When `bpe_vocab_size < 152064`, the companion `BPEDataset` reader maps input and
 
 ## Code and review evidence
 
-Extraction, dataset readers, training code and configuration records are maintained in the [pinned GitHub source](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). The [dataset inspection report](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/experiments/evaluation/dataset-review-2026-10-08.json) contains the reviewed shard hashes, schemas, row lengths and tokenizer/reader diagnostics. It is a limited sample review, not dataset-wide validation.
+Extraction, dataset readers, training code and configuration records are maintained in the [pinned GitHub source](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08). The GitHub source repository is currently private and requires authorized access. The [dataset inspection report](https://github.com/igna-s/AI-Training-from-Scratch/blob/cpu1-experiment-2026-10-08/experiments/evaluation/dataset-review-2026-10-08.json) contains the reviewed shard hashes, schemas, row lengths and tokenizer/reader diagnostics. It is a limited sample review, not dataset-wide validation.
 
 ## Related resources
 
-- [GitHub: igna-s/New-1.58](https://github.com/igna-s/New-1.58): extraction pipeline, dataset readers and training configurations.
+- [GitHub: igna-s/AI-Training-from-Scratch](https://github.com/igna-s/AI-Training-from-Scratch): extraction pipeline, dataset readers and training configurations.
 - [Hugging Face: Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints): packed and intermediate checkpoints.
 - [Hugging Face: Cukinator/cpu1-ablations-final](https://huggingface.co/Cukinator/cpu1-ablations-final): FP32 model exports.
 

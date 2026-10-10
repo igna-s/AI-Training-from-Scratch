@@ -1,0 +1,571 @@
+{
+  "review_date": "2026-10-10",
+  "scope": "All current main documentation/dependency text files, referenced evidence, retained source links, CPU examples, and cached dataset samples. No full archive/dataset download or fresh GPU training.",
+  "remote_baseline": {
+    "commit": "22c386ce541e12718ab656a3f879775777b7b22e",
+    "tracked_files": 131,
+    "remote_tree_equals_local": true,
+    "branches": [
+      "main"
+    ],
+    "releases": 0
+  },
+  "document_and_record_checks": {
+    "review_date": "2026-10-10",
+    "audited_base_commit": "22c386ce541e12718ab656a3f879775777b7b22e",
+    "scope": "All 14 pre-existing documentation/dependency text files in main plus this new review, referenced JSON records and retained source links. Historical tag/commit contents are evidence, not rewritten current documentation.",
+    "preexisting_documents_reviewed": 14,
+    "documents_reviewed": 15,
+    "markdown_documents": 11,
+    "document_sha256_lf": {
+      "README.md": "8a41c0b18fe416edb284d6f881c1762d908073e092d2ac126e62d2decfe2f990",
+      "docs/architecture-review.md": "4538a560556fc97dbe88af75194a49b4ff69981582954442b8b8c1ab49695418",
+      "docs/model_cards/cpu1-ablation-checkpoints.md": "c682a410fc000aaff8c80955cdc852ca54cdec1c2f1debe45bed71c3582e51f2",
+      "docs/model_cards/cpu1-ablation-dataset.md": "92a810f1f159c2f09d0a33d02ad6cbcc72ddc9d7eb828aef1bd613c1639ac32d",
+      "docs/model_cards/cpu1-ablations-final.md": "18110bdea7a42876d82b993a26430488e5a6b5e702adeb08c5e3fbacc476b737",
+      "docs/provenance/README.md": "483e3cc391abd96166f736cfdd35ae5a5effcad960b9b051bc8c4c2111e50431",
+      "docs/usage.md": "f838adc9337f0836e5ffe0128b5ff0dc02a0fa0c8e088476f17cb91e1898c6ed",
+      "experiments/README.md": "642d82b72167e414fcbcb2b13d3b93bf0f70a076415e23b70236ed068cf20333",
+      "experiments/evaluation/README.md": "afa2d8b47098549813c6c224548c717422c4ba4006701b48a86ff357acdb41c2",
+      "experiments/evaluation/model-audit-2026-10-06/CORPUS_LICENSE.txt": "310942f6264c330de7408b5575c7f264e84f5a0059ab6509bf083b1f2118040b",
+      "inference/links.md": "978f7d748d2e189e1684334018b76bcdd97bc0aa57d74d2890c3a871bbcd3e0f",
+      "requirements/audit.txt": "3100fb96e5110daa84c9487a2f345beacdce4924334d5b6943a7d8f74196cff8",
+      "requirements/data.txt": "d6559f63bcf7ddf8819483e3ece26607ca5153d0d4cf35ff2a95dd0cdfaf9395",
+      "requirements/training.txt": "000bc549fdb8104c80ebd53d3946b5d8ab3597b89b1e191a0eead4e449a56b07",
+      "docs/documentation-review.md": "d4f3c9d58d023f789b935013b237cd33a15692121bef58bf6c9d1851d508e960"
+    },
+    "model_card_rows_verified": {
+      "docs/model_cards/cpu1-ablations-final.md": {
+        "quality": 34,
+        "bpe_mapping": 4,
+        "timing": 34,
+        "correctness": 34,
+        "error": 4,
+        "architecture": 34,
+        "text_examples": 2
+      },
+      "docs/model_cards/cpu1-ablation-checkpoints.md": {
+        "archive_inventory": 34,
+        "quality": 34,
+        "bpe_mapping": 4,
+        "timing": 34,
+        "correctness": 34,
+        "error": 4,
+        "architecture": 34,
+        "text_examples": 2
+      }
+    },
+    "checkpoint_manifest_records_verified": 34,
+    "frozen_checksums_verified": 42,
+    "historical_evaluator_hash_verified": "8270986de378061f5937687f77288da46d8ff1fdc4938b098dc32cf8fcf678af",
+    "archive_metadata_totals": {
+      "files": 1346,
+      "run_folders": 34,
+      "final_files": 21,
+      "bytes": 215178202122
+    },
+    "dataset_metadata": {
+      "byte_marginalized": {
+        "files": 480,
+        "bytes": 686841331,
+        "missing_ids": [
+          60,
+          61
+        ],
+        "service_rows": 24101
+      },
+      "bpe_tokenized": {
+        "files": 437,
+        "bytes": 67332026716,
+        "missing_ids": [
+          60,
+          61
+        ],
+        "service_rows": 21928
+      }
+    },
+    "restored_files_verified": 148,
+    "history_snapshot_commits_verified": 88,
+    "source_versions_verified": 40,
+    "historical_syntax_failures_confirmed": 6,
+    "python_examples_syntax_checked": 5,
+    "relative_links_exist": 97,
+    "historical_source_targets_exist": 8,
+    "relative_link_anchors_verified": 3,
+    "requirements_files_checked": {
+      "requirements/audit.txt": 1,
+      "requirements/data.txt": 2,
+      "requirements/training.txt": 6
+    },
+    "network_for_this_script": false,
+    "limits": [
+      "Original timing/generation records are historical, not a fresh full benchmark.",
+      "Pinned archive inventory does not prove binary contents of every intermediate checkpoint.",
+      "Dataset-service row counts are not an independent full-shard content audit.",
+      "Full GPU training, native compilation/parity, job-to-source attribution and deterministic retraining remain unverified."
+    ]
+  },
+  "cpu_examples_and_regression_checks": {
+    "review_date": "2026-10-10",
+    "root_quality_rows_verified": 34,
+    "root_timing_rows_verified": 34,
+    "root_generated_excerpts_verified": 3,
+    "root_executable_blocks": 0,
+    "regression_tests": {
+      "run": 18,
+      "failures": 0,
+      "errors": 0,
+      "method": "Existing offline tests, temporary checkpoint paths redirected into workspace; import-time GPU detection disabled."
+    },
+    "usage_examples": {
+      "blocks_executed_unchanged": 2,
+      "checkpoint_sha256": "9da358889c0d72fa04b155b720dc726b3dca050574e9e5a40564a24d38d3eb5e",
+      "strict_loading": true,
+      "mean_nll_per_byte": 1.4600811004638672,
+      "generated_bytes": 128,
+      "matches_prior_saved_example": true,
+      "download_replaced_by_identical_local_pinned_file": true
+    },
+    "fp32_card_example": {
+      "blocks_executed_unchanged": 1,
+      "checkpoint_sha256": "3af6570f55ecdf604adacce6f67a319aaa7823b7177a4023143401d7fe145f5e",
+      "strict_loading": true,
+      "head_shapes": [
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ],
+        [
+          1,
+          5,
+          256
+        ]
+      ],
+      "finite": true,
+      "download_replaced_by_identical_local_pinned_file": true
+    },
+    "cached_dataset_shards": [
+      {
+        "file": "byte_marginalized/shard_0000.parquet",
+        "sha256": "f68a6659ef7b3ddd7c0e7066766f6d1bfbfba639c640a3aa1265b485a2420dae",
+        "bytes": 1921771,
+        "rows": 50
+      },
+      {
+        "file": "byte_marginalized/shard_0481.parquet",
+        "sha256": "a78f45e1510308b7d6be01fbc52c4043ccc7a9ad9a0b47634e16c508496e3dd9",
+        "bytes": 1318078,
+        "rows": 50
+      },
+      {
+        "file": "bpe_tokenized/shard_0000.parquet",
+        "sha256": "684797be8d37a18ef3a31af7fc5964cf63d51b2dca1fab29894da267a1229e5b",
+        "bytes": 155227266,
+        "rows": 50
+      }
+    ],
+    "cached_shard_reader_outputs_match_frozen_review": true,
+    "cached_tokenizer_probe": {
+      "model": "Qwen/Qwen2.5-3B",
+      "revision": "3aab1f1954e9cc14eb9509a215f9e5ca08227a9b",
+      "synthetic_text_codepoints": [
+        65,
+        129768,
+        66
+      ],
+      "ids": [
+        32,
+        9284,
+        104,
+        101,
+        33
+      ],
+      "character_offsets": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "individually_decoded_codepoints": [
+        [
+          65
+        ],
+        [
+          65533
+        ],
+        [
+          65533
+        ],
+        [
+          65533
+        ],
+        [
+          66
+        ]
+      ],
+      "individually_decoded_first_bytes": [
+        65,
+        239,
+        239,
+        239,
+        66
+      ],
+      "original_emoji_first_byte": 240
+    },
+    "platform_plans_checked": 3,
+    "explicit_training_cli_examples_parsed": 2,
+    "dependency_versions": {
+      "psutil": "7.2.2",
+      "tqdm": "4.67.3",
+      "transformers": "5.3.0",
+      "datasets": "4.8.3",
+      "huggingface_hub": "1.19.0",
+      "tokenizers": "0.22.2",
+      "numpy": "2.3.5",
+      "pyarrow": "23.0.1"
+    },
+    "limits": [
+      "No network, new artifact downloads, real training, uploads, native compilation or native/PyTorch parity checks.",
+      "Packed archive example syntax and saved loading evidence checked separately; not re-executed with an archive binary.",
+      "Dataset streaming example syntax checked; service/network streaming was not re-executed.",
+      "Dependency constraints checked against this installed environment, not every permitted version."
+    ]
+  },
+  "model_card_generator_check": {
+    "model_cards_exactly_match_generator": {
+      "cpu1-ablations-final": true,
+      "cpu1-ablation-checkpoints": true
+    },
+    "frozen_evidence_writes_intercepted": true
+  },
+  "github_markdown_render_check": {
+    "README.md": {
+      "tables": 6,
+      "code_blocks": 3
+    },
+    "docs/documentation-review.md": {
+      "tables": 2,
+      "code_blocks": 0
+    },
+    "inference/links.md": {
+      "tables": 1,
+      "code_blocks": 2
+    }
+  },
+  "preceding_architecture_document_recheck": {
+    "review_date": "2026-10-10",
+    "audited_github_commit": "a52b8fce6f8d525eeea550e2f64b3c084cef8ba8",
+    "scope": "Current document, source text, fresh meta inventory and small synthetic probes; numerical results compared with existing offline checkpoint recheck. No new checkpoint/dataset downloads or end-to-end retraining.",
+    "fresh_constructions": {
+      "recorded_backends": 68,
+      "current_presets": 60,
+      "larger_variants": 5
+    },
+    "all_fresh_inventories_match_published_record": true,
+    "published_model_table_rows_verified": 34,
+    "feature_table_counts_verified": 16,
+    "larger_parameter_counts_verified": 5,
+    "model_summary": {
+      "checkpoint_rechecks": 34,
+      "strict_load": 34,
+      "finite_loss": 30,
+      "causality": {
+        "PASS": 16,
+        "ERROR": 4,
+        "FAIL": 14
+      },
+      "recurrent_chunks": {
+        "N/A": 8,
+        "FAIL": 26
+      },
+      "all_checkpoint_hashes_and_configuration_counts_match": true,
+      "all_losses_match_original_within_1e-6": true,
+      "all_causal_and_chunk_statuses_match_original": true,
+      "tests": {
+        "run": 18,
+        "failures": 0,
+        "errors": 0,
+        "method": "Existing 18 offline tests; only temporary test-checkpoint paths redirected into workspace and import-time GPU detection disabled."
+      },
+      "frozen_model_evidence_unchanged": true
+    },
+    "source_files": {
+      "cpu1/components.py": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 2656
+      },
+      "training/ablation.py": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 2480
+      },
+      "training/ablation_amd.py": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 2587
+      },
+      "training/final.py": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 686
+      },
+      "training/configuration.py": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 23
+      },
+      "inference/kernels.cpp": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 3002
+      },
+      "inference/benchmark.c": {
+        "raw_hash_matches": true,
+        "text_matches_reviewed_and_current_commits": true,
+        "local_crlf_count": 585
+      }
+    },
+    "relative_links_checked": 43,
+    "probes": {
+      "scope": "Offline synthetic component probes only; no models/datasets downloaded or historical training reproduced.",
+      "scan_matches_frozen_diagnostic": true,
+      "scan": {
+        "serial_max_diff": 19.100505828857422,
+        "chunks_max_diff": 11.471269607543945
+      },
+      "fp_residual_includes_silu": true,
+      "phase2_gate_lengths": [
+        {
+          "gather": false,
+          "last_global_layer_steps": 8
+        },
+        {
+          "gather": true,
+          "last_global_layer_steps": 4
+        }
+      ],
+      "larger_model_forward_probes": [
+        {
+          "legacy_heads": false,
+          "phase": 1,
+          "boundary_calls": 0,
+          "extra_losses": [
+            "emb_align"
+          ]
+        },
+        {
+          "legacy_heads": false,
+          "phase": 2,
+          "boundary_calls": 0,
+          "extra_losses": [
+            "delete_gate"
+          ]
+        },
+        {
+          "legacy_heads": true,
+          "phase": 1,
+          "boundary_calls": 0,
+          "extra_losses": [
+            "emb_align"
+          ]
+        },
+        {
+          "legacy_heads": true,
+          "phase": 2,
+          "boundary_calls": 0,
+          "extra_losses": [
+            "delete_gate"
+          ]
+        }
+      ],
+      "decay_initialization": [
+        0.29999998211860657,
+        0.3545454442501068,
+        0.40909093618392944,
+        0.4636363685131073,
+        0.5181818008422852,
+        0.5727272629737854,
+        0.38547489047050476,
+        0.4054054021835327,
+        0.42408376932144165,
+        0.44162437319755554,
+        0.45812806487083435,
+        0.4736841917037964
+      ],
+      "decay_initialization_monotonic": false,
+      "iterable_shuffle_error": "DataLoader with IterableDataset: expected unspecified shuffle option, but got shuffle=True"
+    },
+    "clarifications": [
+      "Transformer SwiGLU belongs to the enclosing AblationBlock FFN.",
+      "FPResidual uses SiLU between its two floating-point projections.",
+      "Layer-dependent decay initialization does not enforce HGRN2 hierarchy and can be nonmonotonic.",
+      "Original raw source hashes include Windows CRLF endings."
+    ],
+    "document_sha256_lf": "4538a560556fc97dbe88af75194a49b4ff69981582954442b8b8c1ab49695418"
+  },
+  "dataset_service_check": {
+    "url": "https://datasets-server.huggingface.co/size?dataset=Cukinator/cpu1-ablation-dataset",
+    "checked_date": "2026-10-10",
+    "response": {
+      "size": {
+        "dataset": {
+          "dataset": "Cukinator/cpu1-ablation-dataset",
+          "num_bytes_original_files": 68018868047,
+          "num_bytes_parquet_files": 68018868047,
+          "num_bytes_memory": 87442956420,
+          "num_rows": 46029,
+          "estimated_num_rows": null
+        },
+        "configs": [
+          {
+            "dataset": "Cukinator/cpu1-ablation-dataset",
+            "config": "bpe_tokenized",
+            "num_bytes_original_files": 67332026716,
+            "num_bytes_parquet_files": 67332026716,
+            "num_bytes_memory": 86422439125,
+            "num_rows": 21928,
+            "num_columns": 5,
+            "estimated_num_rows": null
+          },
+          {
+            "dataset": "Cukinator/cpu1-ablation-dataset",
+            "config": "byte_marginalized",
+            "num_bytes_original_files": 686841331,
+            "num_bytes_parquet_files": 686841331,
+            "num_bytes_memory": 1020517295,
+            "num_rows": 24101,
+            "num_columns": 6,
+            "estimated_num_rows": null
+          }
+        ],
+        "splits": [
+          {
+            "dataset": "Cukinator/cpu1-ablation-dataset",
+            "config": "bpe_tokenized",
+            "split": "train",
+            "num_bytes_parquet_files": 67332026716,
+            "num_bytes_memory": 86422439125,
+            "num_rows": 21928,
+            "num_columns": 5,
+            "estimated_num_rows": null
+          },
+          {
+            "dataset": "Cukinator/cpu1-ablation-dataset",
+            "config": "byte_marginalized",
+            "split": "train",
+            "num_bytes_parquet_files": 686841331,
+            "num_bytes_memory": 1020517295,
+            "num_rows": 24101,
+            "num_columns": 6,
+            "estimated_num_rows": null
+          }
+        ]
+      },
+      "pending": [],
+      "failed": [],
+      "partial": false
+    },
+    "limit": "Service-reported current totals, not an independent full-shard scan."
+  },
+  "frozen_evidence_checksums": {
+    "dataset-review-2026-10-08.json": "3e2483891a2037b12e2966491f8cf244f8d76f7db361a457685ee6d641ebcd2a",
+    "model-audit-2026-10-06/corpus.json": "11d143c06478ff7bbe364c541a58e6a2e76504c4cb0595b294f46e98f3cfe798",
+    "model-audit-2026-10-06/CORPUS_LICENSE.txt": "e9a341b0062d3ca91452d8ac08c3981496a89f370e2c81c51dac60781eaba6e8",
+    "model-audit-2026-10-06/dataset_inventory.json": "ba0c7ef3eec4bb86fcde315550576f66484011a9e5c3f12478181084c55bdaf7",
+    "model-audit-2026-10-06/environment.json": "07ab326fe7dd34f964013957c859e44db6cf9aef934955b48bc71c1b8c65c1e5",
+    "model-audit-2026-10-06/implementation_diagnostics.json": "7892dc1cac882d0d66414947a6bae426749ffd1be020c515fe8c2059df7cad34",
+    "model-audit-2026-10-06/inventory.json": "7ee3b0ebae00831f8bb669ab75ecc04e32c011b52f4212b54fd598b3fd3941a3",
+    "model-audit-2026-10-06/loading_examples.json": "d34a5ca762b534313b2d3e1f273e49e1937bdbf15880be56e5681a1176355bd0",
+    "model-audit-2026-10-06/run_01.json": "75146040563d9540e7f98998e2567765e1cfb3eab51e97b4b27e0794310a66c4",
+    "model-audit-2026-10-06/run_01_v3.json": "64009c3d7b6a45ea8260c2afeca7190fa8f6453729c1b14ca2ede7c4762263cc",
+    "model-audit-2026-10-06/run_02.json": "05e0f77185b4f6f264c0be13d09c498ecb7422a287dc2a90bd9c1d73faa246e3",
+    "model-audit-2026-10-06/run_02a_byte_only_heads.json": "4884756e9416f1cf9d89ad6d3c66af648a7866eae2cf1ffa6c5c9a432666fdff",
+    "model-audit-2026-10-06/run_02a_byte_only_heads_v3.json": "e0ca3ebb15beb979eb55956c628332a391b7fe3b15637c8f08cf57bbdd4bab48",
+    "model-audit-2026-10-06/run_02_v3.json": "4bff2999cab43bf3a89ae4875d2ebb668319bf3608f408879376057d7aabf896",
+    "model-audit-2026-10-06/run_03.json": "d66ca4df63ac9ea99307c72a61606227aea1377511bcebec2398e4d7ad855fb7",
+    "model-audit-2026-10-06/run_03_v3.json": "3dce9c3b2e4b7cbf9a2157c69bd2bc296e84c3bcaf67a1c75a8ea38e788d0d25",
+    "model-audit-2026-10-06/run_04.json": "66e23137c7bc4738cd1c21a855959531e7e33614f1b9ca1157cac596c380fd22",
+    "model-audit-2026-10-06/run_04_r2.json": "9b0252cd91319813c4e5471bb22ddb4bb8cfd06b1f8d6074507db7b8b503bfdb",
+    "model-audit-2026-10-06/run_04_v3.json": "84fe463fcc8b804aef74516b4840e66756c35a00568b8bd0e5b010e992125c19",
+    "model-audit-2026-10-06/run_05.json": "d582c33272b4429f892923441785c6b3b70bc974afc84060a402f088daaa0ed1",
+    "model-audit-2026-10-06/run_05b_kernel_strict.json": "9193f93ee1622be2df59aba6ac49e27b1839519b5bd1eff0b639b3d85063536c",
+    "model-audit-2026-10-06/run_05b_kernel_strict_v3.json": "391016526a0f79bb60d6589be6f7fbb902222ec8efc2b3bec0be59a82b3d45fb",
+    "model-audit-2026-10-06/run_05_v3.json": "5a2fc3819cbe75b09b55c4c7d5789dbb39ee9d43915e99660b35eb95dd615b76",
+    "model-audit-2026-10-06/run_06.json": "6484bd18073014a51799e62b587d7035d50cee34ac3e4bc00f9829124a947292",
+    "model-audit-2026-10-06/run_06_v3.json": "63f403d6584b128787d44cf8b57c98edeb02971c1dd2ce05551dd838f8fb0397",
+    "model-audit-2026-10-06/run_07.json": "54d5365ff53a5008834be35d52b76e09f23e153d98dd768b47ba2ba37d798f55",
+    "model-audit-2026-10-06/run_07_r2.json": "4f3c719792e28540b9f21334673af7f5d550baef24cfdd845bce936fca9544f6",
+    "model-audit-2026-10-06/run_08.json": "a8f7130089da7a137aff878da9771106e06bfeadd203b44c1be6716c27a4db64",
+    "model-audit-2026-10-06/run_08_v3.json": "5eca5b3a3abdb337409d454ebc036ad4d77ebd45b545bf16079590cd5d80361f",
+    "model-audit-2026-10-06/run_09.json": "aff7fab2662c895e63efcb47164068f2be537f7b2dec729c05111481235c062f",
+    "model-audit-2026-10-06/run_10.json": "0a655c83223f1c248bb921b06c0a74abbbf6c06a48e08504f4b62702dd52a8fc",
+    "model-audit-2026-10-06/run_13.json": "41ce8ccd3d11341b10df8bc715d2bd97a9911cd31c51c5ab829051e1f50863bb",
+    "model-audit-2026-10-06/run_13_r2.json": "f54f11f547ec3afa6d7d736d5578b8e3907c9cd5ddc5601cf8ce8dadcf8352dc",
+    "model-audit-2026-10-06/run_13_v3.json": "d6b747d00b18239e9aeae2f4cf4b0aa25b1347d2a23ba7beafd0a788f68e2cf9",
+    "model-audit-2026-10-06/run_14.json": "5a51203390e58ee337bbe4439324ce31969152709739f0087c03cad9959eac80",
+    "model-audit-2026-10-06/run_14_r2.json": "e6906907f9d27f9d3b8d7db5be34097f7e078be1340c9f02e0c096644e618770",
+    "model-audit-2026-10-06/run_14_v3.json": "9e8e9b09df520630ae905d1dd67879665d6ddfd37a54183ea73f0bab6eac86e4",
+    "model-audit-2026-10-06/run_15.json": "535ee16905874a88dbf2f6bdbdcb16bcc050983bb690f77864d33f0a786cecf5",
+    "model-audit-2026-10-06/run_15_r2.json": "aa7900af576d88ea640a2874bce10bdee7e6e53aebf61339ef8a4c584c6d536d",
+    "model-audit-2026-10-06/run_15_v3.json": "66149afc4b6d4f2a2eb99ab370846b90dca165172bff6c1ab3ce3ad42fe22ace",
+    "model-audit-2026-10-06/run_16.json": "c10cc450a8faf350363ece6b810c6e8a9eedbc95a49dfbafef5f2c393379f333",
+    "model-audit-2026-10-06/run_16_r2.json": "bc14beeec6f531a9d75a53b94840cfb4f94d7dda61a6c3ef8b64fbc95fa98084"
+  },
+  "validation_script_sha256": {
+    "verify_documents.py": "6ee209928e71959a59df9d0d961f4b7b02dd5bf977fa34a0349ef08942dbb2b7",
+    "smoke_documents.py": "8a7d458dfcc7ce579565e76371ed5211f328c3a2c75d1676ba646a5a58563aa2",
+    "verify_card_generator.py": "ef6095d441efd59617c38085330051b1fd49e91ee7eeaf7e27acb12e929f43bc"
+  },
+  "validation_script_location": "Local ignored outputs/documentation-truth-audit-2026-10-10; hashes identify the scripts used, not published project commands.",
+  "corrections": [
+    "Correct MLGRU paper reference and qualify native synthetic benchmark/fixed-formula feedback.",
+    "Remove unmeasured native model-size and optimal execution-mode claims.",
+    "Use canonical GitHub slug while preserving historical source pins.",
+    "State authorized access requirement for private source and limit GPU validation claims.",
+    "Attribute dataset service totals to the check date and include tokenizer files in download accounting.",
+    "Separate recovery tests, historical evaluation, and later rechecks."
+  ],
+  "preservation": {
+    "historical_model_evidence_checksums_match": true,
+    "historical_tag": "cpu1-experiment-2026-10-08",
+    "tag_object": "161ef211071f63cada4aa9ceaced4332d65c9a7e",
+    "tag_commit": "1ba4f1214dd4eb7be81a6ff403cd2f61c97a3a47",
+    "model_algorithms_changed": false,
+    "new_model_or_training_shard_downloads": false,
+    "hugging_face_publication": false
+  },
+  "limits": [
+    "Evidence describes tested cases and historical records; it is not universal correctness certification.",
+    "Current main documents reviewed. Historical source/evidence snapshots are preserved, not all endorsed as current runnable instructions.",
+    "Wiki endpoint returned 404; no wiki content audited.",
+    "GPU training/resume, full binary archive, dataset-wide teacher correctness, native compilation/parity and deterministic retraining remain unverified."
+  ]
+}

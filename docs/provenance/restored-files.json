@@ -9,7 +9,7 @@
       "sha256": "63d717109c8de60727708328c29e4de70167345ea9812f624705109cac5723f7",
       "bytes": 36394,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/ablation.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/ablation.py"
     },
     {
       "path": "_upload_tmp/create_dataset.py",
@@ -19,7 +19,7 @@
       "sha256": "194226414f189d2d3b62c87bb942bebe73fdf8f8c4a77e0b163fcaa296c83701",
       "bytes": 102711,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/create_dataset.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/create_dataset.py"
     },
     {
       "path": "_upload_tmp/dataset-metadata.json",
@@ -29,7 +29,7 @@
       "sha256": "bb2b86123de16ab99869991c42601b7e47915a7331da8481d72d2ddbd1e39986",
       "bytes": 120,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/dataset-metadata.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/dataset-metadata.json"
     },
     {
       "path": "_upload_tmp/hf_mount.py",
@@ -39,7 +39,7 @@
       "sha256": "f79a7690d8305b726ac25e50a1c2b56e91f447bc6e5dfc1bf66a1adb057769af",
       "bytes": 3873,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/hf_mount.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/hf_mount.py"
     },
     {
       "path": "_upload_tmp/inference.py",
@@ -49,7 +49,7 @@
       "sha256": "efd3d5d1193e2f3e50a7876e41f3c8aac2daaed904e14ab72699a5e38d1ac311",
       "bytes": 59646,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/inference.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/inference.py"
     },
     {
       "path": "_upload_tmp/model.py",
@@ -59,7 +59,7 @@
       "sha256": "ba22de8966a569f823714351597b67fc5c4565bed022e6edd89d816789441440",
       "bytes": 63483,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/model.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/model.py"
     },
     {
       "path": "_upload_tmp/train.py",
@@ -69,7 +69,7 @@
       "sha256": "60187cefb4da2d0d55c3d065ca05e5a8098b8417b00f64e81b461f5507ecda68",
       "bytes": 69919,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/train.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/_upload_tmp/train.py"
     },
     {
       "path": "ablation.py",
@@ -79,7 +79,7 @@
       "sha256": "57225e407fc2e1fe9ae9e815b0436f87f4ec9159f9ff8a99a684451fd981b54c",
       "bytes": 71863,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/ablation.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/ablation.py"
     },
     {
       "path": "ablation_analysis.py",
@@ -89,7 +89,7 @@
       "sha256": "9f4a19eebe6cef37e327763664de743edeec6d5b04dc721a273f36242f2bc22a",
       "bytes": 7404,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_analysis.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_analysis.py"
     },
     {
       "path": "ablation_config.py",
@@ -99,7 +99,7 @@
       "sha256": "da413a404cf408e31a1e332cfc46b754c1a9548d19bee150f2c5d3527dfe2056",
       "bytes": 11787,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_config.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_config.py"
     },
     {
       "path": "ablation_models.py",
@@ -109,7 +109,7 @@
       "sha256": "505b5b15f7eac577aa7f177b2f0f02d69d4a4898403276d3d3e8affedf2d9e00",
       "bytes": 17950,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_models.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_models.py"
     },
     {
       "path": "ablation_train.py",
@@ -119,7 +119,7 @@
       "sha256": "821d5d578f211b26d9082dac0e1678d76eee5db42db5886bc1810bf03d1c83e9",
       "bytes": 25831,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_train.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/ablation_train.py"
     },
     {
       "path": "build_shared_dataset.py",
@@ -129,7 +129,7 @@
       "sha256": "0b171d8881e3f2e5c818c3e77da9a3e8fb9c07334e23095f8110c7a4a049d895",
       "bytes": 30289,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/build_shared_dataset.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/build_shared_dataset.py"
     },
     {
       "path": "byte_marginalization.py",
@@ -139,7 +139,7 @@
       "sha256": "ff1b3553a78e45c23f66d46910d344153faea3e1432eac4e79077da414638284",
       "bytes": 34857,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/byte_marginalization.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/byte_marginalization.py"
     },
     {
       "path": "download_model.py",
@@ -149,7 +149,7 @@
       "sha256": "0e0fe76ba62d41c8aac78b644ec7216fb99ae7bef45eba02152558291aa84ec2",
       "bytes": 649,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/download_model.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/download_model.py"
     },
     {
       "path": "eval/benchmark_external.py",
@@ -159,7 +159,7 @@
       "sha256": "4155936574a402417a3f087bad1ae5f0dce4532e5205e04470add0e69306b34d",
       "bytes": 32514,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/2e59123ea6600ed27f3108a4341bf9d8d28aebbe/eval/benchmark_external.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2e59123ea6600ed27f3108a4341bf9d8d28aebbe/eval/benchmark_external.py"
     },
     {
       "path": "eval/bpe_vs_bytebatch_benchmark.py",
@@ -169,7 +169,7 @@
       "sha256": "1117a96a4e4aa7a2266319a73812e0ee84375f60d46947645e1c56459967f148",
       "bytes": 6671,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/2e59123ea6600ed27f3108a4341bf9d8d28aebbe/eval/bpe_vs_bytebatch_benchmark.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2e59123ea6600ed27f3108a4341bf9d8d28aebbe/eval/bpe_vs_bytebatch_benchmark.py"
     },
     {
       "path": "eval/compute_missing_val_loss.py",
@@ -179,7 +179,7 @@
       "sha256": "ab6768f79e283bb9b96f9a551741720a504c40cac23bf5d468e1899a8863ac72",
       "bytes": 21489,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/compute_missing_val_loss.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/compute_missing_val_loss.py"
     },
     {
       "path": "eval/eval_ablations.py",
@@ -189,7 +189,7 @@
       "sha256": "5621eb3c4cbb8455413f9dfcc01e2d615b64dee12b651d717ac03976b93921d2",
       "bytes": 37805,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_ablations.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_ablations.py"
     },
     {
       "path": "eval/eval_cpu.py",
@@ -199,7 +199,7 @@
       "sha256": "4fdb78ffc418488c484b22a919de14a21de215c7635a80ec3f36932e8a840347",
       "bytes": 3956,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/2e59123ea6600ed27f3108a4341bf9d8d28aebbe/eval/eval_cpu.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2e59123ea6600ed27f3108a4341bf9d8d28aebbe/eval/eval_cpu.py"
     },
     {
       "path": "eval/eval_dataset.py",
@@ -209,7 +209,7 @@
       "sha256": "b35256cf3d5fb287b6b1ca687c5653342c663b602be8c084d98aa0d23b650b39",
       "bytes": 2833,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_dataset.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_dataset.py"
     },
     {
       "path": "eval/eval_external.py",
@@ -219,7 +219,7 @@
       "sha256": "a3124d04de3f37e5e1a55048d1fab90bfc46e5242691a2961fa86dca74435937",
       "bytes": 7135,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_external.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_external.py"
     },
     {
       "path": "eval/eval_performance.py",
@@ -229,7 +229,7 @@
       "sha256": "6b947294b8db56ec530685ff336bc12fb8ec4bdeaaae8d2ec7fa046d37fc8963",
       "bytes": 8910,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_performance.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_performance.py"
     },
     {
       "path": "eval/eval_quality.py",
@@ -239,7 +239,7 @@
       "sha256": "1cc7d433daaf1dcefdb3acc688d1ffde166fd5ab3ab954c1ffbf523201931e40",
       "bytes": 6223,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_quality.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/eval_quality.py"
     },
     {
       "path": "eval/run_all_models.py",
@@ -249,7 +249,7 @@
       "sha256": "2c67fdff9980f7800fb2e28b1be332e0506c297ca809b063eed8bca7b06e8f3b",
       "bytes": 7274,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/e824d641f804ee624b10bf09e8d5e95a64d953cf/eval/run_all_models.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/e824d641f804ee624b10bf09e8d5e95a64d953cf/eval/run_all_models.py"
     },
     {
       "path": "eval/run_all_tests.py",
@@ -259,7 +259,7 @@
       "sha256": "b194ea2bf7dd27de6e70bffd6743c440d3bc180309d0cd722d97a61d1fd6888c",
       "bytes": 17061,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/run_all_tests.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/run_all_tests.py"
     },
     {
       "path": "eval/run_eval.py",
@@ -269,7 +269,7 @@
       "sha256": "63adb3240e2703d40df15eb209178b6fb9199b2b541e6fffed4be5107bd8ed39",
       "bytes": 14000,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/run_eval.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/eval/run_eval.py"
     },
     {
       "path": "eval/test_01_forward.py",
@@ -279,7 +279,7 @@
       "sha256": "693dab65c50fe72155d7c18f1adfabc556b1807f1ca9295948b29192207eb076",
       "bytes": 2256,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_01_forward.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_01_forward.py"
     },
     {
       "path": "eval/test_02_probs.py",
@@ -289,7 +289,7 @@
       "sha256": "5236f07501288359bdedf8e2aada522a2f5834b100539b37da7545b14fab9fb4",
       "bytes": 1018,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_02_probs.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_02_probs.py"
     },
     {
       "path": "eval/test_03_determinism.py",
@@ -299,7 +299,7 @@
       "sha256": "d0092a147c8e0d01a882823edb594ae18898d9cbcb0a01e2aa6e6b36881b27af",
       "bytes": 1035,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_03_determinism.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_03_determinism.py"
     },
     {
       "path": "eval/test_04_state_propagation.py",
@@ -309,7 +309,7 @@
       "sha256": "30ba936a7fae21776453b5468de4cd13fc3aae81dad48c4d8cf2a85bb09db611",
       "bytes": 1331,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_04_state_propagation.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_04_state_propagation.py"
     },
     {
       "path": "eval/test_05_ternary_weights.py",
@@ -319,7 +319,7 @@
       "sha256": "cb3cd978508edaaaa705a133f93e112fbd72e3a780b819df210b4dcb80d2c94f",
       "bytes": 2011,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_05_ternary_weights.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_05_ternary_weights.py"
     },
     {
       "path": "eval/test_06_cpu_throughput.py",
@@ -329,7 +329,7 @@
       "sha256": "daf876632c3fe85daa459e2186577c3c62302accae91dad0807cd3b4021e6948",
       "bytes": 2116,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_06_cpu_throughput.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_06_cpu_throughput.py"
     },
     {
       "path": "eval/test_07_latency.py",
@@ -339,7 +339,7 @@
       "sha256": "763968c1e116c070a2fea31fac11c05f4b39eaca63a1ea0dc05e0c35249c1e4c",
       "bytes": 1870,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_07_latency.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_07_latency.py"
     },
     {
       "path": "eval/test_08_jitter.py",
@@ -349,7 +349,7 @@
       "sha256": "30033592b7739a1d46f5b03d5ef22bf50bef53be914122e856ba5b336ee7cf0b",
       "bytes": 1805,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_08_jitter.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_08_jitter.py"
     },
     {
       "path": "eval/test_09_context_scaling.py",
@@ -359,7 +359,7 @@
       "sha256": "04f5f32c005f21b0e9c482578f9ec9715854767075425bab73c00d33fb53ed83",
       "bytes": 2515,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_09_context_scaling.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_09_context_scaling.py"
     },
     {
       "path": "eval/test_10_ram_usage.py",
@@ -369,7 +369,7 @@
       "sha256": "d1ae844b0bcb2d4520639f599197ac9597507c5c137196fa9e90d574ecf3fd3a",
       "bytes": 1378,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_10_ram_usage.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_10_ram_usage.py"
     },
     {
       "path": "eval/test_11_perplexity.py",
@@ -379,7 +379,7 @@
       "sha256": "7dae2c70f0371034648170126c18f8f8ae4f19cc437ade7e25f676f4a9104119",
       "bytes": 2650,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_11_perplexity.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_11_perplexity.py"
     },
     {
       "path": "eval/test_12_generation_quality.py",
@@ -389,7 +389,7 @@
       "sha256": "1c1b7dd2068e134e2ed9c7bba0f2dc160b03ab0135cc3287bc66ea10b0a65b77",
       "bytes": 2182,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_12_generation_quality.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_12_generation_quality.py"
     },
     {
       "path": "eval/test_13_utf8_validity.py",
@@ -399,7 +399,7 @@
       "sha256": "3576b2baeeea81f115953eb13bdd299be387ef884f9139191b209477497806f0",
       "bytes": 1369,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_13_utf8_validity.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_13_utf8_validity.py"
     },
     {
       "path": "eval/test_14_training_convergence.py",
@@ -409,7 +409,7 @@
       "sha256": "d370f3aa58cd8db035898e050427c9dafea385334255ed27ff63aaec0067c55a",
       "bytes": 1868,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_14_training_convergence.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_14_training_convergence.py"
     },
     {
       "path": "eval/test_15_fpresidual_ablation.py",
@@ -419,7 +419,7 @@
       "sha256": "b42434ff711e346bd84a4d25618c0024524fdd3588617cab1f88dfd03099402a",
       "bytes": 3021,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_15_fpresidual_ablation.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_15_fpresidual_ablation.py"
     },
     {
       "path": "eval/test_16_mlgru_vs_transformer.py",
@@ -429,7 +429,7 @@
       "sha256": "3a780fd887f41f7199743b9b999601d53cc44808911e8558e959833d15837e49",
       "bytes": 3186,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_16_mlgru_vs_transformer.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_16_mlgru_vs_transformer.py"
     },
     {
       "path": "eval/test_17_teacher_coverage.py",
@@ -439,7 +439,7 @@
       "sha256": "4f1d5257d736b25ef0763f7542d6f6ddf8e6af2530ca39713b8b412fb4fd9312",
       "bytes": 1622,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_17_teacher_coverage.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_17_teacher_coverage.py"
     },
     {
       "path": "eval/test_18_teacher_entropy.py",
@@ -449,7 +449,7 @@
       "sha256": "61d30629af679b1018db0972fe019a7c407d172ffb8d47a83947dcc67bac0028",
       "bytes": 2114,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_18_teacher_entropy.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_18_teacher_entropy.py"
     },
     {
       "path": "eval/test_19_full_benchmark.py",
@@ -459,7 +459,7 @@
       "sha256": "6e11ff852c51f3718499dbb0f5f5ff9e81dcbf282b940233c68216e83067853a",
       "bytes": 3929,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_19_full_benchmark.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_19_full_benchmark.py"
     },
     {
       "path": "eval/test_20_scaling.py",
@@ -469,7 +469,7 @@
       "sha256": "6b3147deb855ced74eb196191125f9227d0e3adf5676572ad94f821221bb86a1",
       "bytes": 2238,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_20_scaling.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_20_scaling.py"
     },
     {
       "path": "eval/test_21_mlgru_state_size.py",
@@ -479,7 +479,7 @@
       "sha256": "64e8f4896382a3d1581d0b42f315de06f5e2b53d65b0b4951b7290a66826aa76",
       "bytes": 1442,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_21_mlgru_state_size.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_21_mlgru_state_size.py"
     },
     {
       "path": "eval/test_22_eval_cpu_raw.py",
@@ -489,7 +489,7 @@
       "sha256": "ed8c7c9af0fc5dfb510dc0f3a3dd3905f777051edbe5fde9484e5aba927afe60",
       "bytes": 3185,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_22_eval_cpu_raw.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_22_eval_cpu_raw.py"
     },
     {
       "path": "eval/test_23_bpe_vs_bytebatch.py",
@@ -499,7 +499,7 @@
       "sha256": "1bf921d98f9944a4f93e5779519a5647d60432457500118513c37c8b8a8c21d1",
       "bytes": 4060,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_23_bpe_vs_bytebatch.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_23_bpe_vs_bytebatch.py"
     },
     {
       "path": "eval/test_24_benchmark_external_hf.py",
@@ -509,7 +509,7 @@
       "sha256": "253d61876ef0edaa30135ef8d46f9a9cdc7761a325f398186477e2639e97bb3c",
       "bytes": 2553,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_24_benchmark_external_hf.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_24_benchmark_external_hf.py"
     },
     {
       "path": "eval/test_25_benchmark_external_optimized.py",
@@ -519,7 +519,7 @@
       "sha256": "3d7f4c92b8cd0b6b1c0ed7256277e495342f5aa57ea3eb4651c19e94b280a8df",
       "bytes": 3244,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_25_benchmark_external_optimized.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_25_benchmark_external_optimized.py"
     },
     {
       "path": "eval/test_26_benchmark_llama_cpp.py",
@@ -529,7 +529,7 @@
       "sha256": "9e1a5689600f2b5e56c9613c359f18dfd272daaefd75007ca426c504f716be63",
       "bytes": 13332,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_26_benchmark_llama_cpp.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/test_26_benchmark_llama_cpp.py"
     },
     {
       "path": "eval/verify_all.py",
@@ -539,7 +539,7 @@
       "sha256": "e7175253c487ac4242086b7b644e4c02503155aee61d2a1a53a814de5ff7f797",
       "bytes": 8994,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/verify_all.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/eval/verify_all.py"
     },
     {
       "path": "extract_logprobs.py",
@@ -549,7 +549,7 @@
       "sha256": "0f7c7a6403604f056442acbbbae2fe3fcb656775c4b048269af2712c4e5d8e48",
       "bytes": 33417,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/e67c48eb14ca89cac4ae63e02e706a71ddf8f197/extract_logprobs.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/e67c48eb14ca89cac4ae63e02e706a71ddf8f197/extract_logprobs.py"
     },
     {
       "path": "inference.py",
@@ -559,7 +559,7 @@
       "sha256": "cb3935860f6b756621144ffda1d0554dffd90e0fcddfcd08b2e7ec5ceee70b2b",
       "bytes": 78300,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/dcafa9518e2097bd9eda756558e4085fd778c1cf/inference.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/dcafa9518e2097bd9eda756558e4085fd778c1cf/inference.py"
     },
     {
       "path": "inference/__init__.py",
@@ -569,7 +569,7 @@
       "sha256": "4da5175f865becea9a5fe380e1ed394592946cc358e5794282f07181cbee4800",
       "bytes": 25,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/2dac01dda30d0ef734016af2303c819438ed04f1/inference/__init__.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2dac01dda30d0ef734016af2303c819438ed04f1/inference/__init__.py"
     },
     {
       "path": "inference/bench_quick.py",
@@ -579,7 +579,7 @@
       "sha256": "a6eebcf0e4182f0d9bae27cba5df9803a2e3934771575ca87853da1ee26ca651",
       "bytes": 1293,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/inference/bench_quick.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/inference/bench_quick.py"
     },
     {
       "path": "inference/benchmark.py",
@@ -589,7 +589,7 @@
       "sha256": "184010f72a86cc434282357d99f3a9afd32cf1b2333ca79f4263ebe362a76344",
       "bytes": 12354,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/2dac01dda30d0ef734016af2303c819438ed04f1/inference/benchmark.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2dac01dda30d0ef734016af2303c819438ed04f1/inference/benchmark.py"
     },
     {
       "path": "inference/benchmark_d57b379.c",
@@ -599,7 +599,7 @@
       "sha256": "e16b2344a61b86d16154075d9a4a1cb83247a008649eb131c7615cdd5f39c6fc",
       "bytes": 15726,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3c1aa50a15ee6fcd8a8c90b728da6db0c6836561/inference/benchmark_d57b379.c"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3c1aa50a15ee6fcd8a8c90b728da6db0c6836561/inference/benchmark_d57b379.c"
     },
     {
       "path": "inference/benchmark_packed.py",
@@ -609,7 +609,7 @@
       "sha256": "4e13dfeeb7e28ee4516399dc782229ac16987e843140b16dae346ec21b6ffb44",
       "bytes": 10501,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/11aab006418ba63a56d44473ba20b75677874815/inference/benchmark_packed.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/11aab006418ba63a56d44473ba20b75677874815/inference/benchmark_packed.py"
     },
     {
       "path": "inference/benchmark_quick.py",
@@ -619,7 +619,7 @@
       "sha256": "f140b3e137c867f4f9b845f99ca3361fe69b0b197742e870af93bed470909608",
       "bytes": 4539,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/11aab006418ba63a56d44473ba20b75677874815/inference/benchmark_quick.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/11aab006418ba63a56d44473ba20b75677874815/inference/benchmark_quick.py"
     },
     {
       "path": "inference/inference.py",
@@ -629,7 +629,7 @@
       "sha256": "eabe94fe3e5c5e4c26f53ff2dbb57e562a50fc190e9ec052e5aa0066c2c3e994",
       "bytes": 127131,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/2dac01dda30d0ef734016af2303c819438ed04f1/inference/inference.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/2dac01dda30d0ef734016af2303c819438ed04f1/inference/inference.py"
     },
     {
       "path": "inference/kernels_d57b379.cpp",
@@ -639,7 +639,7 @@
       "sha256": "b4ff4ff81e43b1e30b0b88e170028642d08759133223a35abd936be925b9a740",
       "bytes": 98863,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3c1aa50a15ee6fcd8a8c90b728da6db0c6836561/inference/kernels_d57b379.cpp"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3c1aa50a15ee6fcd8a8c90b728da6db0c6836561/inference/kernels_d57b379.cpp"
     },
     {
       "path": "inference_hf.py",
@@ -649,7 +649,7 @@
       "sha256": "09fa567b24cc391dbbbfaa07554d8b9800d4ac226e147a48b7ae14c6fcbdcc00",
       "bytes": 347,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/c21f2e41a90875be2736f7f54c58a28cf48db205/inference_hf.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/c21f2e41a90875be2736f7f54c58a28cf48db205/inference_hf.py"
     },
     {
       "path": "inference_tmac.py",
@@ -659,7 +659,7 @@
       "sha256": "9c2b594a2fe2a69a5627a834c121f098267c8cc8d2dda408a6f578115af77ec1",
       "bytes": 29893,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/inference_tmac.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/inference_tmac.py"
     },
     {
       "path": "inference_v2.py",
@@ -669,7 +669,7 @@
       "sha256": "33cf33a0e44f161836fb304b4f5f0168c1bd0df4b4b7c4aabc637abd93a0a498",
       "bytes": 31331,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/inference_v2.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/inference_v2.py"
     },
     {
       "path": "kaggle/cpu1-create-dataset.py",
@@ -679,7 +679,7 @@
       "sha256": "b3e6d1bad28015941453ff96407e1a6e215e53fc3a0a59888625af8ce7b72cb1",
       "bytes": 3979,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/kaggle/cpu1-create-dataset.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/kaggle/cpu1-create-dataset.py"
     },
     {
       "path": "kaggle/cpu1-run-all.py",
@@ -689,7 +689,7 @@
       "sha256": "bc36b1b7f4f29d5cf863f648ed8785502df070a2e8cff47a368ed85f25afd570",
       "bytes": 4740,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/cpu1-run-all.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/cpu1-run-all.py"
     },
     {
       "path": "kaggle/cpu1-training.py",
@@ -699,7 +699,7 @@
       "sha256": "72890a292a78f323f3cc471af591f977443487b6060d2ec31531cf3453c39d1d",
       "bytes": 2343,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/cpu1-training.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/cpu1-training.py"
     },
     {
       "path": "kaggle/create-dataset-metadata.json",
@@ -709,7 +709,7 @@
       "sha256": "4d552555c7d06eaf6c74d732b4c3e6dcb797a49ccecbd61de77d25e6095950e5",
       "bytes": 471,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/kaggle/create-dataset-metadata.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/kaggle/create-dataset-metadata.json"
     },
     {
       "path": "kaggle/generate_notebook.py",
@@ -719,7 +719,7 @@
       "sha256": "37fe9371e5d1abd7aa095cf978b0efc77aace5f3ad31e5f156afc92a40dea93a",
       "bytes": 8309,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/generate_notebook.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/generate_notebook.py"
     },
     {
       "path": "kaggle/kernel-metadata.json",
@@ -729,7 +729,7 @@
       "sha256": "4d552555c7d06eaf6c74d732b4c3e6dcb797a49ccecbd61de77d25e6095950e5",
       "bytes": 471,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/kernel-metadata.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/kernel-metadata.json"
     },
     {
       "path": "kaggle/model_v2.py",
@@ -739,7 +739,7 @@
       "sha256": "bed3f27f49124c01943c9bb4e341ff0d3c0d7cd0c4dd568daa5303d9b241e89d",
       "bytes": 40923,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/model_v2.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/model_v2.py"
     },
     {
       "path": "kaggle/train.py",
@@ -749,7 +749,7 @@
       "sha256": "c9647acf33bccd1a88dae08f02f7f96b7045cfeb9f330eb7a6e5c372d9fe0bb9",
       "bytes": 33310,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/train.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/train.py"
     },
     {
       "path": "kaggle/train_kaggle.ipynb",
@@ -759,7 +759,7 @@
       "sha256": "31fc52fe2b507433481ee338c0c54283707503e73844d55cc3d6edf4bc340441",
       "bytes": 101451,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/train_kaggle.ipynb"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle/train_kaggle.ipynb"
     },
     {
       "path": "kaggle/training-metadata.json",
@@ -769,7 +769,7 @@
       "sha256": "ff05b1d0c3193116fc3ef00f1f3b8c6babf533e4d81f27deb43ec086d96e0303",
       "bytes": 453,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/training-metadata.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3bca583aee4b013037e62d57a2973eb760496d85/kaggle/training-metadata.json"
     },
     {
       "path": "kaggle/upload_dataset.py",
@@ -779,7 +779,7 @@
       "sha256": "0244ed0b98b8101b7fba4c536756b9909c8154b5df5e90d9c5d9e6434dabcb99",
       "bytes": 1245,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/kaggle/upload_dataset.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/kaggle/upload_dataset.py"
     },
     {
       "path": "kaggle_output/model_v2.py",
@@ -789,7 +789,7 @@
       "sha256": "bed3f27f49124c01943c9bb4e341ff0d3c0d7cd0c4dd568daa5303d9b241e89d",
       "bytes": 40923,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_output/model_v2.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_output/model_v2.py"
     },
     {
       "path": "kaggle_output/train.py",
@@ -799,7 +799,7 @@
       "sha256": "c9647acf33bccd1a88dae08f02f7f96b7045cfeb9f330eb7a6e5c372d9fe0bb9",
       "bytes": 33310,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_output/train.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_output/train.py"
     },
     {
       "path": "kaggle_pull/cpu1-training.ipynb",
@@ -809,7 +809,7 @@
       "sha256": "81b9fac1f7f015abcd7a7c4aef1fe77d29cbff47a3204e69c16df1ce521e3efe",
       "bytes": 5108,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull/cpu1-training.ipynb"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull/cpu1-training.ipynb"
     },
     {
       "path": "kaggle_pull/kernel-metadata.json",
@@ -819,7 +819,7 @@
       "sha256": "7ce9072fab43a4eef207bbf36cdb4b763928a1fe4a0629a315a7ed9f770982dc",
       "bytes": 555,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull/kernel-metadata.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull/kernel-metadata.json"
     },
     {
       "path": "kaggle_pull2/cpu1-training.ipynb",
@@ -829,7 +829,7 @@
       "sha256": "2412c83f366929c9361a3d0efd0f793da8b3a9b4ce012da471ca5fc266fcb683",
       "bytes": 83439,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull2/cpu1-training.ipynb"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull2/cpu1-training.ipynb"
     },
     {
       "path": "kaggle_pull2/kernel-metadata.json",
@@ -839,7 +839,7 @@
       "sha256": "7ce9072fab43a4eef207bbf36cdb4b763928a1fe4a0629a315a7ed9f770982dc",
       "bytes": 555,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull2/kernel-metadata.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/8cf94406de7efe8ec754edcea34362b4091d77e5/kaggle_pull2/kernel-metadata.json"
     },
     {
       "path": "lightning/cpu1-create-dataset.py",
@@ -849,7 +849,7 @@
       "sha256": "9e4b2ac94676d20f5eb39fa3c52092edbd41c783eca3a3963acec542733ecb36",
       "bytes": 2809,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/cpu1-create-dataset.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/cpu1-create-dataset.py"
     },
     {
       "path": "lightning/submit.py",
@@ -859,7 +859,7 @@
       "sha256": "90c1850dc6811f8f1ffcf5efced7ef149e02cb022400d9bfab803bd7eb8a7bc9",
       "bytes": 2558,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/submit.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/submit.py"
     },
     {
       "path": "lightning/train_ablation_submit.py",
@@ -869,7 +869,7 @@
       "sha256": "8e29342f25200942188347a795d363801149b98822f1144d0dec252a7fd6b241",
       "bytes": 4524,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/train_ablation_submit.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/train_ablation_submit.py"
     },
     {
       "path": "lightning/upload_and_run.py",
@@ -879,7 +879,7 @@
       "sha256": "0cd47b29cdd8f29cf96ec0f1a0158488059d47317db1f363d0fe44e74080f589",
       "bytes": 2841,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/upload_and_run.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/3d8a93b36051cb68ba955ed61b9153a7a7ffa4bc/lightning/upload_and_run.py"
     },
     {
       "path": "load_lfm_model.py",
@@ -889,7 +889,7 @@
       "sha256": "28abf31f1a2661a2dd8d0c1f62b0f84918a58522c87aab6ce4c6c004c819d7fa",
       "bytes": 1084,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/load_lfm_model.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/0c767db6aca778f9e2d5e87afa8c04698b7a0dcf/load_lfm_model.py"
     },
     {
       "path": "main.py",
@@ -899,7 +899,7 @@
       "sha256": "10f3275780dab7ce70fca52cf847a73d90149b15797578ae03dc56408e747319",
       "bytes": 5086,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/main.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/main.py"
     },
     {
       "path": "main_ligtning_studio.py",
@@ -909,7 +909,7 @@
       "sha256": "dee4c82b7c6f3ad7e81bce2de80aa91a36a50a19bb7d6ab304d296446641dfe3",
       "bytes": 6912,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/main_ligtning_studio.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/main_ligtning_studio.py"
     },
     {
       "path": "model.py",
@@ -919,7 +919,7 @@
       "sha256": "00eee49117c26990e1ec97f384fa3bce83219b0396e0e5138e4b0bb5fc133a54",
       "bytes": 80051,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/model.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/model.py"
     },
     {
       "path": "model_v2.py",
@@ -929,7 +929,7 @@
       "sha256": "331c54c96fe2ab8eaab961132fb1028a4790f5b1648e9fbaed74203f0198e23a",
       "bytes": 63147,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/828b42dd133c868051579846a1626d5f794fbee3/model_v2.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/828b42dd133c868051579846a1626d5f794fbee3/model_v2.py"
     },
     {
       "path": "models/ablation_models/__init__.py",
@@ -939,7 +939,7 @@
       "sha256": "4662eea05b1c4d1a3814c2220af83411f79c2577b16dd1422b070aab7015f8c3",
       "bytes": 2018,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/996ae7d0e2b4894107593c331e2d4abd6260c9d0/models/ablation_models/__init__.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/996ae7d0e2b4894107593c331e2d4abd6260c9d0/models/ablation_models/__init__.py"
     },
     {
       "path": "models/ablation_models/run_01_transformer_bpe_fp16.py",
@@ -949,7 +949,7 @@
       "sha256": "0fd55b6decbdcf2c09ec1147d2917dbc79cfe5c754507977da830a5e18bbf795",
       "bytes": 2348,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_01_transformer_bpe_fp16.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_01_transformer_bpe_fp16.py"
     },
     {
       "path": "models/ablation_models/run_02_transformer_byte_fp16.py",
@@ -959,7 +959,7 @@
       "sha256": "b9aa8623e10c27e96edc5fa56977ebd7655cecf65278feaa50008e02924bae37",
       "bytes": 2349,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_02_transformer_byte_fp16.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_02_transformer_byte_fp16.py"
     },
     {
       "path": "models/ablation_models/run_03_mlgru_bpe_fp16.py",
@@ -969,7 +969,7 @@
       "sha256": "abd893082a9b2492f47c185f7d1cd9373349c057fc7a49f4f26a41b7a838a871",
       "bytes": 2544,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_03_mlgru_bpe_fp16.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_03_mlgru_bpe_fp16.py"
     },
     {
       "path": "models/ablation_models/run_04_mlgru_byte_fp16.py",
@@ -979,7 +979,7 @@
       "sha256": "36a9b4903c4af4bd0bb4836d2ece77858f70992ed7152ccce595e976acb2a45d",
       "bytes": 2196,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_04_mlgru_byte_fp16.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_04_mlgru_byte_fp16.py"
     },
     {
       "path": "models/ablation_models/run_05_mlgru_byte_ternary.py",
@@ -989,7 +989,7 @@
       "sha256": "a262a28a1efa78cde540ec8766c9c52eed93aedcf4dcf573e9bd4077630c4ebc",
       "bytes": 2777,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_05_mlgru_byte_ternary.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_05_mlgru_byte_ternary.py"
     },
     {
       "path": "models/ablation_models/run_06_cpu1_core.py",
@@ -999,7 +999,7 @@
       "sha256": "d54199e6e917c195b8167c17fdae993aebb0bea878a67afc9dbcb33f4c2e523a",
       "bytes": 2963,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_06_cpu1_core.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_06_cpu1_core.py"
     },
     {
       "path": "models/ablation_models/run_07_cpu1_bolmo.py",
@@ -1009,7 +1009,7 @@
       "sha256": "f27c609055ebcf1fe56ca5411fdc76a2d66ef4f4f04ff34957ee47e764b76783",
       "bytes": 3167,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_07_cpu1_bolmo.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_07_cpu1_bolmo.py"
     },
     {
       "path": "models/ablation_models/run_08_cpu1_deletegate.py",
@@ -1019,7 +1019,7 @@
       "sha256": "35281437fe341f8574fbf1b5ffb1a91c8d40fac2729889ee84fcd9fe1d011f7a",
       "bytes": 3299,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_08_cpu1_deletegate.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_08_cpu1_deletegate.py"
     },
     {
       "path": "models/ablation_models/run_09_folded_transformer.py",
@@ -1029,7 +1029,7 @@
       "sha256": "e2f27d86d09d164662efd84c0f279aa853d6f487d9a8db18e6fad29fc40cb41d",
       "bytes": 3360,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_09_folded_transformer.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_09_folded_transformer.py"
     },
     {
       "path": "models/ablation_models/run_10_cpu1_complete.py",
@@ -1039,7 +1039,7 @@
       "sha256": "ae5df801ad83efa6c4fc4ffa0abcbf42453258d777de63dc0823d65493eb83f7",
       "bytes": 3327,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_10_cpu1_complete.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_10_cpu1_complete.py"
     },
     {
       "path": "models/ablation_models/run_11_cpu1_pfnet.py",
@@ -1049,7 +1049,7 @@
       "sha256": "dbb120d1b962a1039fc89f232a6949102539aadf0710cdbad132a51035d9d28a",
       "bytes": 3556,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_11_cpu1_pfnet.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_11_cpu1_pfnet.py"
     },
     {
       "path": "models/ablation_models/run_400M_cpu1_kernel_optimal.py",
@@ -1059,7 +1059,7 @@
       "sha256": "fec48805647d2adc5647327bdc4c24b70f7a7a7b013dba97ad1a5bd99d866289",
       "bytes": 8601,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_400M_cpu1_kernel_optimal.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/run_400M_cpu1_kernel_optimal.py"
     },
     {
       "path": "models/ablation_models/small_01_cpu1_bpe.py",
@@ -1069,7 +1069,7 @@
       "sha256": "8e339e0aff2863473bbedc0ad26a9dfc2cbc858f8b7cac39f41d8e6b83bd9703",
       "bytes": 3128,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_01_cpu1_bpe.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_01_cpu1_bpe.py"
     },
     {
       "path": "models/ablation_models/small_02_cpu1_byte.py",
@@ -1079,7 +1079,7 @@
       "sha256": "2efcd0c34b1ce77d95a2a2f4309ea84cfb770d0ff7fb94ebcf75c1bc8f7e2359",
       "bytes": 3054,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_02_cpu1_byte.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_02_cpu1_byte.py"
     },
     {
       "path": "models/ablation_models/small_03_cpu1_complement.py",
@@ -1089,7 +1089,7 @@
       "sha256": "f96e9d9a195815cb8f2dbc64a85e0b11ba58d8b563101ab7ab03bf56ec075d7e",
       "bytes": 4487,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_03_cpu1_complement.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_03_cpu1_complement.py"
     },
     {
       "path": "models/ablation_models/small_04_cpu1_raw_bytes.py",
@@ -1099,7 +1099,7 @@
       "sha256": "b393c466f86e81583867307199301aa64fab2bd2e4e8c2e20ffc2b999f1b3236",
       "bytes": 4042,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_04_cpu1_raw_bytes.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/small_04_cpu1_raw_bytes.py"
     },
     {
       "path": "models/ablation_models/zave_ablation_models.py",
@@ -1109,7 +1109,7 @@
       "sha256": "30229871029d3a710066289b9d54cc75d2166aa298be63a69bc61c287f5e1ada",
       "bytes": 2898,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/zave_ablation_models.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/models/ablation_models/zave_ablation_models.py"
     },
     {
       "path": "patch_train.py",
@@ -1119,7 +1119,7 @@
       "sha256": "ba5ec7e9c40dec0096726d7faa4271de5785acd01918a1df702545a71093562f",
       "bytes": 4834,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/dcafa9518e2097bd9eda756558e4085fd778c1cf/patch_train.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/dcafa9518e2097bd9eda756558e4085fd778c1cf/patch_train.py"
     },
     {
       "path": "resultados/ablation_run_01.json",
@@ -1129,7 +1129,7 @@
       "sha256": "59c710d5f4e5c0d6cfbb8fe91d973a18881c4b684aa7985f3e6d63d3b290b9d1",
       "bytes": 2533,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_01.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_01.json"
     },
     {
       "path": "resultados/ablation_run_01_v3.json",
@@ -1139,7 +1139,7 @@
       "sha256": "f454192a0266f9c6c8151417c32eb7e525fcfd72134d34caa212a7fd3fae5945",
       "bytes": 2616,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_01_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_01_v3.json"
     },
     {
       "path": "resultados/ablation_run_02.json",
@@ -1149,7 +1149,7 @@
       "sha256": "b3964f331cfdbe734cb429fe76035d7852af5840427bdadab4a174ceeff0a674",
       "bytes": 2705,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02.json"
     },
     {
       "path": "resultados/ablation_run_02_v3.json",
@@ -1159,7 +1159,7 @@
       "sha256": "ef73cf4cb34e415d21699df26773e500c82f6765c670b4618c7b1b1c39015b20",
       "bytes": 3343,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02_v3.json"
     },
     {
       "path": "resultados/ablation_run_02a_byte_only_heads.json",
@@ -1169,7 +1169,7 @@
       "sha256": "4752b8164c517bc69d57021697dff3f78529919ddf8b6c067fc7ad9003f30548",
       "bytes": 2741,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02a_byte_only_heads.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02a_byte_only_heads.json"
     },
     {
       "path": "resultados/ablation_run_02a_byte_only_heads_v3.json",
@@ -1179,7 +1179,7 @@
       "sha256": "e081835ec5103d1671153da812bb75f6555749a063169fb75f8796423f02d80b",
       "bytes": 3380,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02a_byte_only_heads_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_02a_byte_only_heads_v3.json"
     },
     {
       "path": "resultados/ablation_run_03.json",
@@ -1189,7 +1189,7 @@
       "sha256": "415cdbb78f455034e0ee2a71b4be678f48d36ceb6b2a9784bcbe948270749c63",
       "bytes": 2637,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_03.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_03.json"
     },
     {
       "path": "resultados/ablation_run_03_v3.json",
@@ -1199,7 +1199,7 @@
       "sha256": "6592224390b8ccc9f910143770c5fe02df374dad33ce8ab45b84f46964516cc6",
       "bytes": 2648,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_03_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_03_v3.json"
     },
     {
       "path": "resultados/ablation_run_04.json",
@@ -1209,7 +1209,7 @@
       "sha256": "b56a61634e0845a344b4a3520a80fb04fca17263824af94680b896e33a2ee038",
       "bytes": 2544,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_04.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_04.json"
     },
     {
       "path": "resultados/ablation_run_04_r2.json",
@@ -1219,7 +1219,7 @@
       "sha256": "94b08aa6f17d895f39aae9ed19157fade48ce7b640efcd7f258a9c7dc4b0348e",
       "bytes": 2562,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_04_r2.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_04_r2.json"
     },
     {
       "path": "resultados/ablation_run_04_v3.json",
@@ -1229,7 +1229,7 @@
       "sha256": "de8dc03698eea54ad0fe2cb444557605ac1840dca6f1f79225d4e40eb0936938",
       "bytes": 2491,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_04_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_04_v3.json"
     },
     {
       "path": "resultados/ablation_run_05.json",
@@ -1239,7 +1239,7 @@
       "sha256": "8677bd0edf64f924d44e44f2481a849ba55092cacacde53b56b74d4f4e6383b8",
       "bytes": 2547,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05.json"
     },
     {
       "path": "resultados/ablation_run_05_v3.json",
@@ -1249,7 +1249,7 @@
       "sha256": "1977869cd6dc94252e3147a48e041f466aacdcaf27ce37e69858f5ad4b6f88a4",
       "bytes": 2610,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05_v3.json"
     },
     {
       "path": "resultados/ablation_run_05b_kernel_strict.json",
@@ -1259,7 +1259,7 @@
       "sha256": "df8ee6ad6110a04fd32485e0a7efdb67391377d6f0776185e597cd9287c56430",
       "bytes": 2576,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05b_kernel_strict.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05b_kernel_strict.json"
     },
     {
       "path": "resultados/ablation_run_05b_kernel_strict_v3.json",
@@ -1269,7 +1269,7 @@
       "sha256": "7835a1673f89a6551b198bd34b26ea480198948fe5425c2591f8c5d13cec6eca",
       "bytes": 2639,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05b_kernel_strict_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_05b_kernel_strict_v3.json"
     },
     {
       "path": "resultados/ablation_run_06.json",
@@ -1279,7 +1279,7 @@
       "sha256": "2af17dd7a09d98e1a9cdfbedda93d926150fd2d7c8edb54c503b4a1ebf73794d",
       "bytes": 2553,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_06.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_06.json"
     },
     {
       "path": "resultados/ablation_run_06_v3.json",
@@ -1289,7 +1289,7 @@
       "sha256": "b5fe80bc51d76dd5bc4fbdfc75d7d6af0fa14614fbb58e311b7ee4c78e6b82b3",
       "bytes": 2616,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_06_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_06_v3.json"
     },
     {
       "path": "resultados/ablation_run_07.json",
@@ -1299,7 +1299,7 @@
       "sha256": "ff7f923cb6ac1e9fc9cd1bb2b39d4008550c3ae980e6db27a744e60c166a125e",
       "bytes": 2555,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_07.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_07.json"
     },
     {
       "path": "resultados/ablation_run_07_r2.json",
@@ -1309,7 +1309,7 @@
       "sha256": "60a4473d9057bbadb13288b7b6d1ff30993a60806f0c1cb6ecd7eea6e2f156f5",
       "bytes": 2560,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_07_r2.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_07_r2.json"
     },
     {
       "path": "resultados/ablation_run_08.json",
@@ -1319,7 +1319,7 @@
       "sha256": "b55de9dc4ad81637a7687c4a6e8bcc6719ffc90258dd9f3e8cb3ad27fd34879f",
       "bytes": 2615,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_08.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_08.json"
     },
     {
       "path": "resultados/ablation_run_08_v3.json",
@@ -1329,7 +1329,7 @@
       "sha256": "0744b7b20a4091f97ddec962b98fb35d506965440bb281f41d0a068b20c74e0e",
       "bytes": 85210,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_08_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_08_v3.json"
     },
     {
       "path": "resultados/ablation_run_09.json",
@@ -1339,7 +1339,7 @@
       "sha256": "1adf30a8aba96e29efd28c8655b9cf26caff8f345613c6d121fc08e175962b94",
       "bytes": 2555,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_09.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_09.json"
     },
     {
       "path": "resultados/ablation_run_10.json",
@@ -1349,7 +1349,7 @@
       "sha256": "d74f6adbc95a3e9620dcd97d7cc78e174fe8f1cc7d72b9a22e837858f863afe6",
       "bytes": 2556,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_10.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_10.json"
     },
     {
       "path": "resultados/ablation_run_13.json",
@@ -1359,7 +1359,7 @@
       "sha256": "0fbfc194e5e3171b73af9e2208104e4b92f71f13bba598f82faa17be19566d3f",
       "bytes": 2438,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_13.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_13.json"
     },
     {
       "path": "resultados/ablation_run_13_r2.json",
@@ -1369,7 +1369,7 @@
       "sha256": "b4c031f8b77799b35ad501b43912c8a539c7d48f3f860dbf3bbf3726ff6d3811",
       "bytes": 2442,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_13_r2.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_13_r2.json"
     },
     {
       "path": "resultados/ablation_run_13_v3.json",
@@ -1379,7 +1379,7 @@
       "sha256": "fe794f4d4d7275a906f2e6813baf4f046c1f595e089d566ddccdd0190c1efb28",
       "bytes": 2436,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_13_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_13_v3.json"
     },
     {
       "path": "resultados/ablation_run_14.json",
@@ -1389,7 +1389,7 @@
       "sha256": "f6c699e129b226176f9af047c060fc8a84670cbdf128ce034637c80a2b005c10",
       "bytes": 2550,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_14.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_14.json"
     },
     {
       "path": "resultados/ablation_run_14_r2.json",
@@ -1399,7 +1399,7 @@
       "sha256": "dfa61be17e927cc52ce7ff8d333c708f91412eaeb42d6b20622954e30b758e22",
       "bytes": 2559,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_14_r2.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_14_r2.json"
     },
     {
       "path": "resultados/ablation_run_14_v3.json",
@@ -1409,7 +1409,7 @@
       "sha256": "69dae011ffad377aeebfed22a36743fe27136a553ba50f0040e657bd085507dc",
       "bytes": 2614,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_14_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_14_v3.json"
     },
     {
       "path": "resultados/ablation_run_15.json",
@@ -1419,7 +1419,7 @@
       "sha256": "7a81382cd18acb80abaee4505565dc47d50b92e42534f4b538d18953aa8386c9",
       "bytes": 2552,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_15.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_15.json"
     },
     {
       "path": "resultados/ablation_run_15_r2.json",
@@ -1429,7 +1429,7 @@
       "sha256": "970277b6dcbf3fc833a4c028ce357af5aaf160e5b7434d2a6344d6b7d7007176",
       "bytes": 2560,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_15_r2.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_15_r2.json"
     },
     {
       "path": "resultados/ablation_run_15_v3.json",
@@ -1439,7 +1439,7 @@
       "sha256": "ddc90f24f5eb97ee5f225ffec6dc70d346d981bc2a87d974f5aeb5107e91ae30",
       "bytes": 2615,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_15_v3.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_15_v3.json"
     },
     {
       "path": "resultados/ablation_run_16.json",
@@ -1449,7 +1449,7 @@
       "sha256": "62d264ee7134cd9f6d9c9892712b61e4ee5a646d51353448800c33da0807d7ce",
       "bytes": 2551,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_16.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_16.json"
     },
     {
       "path": "resultados/ablation_run_16_r2.json",
@@ -1459,7 +1459,7 @@
       "sha256": "4a1146f2a2249290f588a03999f047db75e88ff2659ea222c749c0ef37114add",
       "bytes": 2560,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_16_r2.json"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_run_16_r2.json"
     },
     {
       "path": "resultados/ablation_summary.md",
@@ -1469,7 +1469,7 @@
       "sha256": "d96e1b29dba9e682e05c9f442cdad515c78b671675b72dc7d51aa8472eae02e2",
       "bytes": 3010,
       "role": "historical training record",
-      "url": "https://github.com/igna-s/New-1.58/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_summary.md"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/bc58efaa7ef00dc24f57ea7479415520fb92705f/resultados/ablation_summary.md"
     },
     {
       "path": "train.py",
@@ -1479,7 +1479,7 @@
       "sha256": "f64c83bd458d956bd6b573afa9664f4dc5072c4243cf1379ec6dff9f28de931c",
       "bytes": 74105,
       "role": "historical experimental source or platform metadata",
-      "url": "https://github.com/igna-s/New-1.58/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/train.py"
+      "url": "https://github.com/igna-s/AI-Training-from-Scratch/blob/a90ec3e01ad30b0e1701dff1dd60bae655708bf1/train.py"
     }
   ],
   "excluded_paths": [

@@ -13,7 +13,7 @@ tags:
 
 34 custom PyTorch model exports, 4.178 GB of checkpoint files (decimal units). These checkpoints are intended for research on the CPU-1 ablation configurations. It includes Transformer and MLGRU variants with byte patches or truncated BPE vocabularies, and floating-point or simulated ternary projections.
 
-Source: [igna-s/New-1.58](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08). Training archive: [Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints). Training dataset companion: [Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset).
+Source: [igna-s/AI-Training-from-Scratch](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08). Training archive: [Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints). Training dataset companion: [Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset).
 
 ## Evaluation summary
 
@@ -36,7 +36,7 @@ Historical `metrics` may be empty or come from different training validation pro
 
 ## Load one checkpoint
 
-Clone the [source repository](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08) and run this from its root. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.
+Clone the [source repository](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08) and run this from its root. The source repository is currently private and requires authorized GitHub access. These are custom PyTorch checkpoints; `AutoModelForCausalLM.from_pretrained()` does not load them. The examples use a trusted checkpoint source and strict state loading.
 
 ```python
 import os
@@ -64,7 +64,7 @@ This example supplies zero target bytes to the local decoder to demonstrate outp
 
 ## Evaluation methodology
 
-Results were measured on **2026-10-06** for the 34 FP32 exports. Raw results, checkpoint hashes, the text sample, package versions, corpus attribution and evaluator metadata are available in the [GitHub evaluation files](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation).
+Results were measured on **2026-10-06** for the 34 FP32 exports. Raw results, checkpoint hashes, the text sample, package versions, corpus attribution and evaluator metadata are available in the [GitHub evaluation files](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08/experiments/evaluation).
 
 - Hardware: Intel Core i7-8750H, Windows 11, CPU execution, one PyTorch thread, batch size 1 and FP32 parameters. PyTorch 2.6.0+cu124. The measurements use the PyTorch implementation without custom C/C++ kernels.
 - Text: the first 32 non-heading paragraphs of the WikiText-2 raw test split with at least 260 UTF-8 bytes, truncated to 260 bytes at a complete character boundary. This sample supports small-scale comparisons; it is not the full benchmark. Training/test overlap has not been exhaustively checked.
@@ -82,7 +82,7 @@ Evaluated export revision: `65951289352c1a036b12ba6d888af037e7c90b13`. Archive i
 
 ### Code and result files
 
-The [GitHub source](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08) contains the model implementation, training recipes and evaluation tools. The [evaluation files](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation) include all 34 per-run JSON results, exact corpus, dependency versions, checkpoint hashes and the reference evaluator location. Use these records when comparing or reproducing the measurements.
+The [GitHub source](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08) contains the model implementation, training recipes and evaluation tools. The [evaluation files](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08/experiments/evaluation) include all 34 per-run JSON results, exact corpus, dependency versions, checkpoint hashes and the reference evaluator location. Use these records when comparing or reproducing the measurements.
 
 ## Evaluation results
 
@@ -244,7 +244,7 @@ These configurations did not reproduce a full-sequence forward when carrying sta
 
 ### Recurrent scan implementation
 
-The source’s `AblationMLGRU._parallel_scan` was tested independently against its defining serial recurrence with random candidate/forget tensors, seed 19, shape `[1,32,8]`, FP32. The maximum difference was **19.100506**; splitting the same scan into two 16-step chunks differed by **11.471270** (tolerance `1e-4`). See the [recorded implementation results](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/evaluation) and [evaluation/diagnostics.py](https://github.com/igna-s/New-1.58/blob/cpu1-experiment-2026-10-08/evaluation/diagnostics.py).
+The source’s `AblationMLGRU._parallel_scan` was tested independently against its defining serial recurrence with random candidate/forget tensors, seed 19, shape `[1,32,8]`, FP32. The maximum difference was **19.100506**; splitting the same scan into two 16-step chunks differed by **11.471270** (tolerance `1e-4`). See the [recorded implementation results](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08/experiments/evaluation) and [evaluation/diagnostics.py](https://github.com/igna-s/AI-Training-from-Scratch/blob/cpu1-experiment-2026-10-08/evaluation/diagnostics.py).
 
 The implementation replaces log-cumulative-sum-exp with a cumulative-maximum normalization followed by a cumulative sum; accumulated terms are not rescaled when that maximum changes. The observed outputs therefore do not satisfy the intended recurrence. This is a source implementation defect; disabling or repairing the scan would create a different inference protocol and was not silently applied to these results. The measurements use the published implementation.
 
@@ -261,7 +261,7 @@ Scores and speed are unavailable when model loading or numerical evaluation fail
 
 ## Training and architecture
 
-Training, dataset preparation and Kaggle/Lightning recipes are maintained in the [GitHub source](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08); AMD training is also supported by the source. The [saved configurations](https://github.com/igna-s/New-1.58/tree/cpu1-experiment-2026-10-08/experiments/published) record the 34 exported runs, checkpoint hashes, parameter counts and saved steps. Current presets can differ from the published runs; select a recorded configuration explicitly.
+Training, dataset preparation and Kaggle/Lightning recipes are maintained in the [GitHub source](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08). The source provides an AMD/ROCm-oriented entry point; these CPU results do not validate a fresh GPU training job. The [saved configurations](https://github.com/igna-s/AI-Training-from-Scratch/tree/cpu1-experiment-2026-10-08/experiments/published) record the 34 exported runs, checkpoint hashes, parameter counts and saved steps. Current presets can differ from the published runs; select a recorded configuration explicitly.
 
 Configured token budgets, including the v3 150 tokens/parameter setting, are not measurements of completed training exposure. The exact source commit and full dependency lock for each training job were not recorded.
 
@@ -316,6 +316,6 @@ The model repository declares Apache-2.0. Upstream datasets, corpus excerpts and
 
 ## Related resources
 
-- [GitHub: igna-s/New-1.58](https://github.com/igna-s/New-1.58): extraction pipeline, training and evaluation code.
+- [GitHub: igna-s/AI-Training-from-Scratch](https://github.com/igna-s/AI-Training-from-Scratch): extraction pipeline, training and evaluation code.
 - [Hugging Face: Cukinator/cpu1-ablation-checkpoints](https://huggingface.co/Cukinator/cpu1-ablation-checkpoints): packed and intermediate checkpoints.
 - [Hugging Face: Cukinator/cpu1-ablation-dataset](https://huggingface.co/datasets/Cukinator/cpu1-ablation-dataset): byte and BPE training data.

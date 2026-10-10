@@ -1,7 +1,7 @@
 """Publication locations and README-only Hub operations."""
 from pathlib import Path
 
-GITHUB = "https://github.com/igna-s/New-1.58"
+GITHUB = "https://github.com/igna-s/AI-Training-from-Scratch"
 SOURCE_REF = "cpu1-experiment-2026-10-08"
 SOURCE_TREE = f"{GITHUB}/tree/{SOURCE_REF}"
 SOURCE_BLOB = f"{GITHUB}/blob/{SOURCE_REF}"

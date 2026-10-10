@@ -35,7 +35,7 @@ The author confirmed using **Kaggle, Lightning and AMD**, with the code committe
 
 ## Current platform recipes
 
-Run from a writable checkout, such as `/kaggle/working/New-1.58` or a Lightning Studio project. Install the appropriate PyTorch build and `requirements/data.txt` or `requirements/training.txt` first. The recipes run inside the selected platform; they do not submit remote jobs through the platform SDK.
+Run from a writable checkout, such as `/kaggle/working/AI-Training-from-Scratch` or a Lightning Studio project. Install the appropriate PyTorch build and `requirements/data.txt` or `requirements/training.txt` first. The recipes run inside the selected platform; they do not submit remote jobs through the platform SDK.
 
 ```bash
 # Prints the committed dataset recipe without extracting or uploading.
@@ -63,6 +63,6 @@ python -m evaluation.dataset --storage D:/cpu1-readme-audit --tokenizer
 python -m evaluation.dataset --storage D:/cpu1-readme-audit --tokenizer --offline
 ```
 
-This downloads about 158.5 MB of parquet samples to D:, not a teacher or student model. Results are written under ignored `outputs/provenance/`. Each sample is checked against its reviewed SHA-256. To publish the reviewed dataset card with owner authentication, append `--publish-card`; code and review evidence remain on GitHub under `experiments/evaluation/`; all parquet paths, sizes and LFS hashes must still match the reviewed data revision. All 34 recorded configurations were checked against their audited parameter counts using meta tensors; no model weights were downloaded for that check. Fourteen offline tests passed.
+The three parquet samples total about 158.5 MB; `--tokenizer` additionally downloads tokenizer/configuration files if they are not already cached. Teacher and student weights are not required. Results are written under ignored `outputs/provenance/`. Each sample is checked against its reviewed SHA-256. To publish the reviewed dataset card with owner authentication, append `--publish-card`; code and review evidence remain on GitHub under `experiments/evaluation/`; all parquet paths, sizes and LFS hashes must still match the reviewed data revision. All 34 recorded configurations were checked against their audited parameter counts using meta tensors; no model weights were downloaded for that check. The October 8 recovery review passed fourteen offline tests; the later [README validation](../../experiments/evaluation/readme-validation-2026-10-10.json) records eighteen.
 
 The available artifacts do not bind each training job to its exact source commit, dependency lock, resolved teacher/tokenizer revision, extraction version, source documents or projection matrix. Restoring committed code makes its evolution inspectable; it does not fill those missing records. A deterministic end-to-end retraining or dataset reconstruction is therefore not established. The stored model/data artifacts and the known numerical implementations were left unchanged; existing audit results retain their original date and limitations.

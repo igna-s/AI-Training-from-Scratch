@@ -1,62 +1,56 @@
-# CPU-1 Inference — Links & References
+# Native CPU kernel experiments
 
-## Core Papers
-- [The Era of 1-bit LLMs (BitNet b1.58)](https://arxiv.org/abs/2402.17764) — Ternary weight quantization
-- [T-MAC: CPU-Based LUT-Based Inference](https://arxiv.org/abs/2407.00088) — LUT approach for ternary GEMV
-- [minLSTM / MLGRU](https://arxiv.org/abs/2410.01201) — Minimal recurrent architecture used in CPU-1
-- [MegaByte (Yu et al., 2023)](https://arxiv.org/abs/2305.07185) — Two-tier byte-level architecture used by `local_decode_step`
+This folder contains custom AVX2/FMA/OpenMP kernels and a synthetic benchmark driver. The driver creates random weights and input vectors. It does not load the published checkpoints, and trained-model parity or end-to-end generation performance has not been established.
 
-## Implementation References
-- [T-MAC GitHub](https://github.com/microsoft/T-MAC) — LUT kernel reference implementation
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) — GGML quantized inference reference
-- [BitNet.cpp](https://github.com/microsoft/BitNet) — Microsoft's official BitNet inference
+The local-decoder benchmark computes logits but feeds back bytes from a fixed formula, `(byte_position * 17) % 256`, rather than selecting or sampling those logits. Its rates measure synthetic kernel work, not meaningful text generation. See the [architecture review](../docs/architecture-review.md#native-kernels-storage-and-reproducibility) and the separate [PyTorch model results](../README.md#results).
 
-## Source files in this folder
+## References
 
-- `kernels.cpp` — All AVX2 + FMA inference kernels (GEMV, RMSNorm, SiLU, MLGRU,
-  PFNet, FPResidual, the `forward_full_mad_*` family, and `local_decode_step`).
-  Compiled inline via `g++ -x c++` from the benchmark.
-- `benchmark.c` — Standalone driver. Allocates random ternary weights and times
-  the global pass + MegaByte LocalByteDecoder per patch across modes 0–4.
-- `links.md` — this file.
+- [Scalable MatMul-free Language Modeling](https://arxiv.org/abs/2406.02528): the MLGRU inspiration used by the token mixers.
+- [The Era of 1-bit LLMs](https://arxiv.org/abs/2402.17764): ternary weight quantization.
+- [T-MAC](https://arxiv.org/abs/2407.00088): lookup-table computation for low-bit inference. These custom kernels are not a verified reproduction of T-MAC.
+- [MEGABYTE](https://arxiv.org/abs/2305.07185): inspiration for the global/local byte decoder.
+- [Were RNNs All We Needed?](https://arxiv.org/abs/2410.01201): related minLSTM/minGRU work; it is a different paper from the MLGRU reference above.
 
-Build artifacts (`benchmark.exe`, `*.dll`, `*.o`) are gitignored.
+Reference implementations: [T-MAC](https://github.com/microsoft/T-MAC), [llama.cpp](https://github.com/ggml-org/llama.cpp), and [BitNet](https://github.com/microsoft/BitNet).
 
-## Build & run
+## Source and execution modes
+
+- [kernels.cpp](kernels.cpp) implements ternary GEMV, normalization, activation, recurrent mixing, residual branches, global execution modes, and local decoding.
+- [benchmark.c](benchmark.c) allocates synthetic tensors and calls those kernels. Despite its extension, the build recipe compiles it as C++ together with `kernels.cpp`.
+
+| Mode | Driver call |
+|---|---|
+| 0 | Fused global pass using OpenMP |
+| 1 | Per-layer calls |
+| 2 | Single-threaded global pass |
+| 3 | Multiple independent streams |
+| 4 | Pipeline over a chunk of synthetic inputs |
+
+`--local 1` additionally runs four local-decoder steps per patch. Defaults are width 1,024, 14 layers, FFN width 2,688, FPResidual rank 8, and PFNet width 64. Those are driver settings; they are not a measured whole-model parameter count. No mode is established as universally fastest or optimal for a particular number of users.
+
+## Build recipes
+
+These recipes require an x86 CPU with AVX2/FMA and a compatible GCC/OpenMP toolchain. Compilation and runtime correctness were not validated in the reviewed environment. Run from the repository root in Bash, such as MSYS2 or WSL.
 
 ```bash
-# Compile (Windows MSYS / Linux / WSL):
 g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math \
     -std=c++11 -x c++ -o benchmark.exe \
     inference/benchmark.c inference/kernels.cpp -lm
 
-# Defaults: CPU-1 170M (d_model=1024, n_layers=14, d_ff=2688), full patch
-# (1 global pass + 4 LocalByteDecoder steps per patch).
-
-# Single-stream pipeline (mode 4, recommended for 1 active user):
+# Pipeline example using the driver's default dimensions.
 ./benchmark.exe --mode 4 --patches 80 --warmup 30 \
-                --chunk 128 --pin 1 --stages 6 --calibrate 1 --local 1
+    --chunk 128 --pin 1 --stages 6 --calibrate 1 --local 1
 
-# Multi-stream batch (mode 3, max aggregate throughput):
+# Independent-stream example; its aggregate rate measures different work.
 ./benchmark.exe --mode 3 --batch 6 --threads 6 --patches 100 --warmup 30 --local 1
-
-# 400M kernel-optimal config (24 layers, perfect 4-per-stage split):
-./benchmark.exe --d_model 1280 --n_layers 24 --d_ff 3328 --fp_rank 8 \
-                --mode 4 --patches 30 --warmup 10 \
-                --chunk 64 --pin 1 --stages 6 --calibrate 1 --local 1
 ```
 
-See the main `README.md` (`CPU-1 170M Performance — Current C Benchmark Status`)
-for full mode descriptions and benchmark tables.
-
-## Optional: build as a shared library
-
-If you want to call the kernels from Python via `ctypes`:
+For a shared-library build with a compatible toolchain:
 
 ```bash
 g++ -O3 -shared -fPIC -mavx2 -mfma -fopenmp -ffast-math \
     -o kernels.dll inference/kernels.cpp
 ```
 
-Currently no Python code in this repo loads the DLL; the C benchmark is the
-authoritative consumer.
+The current Python model/evaluation packages do not load this library. Build artifacts are ignored by Git. SIMD floating-point approximations and `-ffast-math` make numerical parity a separate validation task.
