@@ -2,6 +2,8 @@
 
 Run the examples from the repository root. For model results and project scope, see the [main README](../README.md).
 
+The loading and generation examples use the pinned `run_02` byte Transformer export and were checked on CPU. GPU training recipes require a compatible accelerator environment; the model evaluation does not validate those jobs.
+
 ## Install and inspect
 
 The source repository is currently **private** and requires GitHub access. The companion Hugging Face repositories are public. Examples below use PowerShell and keep caches on a writable D: drive; adjust paths for your machine. The full evaluator requires a `--storage` path on D:.
@@ -108,4 +110,3 @@ The two-phase deletion path requires an appropriate phase-1 checkpoint and expli
 The [dataset review](../docs/model_cards/cpu1-ablation-dataset.md) inspected **three fixed shards**, not all 917. It found a reader alignment defect, mask-format problems, and UTF-8 marginalization limitations. Byte/BPE shard ranges both omit IDs 0060 and 0061, and unequal subsets must not be paired by shard index. Full row totals, teacher coverage, and reconstruction from the original documents are not established.
 
 The precomputed loader's nominal **5 GiB selection / 10 GiB cache cleanup are not hard quotas**: its fallback can request an entire subset, and later cleanup does not cover every cache or temporary file. Without split metadata, the fallback validation slice overlaps the training data. Review these behaviors before starting a large run. The small WikiText audit uses a separate corpus.
-
