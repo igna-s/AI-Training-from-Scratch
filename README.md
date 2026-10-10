@@ -18,7 +18,15 @@ The main recorded experiment family is **CPU-1**. It combines custom Transformer
 | Low-bit weights | 26 exports simulate ternary weights in PyTorch; the evaluated files store FP32 tensors |
 | Additional components | Boundary-aware embeddings, low-rank residuals, state deletion, learned decay, and teacher-hidden alignment |
 
-These are local adaptations of ideas from BitNet, MatMul-free LM, MEGABYTE, Bolmo/BLT, MrT5, and HGRN2. The [architecture guide](docs/architecture-review.md) describes the implemented components across all 34 published configurations and the current presets. The separate 164.87M-parameter larger-model path remains development code; its results are not part of this evaluation.
+These are local adaptations of ideas from BitNet, MatMul-free LM, MEGABYTE, Bolmo/BLT, MrT5, and HGRN2. The published research covers **34 exports with 10.69M–54.74M parameters**. The [architecture guide](docs/architecture-review.md) describes their implemented components and limitations.
+
+## Run names and architectures
+
+Each run identifies a configuration, rather than a paper architecture. For example, **`run_02` is a 38.83M-parameter byte Transformer** with fixed four-byte patches and a two-layer local byte decoder. **`run_04` is a 38.85M-parameter recurrent MLGRU byte model** with the same patch size and decoder depth, using simulated ternary projections. **`run_15` is a 10.73M-parameter recurrent byte model** with boundary-aware embedding, floating-point residuals, a deletion module, and a teacher-hidden alignment objective.
+
+The [run-by-run explanations](docs/architecture-review.md#run-by-run-explanations) map all 34 exports to 16 experiment families, explain their training signals, and describe the question each configuration explores. The [component glossary](docs/architecture-review.md#component-glossary) explains the abbreviations; the [full inventory](docs/architecture-review.md#published-model-inventory) gives exact parameter counts, checkpoint steps, and correctness outcomes.
+
+In the published records, unsuffixed runs configure a budget of 2 tokens/parameter, `_r2` runs 15, and `_v3` runs 150. These are planned budgets, not proof of completed training or improved models. Saved steps differ, and some variants also change configuration labels; see the [variant notes](docs/architecture-review.md#run-suffixes-and-training-signals) before comparing results.
 
 ## Results
 

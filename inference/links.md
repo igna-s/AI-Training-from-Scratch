@@ -27,7 +27,7 @@ Reference implementations: [T-MAC](https://github.com/microsoft/T-MAC), [llama.c
 | 3 | Multiple independent streams |
 | 4 | Pipeline over a chunk of synthetic inputs |
 
-`--local 1` additionally runs four local-decoder steps per patch. Defaults are width 1,024, 14 layers, FFN width 2,688, FPResidual rank 8, and PFNet width 64. Those are driver settings; they are not a measured whole-model parameter count. No mode is established as universally fastest or optimal for a particular number of users.
+`--local 1` additionally runs four local-decoder steps per patch. The examples select synthetic dimensions explicitly; they do not load a trained ablation checkpoint or establish native/PyTorch parity. No mode is established as universally fastest or optimal for a particular number of users.
 
 ## Build recipes
 
@@ -38,12 +38,14 @@ g++ -O3 -mavx2 -mfma -fopenmp -falign-loops=32 -funroll-loops -ffast-math \
     -std=c++11 -x c++ -o benchmark.exe \
     inference/benchmark.c inference/kernels.cpp -lm
 
-# Pipeline example using the driver's default dimensions.
-./benchmark.exe --mode 4 --patches 80 --warmup 30 \
+# Pipeline example with explicit synthetic dimensions.
+./benchmark.exe --d_model 512 --n_layers 12 --d_ff 1376 --fp_rank 4 --pfnet 32 \
+    --mode 4 --patches 80 --warmup 30 \
     --chunk 128 --pin 1 --stages 6 --calibrate 1 --local 1
 
 # Independent-stream example; its aggregate rate measures different work.
-./benchmark.exe --mode 3 --batch 6 --threads 6 --patches 100 --warmup 30 --local 1
+./benchmark.exe --d_model 512 --n_layers 12 --d_ff 1376 --fp_rank 4 --pfnet 32 \
+    --mode 3 --batch 6 --threads 6 --patches 100 --warmup 30 --local 1
 ```
 
 For a shared-library build with a compatible toolchain:

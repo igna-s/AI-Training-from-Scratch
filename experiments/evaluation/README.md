@@ -6,7 +6,7 @@ This directory contains the evaluation protocol, machine-readable results, and s
 |---|---|
 | [model-audit-2026-10-06/](model-audit-2026-10-06/) | 34 original FP32 results, pinned model/data inventories, exact text sample and attribution, environment metadata, recurrence diagnostic, and packed/FP32 loading example |
 | [dataset-review-2026-10-08.json](dataset-review-2026-10-08.json) | Three fixed-shard inspections and synthetic tokenizer/reader diagnostics |
-| [architecture-review-2026-10-10.json](architecture-review-2026-10-10.json) | Module inventories for 34 published configurations in both constructors, 30 current presets per backend, and five larger-model variants |
+| [architecture-review-2026-10-10.json](architecture-review-2026-10-10.json) | Ablation module inventories for 34 published configurations in both constructors and 30 current presets per backend |
 | [readme-validation-2026-10-10.json](readme-validation-2026-10-10.json) | Later recheck of all 34 exports, small synthetic architecture tests, and a CPU loading/scoring/generation example |
 | [checksums.json](checksums.json) | SHA-256 values for the 42 original evaluation files |
 

@@ -2,6 +2,8 @@
 
 The [published manifest](published/manifest.json) links 34 FP32 exports to configuration JSON, model SHA-256, saved step, parameter count and the pinned evaluation result. See [experiment provenance](../docs/provenance/README.md) for configuration interpretation and platform recipes.
 
+The [run-by-run architecture guide](../docs/architecture-review.md#run-by-run-explanations) maps these exports to 16 experiment families, explains each component and training signal, and distinguishes intended comparisons from measured outcomes. The models have **10.69M–54.74M parameters**; exact counts are in the manifest and inventory.
+
 These configuration records preserve published architecture and budget settings. They were recorded by the evaluation loader, which disabled gradient checkpointing; GPU training enables it. They do not pin the exact original training source or environment.
 
 ```powershell

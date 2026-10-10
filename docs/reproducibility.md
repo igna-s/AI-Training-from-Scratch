@@ -1,6 +1,6 @@
 # Research scope and reproducibility
 
-This project presents experimental implementations, trained checkpoints, and a common CPU evaluation. Its findings concern the recorded models and test protocol. They do not establish faithful reproduction of the cited papers, controlled comparisons between every run, or production readiness.
+This project presents **34 small-model ablation exports with 10.69M–54.74M parameters**, experimental implementations, and a common CPU evaluation. Its findings concern the recorded models and test protocol. They do not establish faithful reproduction of the cited papers, controlled comparisons between every run, or production readiness.
 
 ## Evaluation protocol
 
@@ -27,7 +27,7 @@ The [October 10 checkpoint validation](../experiments/evaluation/readme-validati
 
 ## Architecture and dataset evidence
 
-The [architecture inventory](../experiments/evaluation/architecture-review-2026-10-10.json) covers **133 constructions**: 34 published configurations in both ablation backends, 30 current presets in each backend, and five larger-model variants. Meta-tensor inventories establish parameter counts and module structure. Small random-weight CPU probes exercise code paths; they do not establish trained quality or full-scale GPU behavior. The [architecture guide](architecture-review.md) explains the scan defect, boundary causality, gate behavior, and separate larger-model limitations.
+For the ablation family, the [architecture inventory](../experiments/evaluation/architecture-review-2026-10-10.json) covers **128 constructions**: 34 published configurations in both ablation backends and 30 current presets in each backend. Meta-tensor inventories establish parameter counts and module structure. Small random-weight CPU probes exercise code paths; they do not establish trained quality or full-scale GPU behavior. The [architecture guide](architecture-review.md#run-by-run-explanations) explains each run family, the scan defect, boundary causality, and gate behavior.
 
 The [dataset inventory and card](model_cards/cpu1-ablation-dataset.md) describe 917 Parquet shards. Direct inspection covers **three fixed shards**, plus synthetic tokenizer/reader cases. It found teacher-reader alignment, mask-format, and UTF-8 limitations. The service-reported 46,029 rows were checked on October 10; this is not an independent scan of every row. The 1,346-file training archive is inventoried separately; not every intermediate binary has been loaded or numerically evaluated.
 
@@ -37,6 +37,6 @@ Native C/C++ benchmarks use synthetic weights and fixed-formula byte feedback. T
 
 Use the [setup and usage guide](usage.md) to install dependencies, load one pinned export, and run CPU scoring or generation examples. Use the [manifest and configurations](../experiments/README.md) to identify a model, and [platform recipes](provenance/README.md) to prepare a new run. Model hashes identify files; saved steps and configured token budgets do not prove convergence or completed training exposure.
 
-Exact retraining remains limited by missing per-job source, dependency, teacher/tokenizer, extraction, document-list, and projection records. The requirements provide minimum versions rather than a complete lockfile. Fresh CUDA/ROCm training and end-to-end resume have not been validated by the CPU evaluation. These limits also apply to the separate larger-model path.
+Exact retraining remains limited by missing per-job source, dependency, teacher/tokenizer, extraction, document-list, and projection records. The requirements provide minimum versions rather than a complete lockfile. Fresh CUDA/ROCm training and end-to-end resume have not been validated by the CPU evaluation.
 
 Model and dataset licenses are declared in their cards. The source tree currently has no project license file. The saved WikiText sample retains its [upstream attribution and terms](../experiments/evaluation/model-audit-2026-10-06/CORPUS_LICENSE.txt).
