@@ -1,6 +1,8 @@
 # AI Training from Scratch
 
-Personal investigations I ran with AMD cloud credits: training small language models from scratch, exploring low-bit and byte-level architectures, and running ablation studies.
+Personal exploration into small language models (SLMs) trained from scratch using AMD cloud credits.
+
+Rather than optimizing for final benchmark scores, the main goal was to experiment hands-on with model design—particularly exploring low-bit and byte-level architectures, debugging training runs, and conducting ablation studies. As a first dive into the LLM pretraining space, it involved plenty of trial and error, but provided great insight into the practical nuances of pretraining.
 
 The main recorded experiment family is **CPU-1**. It combines custom Transformer and recurrent models, byte representations, ternary weight experiments, and optional teacher-assisted training with pretrained **Qwen2.5-3B**. The student code initializes custom models from scratch and also supports resume and transfer between experiment checkpoints.
 
