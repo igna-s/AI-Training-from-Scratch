@@ -4,6 +4,8 @@ This review checks what the repository implements, what its published artifacts 
 
 The reviewed training/component source is at commit `43902814b8d2f2e5459367b8f90a34d2f03bcbab`. The [machine-readable inventory](../experiments/evaluation/architecture-review-2026-10-10.json) includes source hashes, parameter counts, state-shape fingerprints, instantiated module counts, and effective feature flags. The documentation update does not change those model implementations or checkpoint files.
 
+The inventory's source-file hashes cover the raw bytes of the local Windows checkout, including CRLF line endings. GitHub stores those source files with LF endings, so their Git blob bytes have different SHA-256 values even though the source text is unchanged.
+
 ## Method and boundaries
 
 1. Read model constructors, forwards, dataset adapters, training/configuration routing, checkpoint serialization, and native drivers.
@@ -28,7 +30,7 @@ The AMD module's GPU availability selector is disabled during this CPU/meta insp
 | Name or claim | What the code actually does | Supported wording / limit |
 |---|---|---|
 | Training from scratch | Constructors initialize student tensors; training can subsequently resume or warm-start from sibling checkpoints | The project investigates student training from scratch. Do not claim that every saved artifact started fresh in the exact published source version |
-| Transformer | `SlidingWindowAttention` uses causal PyTorch SDPA, Q/K/V/O projections, optional sliding mask, RMSNorm, and SwiGLU | Custom causal-attention baselines; full-model causality still depends on the input embedding and numerical validity |
+| Transformer | `AblationBlock` combines `SlidingWindowAttention` (causal PyTorch SDPA, Q/K/V/O projections, optional sliding mask) with RMSNorm and a separate SwiGLU FFN | Custom causal-attention baselines; full-model causality still depends on the input embedding and numerical validity |
 | MatMul-free / MLGRU | `AblationMLGRU` projects forget/candidate/output gates and updates a recurrent state; `MatMulFreeTokenMixer` is a separate serial implementation | MLGRU-inspired recurrent models. The PyTorch path still uses floating-point linear operations, and its local decoder uses attention |
 | BitNet / 1.58-bit | `BitLinear` and `BitEmbedding` simulate a scaled ternary alphabet with straight-through gradients; linear activations also simulate quantization | Ternary quantization experiments. Neither every tensor nor every operation is integer/ternary; FP32 exports are not 1.58-bit stored models |
 | MEGABYTE | Fixed global patches plus a small causal decoder over the next patch's byte positions | MEGABYTE-inspired global/local byte modeling; no demonstrated million-byte context or complete paper reproduction |
@@ -36,9 +38,9 @@ The AMD module's GPU availability selector is disabled during this CPU/meta insp
 | `byte_dynamic` | A configuration label accepted by byte data/model routes; the recorded tensors and model embeddings retain patch size 4 | A label, not proof of variable-length patch allocation. `run_04_r2` even uses the ordinary fixed-patch embedding |
 | Boundary prediction | `BoundaryPredictor` can provide heuristic byte-boundary scores and auxiliary BCE in ablations | An optional training auxiliary. It is absent from all 34 exports and inactive in the larger gated model's forward |
 | MrT5 / deletion | Custom learned gate, hard/soft masks, neighbor merge, optional top-k gather and later scatter | MrT5-inspired state deletion, not the MrT5 encoder-decoder architecture. Presence of a gate or a configured rate does not demonstrate compression quality or speedup |
-| FPResidual | Two floating-point low-rank linear factors contribute an additive correction | A floating-point low-rank residual; no universal accuracy recovery or cache-residency guarantee |
+| FPResidual | Two floating-point linear projections with a narrow intermediate dimension and SiLU between them contribute an additive correction | A nonlinear floating-point bottleneck residual; no universal accuracy recovery or cache-residency guarantee |
 | PFNet | Two **ternary** `BitLinear` layers with SiLU and RMSNorm form a small nonlinear branch | A separate nonlinear residual branch; calling it a floating-point MLP would be inaccurate |
-| HGRN2 / learned decay | Optional per-channel decay, layer ordering, and a vector state widened through learned projections | HGRN2-inspired options, not a faithful HGRN2 reproduction. The paper's parameter-free outer-product state expansion is different from this implementation |
+| HGRN2 / learned decay | Optional per-channel decay with layer-dependent initialization, and a vector state widened through learned projections | HGRN2-inspired options, not a faithful HGRN2 reproduction. The initialization does not enforce the paper's hierarchical forget-gate bounds, and its parameter-free outer-product state expansion differs from this implementation |
 | Stuffed-Mamba / periodic reset | A serial MLGRU option clears state every configured number of steps | A periodic state reset; not a demonstrated Mamba/selective-SSM architecture. All recorded exports have reset period 0 |
 | Teacher distillation | CE/KL routes read Qwen teacher probabilities; optional cosine alignment uses projected teacher hidden states | Teacher-assisted student training. The teacher itself was pretrained elsewhere; full dataset-wide teacher correctness is not established |
 | T-MAC / native CPU inference | Custom AVX2/FMA/OpenMP ternary kernels and synthetic drivers | LUT-inspired kernel experiments. No verified published-checkpoint loader/parity or end-to-end trained-model speed claim |
@@ -138,6 +140,8 @@ Mask deletion leaves sequence length unchanged. Gather deletion selects `K=max(f
 Hidden alignment is a cosine loss on masked projected states. The three published alignment models use teacher dimension 128. Field existence does not prove that stored masks/hidden rows reach the correct target positions; the dataset review found alignment problems.
 
 State expansion widens the vector from `d_model` to `d_model*factor` and adds learned projection dimensions. A synthetic factor-2 check returns expanded recurrent state of width 64 for a width-32 model. Periodic reset uses the serial path. Every published and current named preset has factor 1 and reset period 0, so these code options are not demonstrated by a trained expanded-state or reset checkpoint.
+
+The learned-decay option also needs qualification: its layer-dependent initialization is not guaranteed to be monotonic. In a fresh 12-layer synthetic initialization, the effective decay falls from approximately 0.572727 to 0.385475 between adjacent layers. The source has no constraint maintaining a monotonic hierarchy during optimization; this is a source/initialization finding, not a measurement of a trained checkpoint's decay values.
 
 Current preset inventories were checked in both entry points. Their structures agree, while configured budgets can differ: the main CUDA-oriented base uses two tokens/parameter and the AMD-oriented base uses 150, before per-run overrides. The 34 published configuration records remain a separate source of truth.
 
